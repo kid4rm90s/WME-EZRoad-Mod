@@ -26,22 +26,24 @@ WME EZRoad Mod is a powerful enhancement for the Waze Map Editor, designed to st
 2. Open the **EZRoads Mod** tab in the sidebar to configure your settings.
 3. Click the **Quick Update Segment** button or press your shortcut key (default: <kbd>A+g</kbd>) to apply your changes.
 4. For each Road type, the keyboard shortcuts are as below:  
-   a. Motorway —            shortcut key: <kbd>Shift+1</kbd>  
-   b. Ramp —                shortcut key: <kbd>Shift+2</kbd>  
-   c. Major Highway —       shortcut key: <kbd>Shift+3</kbd>  
-   d. Minor Highway —       shortcut key: <kbd>Shift+4</kbd>  
-   e. Primary Street —      shortcut key: <kbd>Shift+5</kbd>  
-   f. Street —              shortcut key: <kbd>Shift+6</kbd>  
-   g. Narrow Street —       shortcut key: <kbd>Shift+7</kbd>  
-   h. Offroad —             shortcut key: <kbd>Shift+8</kbd>  
-   i. Parking Road —        shortcut key: <kbd>Shift+9</kbd>  
-   j. Private Road —        shortcut key: <kbd>Shift+0</kbd>  
-   k. Ferry —               shortcut key: <kbd>Alt+1</kbd>  
-   l. Railroad —            shortcut key: <kbd>Alt+2</kbd>  
-   m. Runway/Taxiway —      shortcut key: <kbd>Alt+3</kbd>  
-   n. Foothpath —           shortcut key: <kbd>Alt+4</kbd>  
-   o. Pedestrianised Area — shortcut key: <kbd>Alt+5</kbd>  
-   p. Stairway —            shortcut key: <kbd>Alt+6</kbd>
+| Road Type              | Shortcut Key         |
+|------------------------|---------------------|
+| Motorway               | <kbd>Shift+1</kbd>  |
+| Ramp                   | <kbd>Shift+2</kbd>  |
+| Major Highway          | <kbd>Shift+3</kbd>  |
+| Minor Highway          | <kbd>Shift+4</kbd>  |
+| Primary Street         | <kbd>Shift+5</kbd>  |
+| Street                 | <kbd>Shift+6</kbd>  |
+| Narrow Street          | <kbd>Shift+7</kbd>  |
+| Offroad                | <kbd>Shift+8</kbd>  |
+| Parking Road           | <kbd>Shift+9</kbd>  |
+| Private Road           | <kbd>Shift+0</kbd>  |
+| Ferry                  | <kbd>Alt+1</kbd>    |
+| Railroad               | <kbd>Alt+2</kbd>    |
+| Runway/Taxiway         | <kbd>Alt+3</kbd>    |
+| Foothpath              | <kbd>Alt+4</kbd>    |
+| Pedestrianised Area    | <kbd>Alt+5</kbd>    |
+| Stairway               | <kbd>Alt+6</kbd>    |
 
 ---
 
