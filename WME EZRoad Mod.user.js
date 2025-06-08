@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.5.5
+// @version      2.5.6
 // @description  Easily update roads
 // @author       https://github.com/michaelrosstarr, https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -37,6 +37,8 @@
   const scriptVersion = GM_info.script.version;
   const downloadUrl =
     'https://greasyfork.org/scripts/528552-wme-ezroad-mod/code/wme-ezroad-mod.user.js';
+  const forumURL =
+    'https://greasyfork.org/scripts/528552-wme-ezroad-mod/feedback';
   let wmeSDK;
 
   const roadTypes = [
@@ -1376,7 +1378,9 @@
       WazeWrap.Interface.ShowScriptUpdate(
         scriptName,
         scriptVersion,
-        updateMessage
+        updateMessage,
+        downloadUrl,
+        forumURL
       );
     } else {
       setTimeout(scriptupdatemonitor, 250);
@@ -1390,7 +1394,9 @@
 Change Log
 
 Version
-2.5.5 - 2025-06-08
+2.5.5 - 2025-06-08.01
+        - minor bugfixes and UI improvements.
+2.5.5 - 2025-06-08.01
         - Improved mutual exclusion logic for "Copy Connected Segment Attribute" and other checkboxes (except Autosave):
             - Checking "Copy Connected Segment Attribute" now unchecks all other options (except Autosave), but does not disable them.
             - Checking any other option (except Autosave) will uncheck "Copy Connected Segment Attribute".
