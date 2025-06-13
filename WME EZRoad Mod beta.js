@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         WME EZRoad Mod
+// @name         WME EZRoad Mod beta
 // @namespace    https://greasyfork.org/users/1087400
 // @version      2.5.7
 // @description  Easily update roads
