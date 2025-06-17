@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.5.7.3
+// @version      2.5.7.5
 // @description  Easily update roads
 // @author       https://github.com/michaelrosstarr, https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -14,11 +14,12 @@
 // @grant 		   unsafeWindow
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=waze.com
 // @license      GNU GPL(v3)
-// @connect      greasyfork.org
+// @connect      githubusercontent.com
 // @require      https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
 // @require      https://update.greasyfork.org/scripts/509664/WME%20Utils%20-%20Bootstrap.js
-// @downloadURL none
-// @updateURL none
+// @downloadURL https://raw.githubusercontent.com/kid4rm90s/WME-EZRoad-Mod/main/WME%20EZRoad%20Mod%20beta.js
+// @updateURL https://raw.githubusercontent.com/kid4rm90s/WME-EZRoad-Mod/main/WME%20EZRoad%20Mod%20beta.js
+
 // ==/UserScript==
 
 /*Script modified from WME EZRoad (https://greasyfork.org/en/scripts/518381-wme-ezsegments) original author: Michaelrosstarr and thanks to him*/
@@ -26,13 +27,10 @@
 (function main() {
   'use strict';
   const updateMessage = `
-<b>2.5.8-beta - 2025-06-15</b><br>
-- Set street to none only handles street name now.<br>
-- Added option for setting up city to none.<br>
-- The lock and speed setting can be exported or imported.<br>
-- Incase of the shortcutkey conflict, the shortcut key becomes null.<br>
-- Default shortcut key is now "G".<br>
-- Minor code cleanup.<br>`;
+<b>2.5.7.5-beta - 2025-06-17</b><br>
+- When "Set Street Name to None" is checked, the primary street is set to none and all alternate street names are removed.<br>
+- When "Set city as none" is checked, all primary and alternate city names are set to none (empty city).<br>
+- Other behaviors remain unchanged.<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://greasyfork.org/scripts/528552-wme-ezroad-Mod-Beta/code/wme-ezroad-Mod-Beta.user.js';
@@ -638,17 +636,21 @@
       ); // 300ms delay before lock rank update
 
       // Handling the street
-      if (options.setStreet || options.setStreetCity) {
+      if (options.setStreet || options.setStreetCity || (!options.setStreet && !options.setStreetCity)) {
         let city = null;
         let street = null;
         const segment = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+        // --- City assignment logic ---
         if (options.setStreetCity) {
-          // Use empty city (no state, if possible)
+          // Checked: set city as none (empty city)
           city = wmeSDK.DataModel.Cities.getAll().find((city) => city.isEmpty) || wmeSDK.DataModel.Cities.addCity({ cityName: '' });
         } else {
+          // Unchecked: add available city name automatically
           city = getTopCity() || getEmptyCity();
         }
+        // --- Street assignment logic ---
         if (options.setStreet) {
+          // Set street name to none and remove all alt street names
           street = wmeSDK.DataModel.Streets.getStreet({
             cityId: city.id,
             streetName: '',
@@ -659,8 +661,14 @@
               cityId: city.id,
             });
           }
+          // Remove all alternate street names
+          wmeSDK.DataModel.Segments.updateAddress({
+            segmentId: id,
+            primaryStreetId: street.id,
+            alternateStreetIds: [],
+          });
         } else if (options.setStreetCity) {
-          // Use the same street name as current, but in the empty city
+          // Use the same street name as current, but in the empty city for both primary and all alts
           const currentStreet =
             segment && segment.primaryStreetId
               ? wmeSDK.DataModel.Streets.getById({
@@ -678,32 +686,86 @@
               cityId: city.id,
             });
           }
+          // For all alternate street names, set them to the empty city as well
+          let newAltStreetIds = [];
+          if (segment && segment.alternateStreetIds) {
+            segment.alternateStreetIds.forEach((altStreetId) => {
+              const altStreet = wmeSDK.DataModel.Streets.getById({ streetId: altStreetId });
+              if (altStreet && altStreet.name !== undefined) {
+                let altInCity = wmeSDK.DataModel.Streets.getStreet({
+                  cityId: city.id,
+                  streetName: altStreet.name || '',
+                });
+                if (!altInCity) {
+                  altInCity = wmeSDK.DataModel.Streets.addStreet({
+                    streetName: altStreet.name || '',
+                    cityId: city.id,
+                  });
+                }
+                newAltStreetIds.push(altInCity.id);
+              }
+            });
+          }
+          wmeSDK.DataModel.Segments.updateAddress({
+            segmentId: id,
+            primaryStreetId: street.id,
+            alternateStreetIds: newAltStreetIds,
+          });
+          pushCityNameAlert(city.id, alertMessageParts);
+          updatedCityName = true;
         } else {
-          street =
-            segment && segment.primaryStreetId
-              ? wmeSDK.DataModel.Streets.getById({
-                  streetId: segment.primaryStreetId,
-                })
-              : null;
-        }
-        log(`City Name: ${city?.name}, City ID: ${city?.id}, Street ID: ${street?.id}`);
-        try {
-          if (street) {
+          // If both setStreet and setStreetCity are unchecked, always update city for primary and alt names
+          if (segment && (segment.primaryStreetId || (segment.alternateStreetIds && segment.alternateStreetIds.length))) {
+            // Update primary street to new city
+            let currentStreet = segment.primaryStreetId ? wmeSDK.DataModel.Streets.getById({ streetId: segment.primaryStreetId }) : null;
+            let streetName = currentStreet ? currentStreet.name || '' : '';
+            street = wmeSDK.DataModel.Streets.getStreet({ cityId: city.id, streetName });
+            if (!street) {
+              street = wmeSDK.DataModel.Streets.addStreet({ streetName, cityId: city.id });
+            }
+            // Update alt streets to new city
+            let newAltStreetIds = [];
+            if (segment && segment.alternateStreetIds && city) {
+              segment.alternateStreetIds.forEach((altStreetId) => {
+                const altStreet = wmeSDK.DataModel.Streets.getById({ streetId: altStreetId });
+                if (altStreet && altStreet.name !== undefined) {
+                  let altInCity = wmeSDK.DataModel.Streets.getStreet({
+                    cityId: city.id,
+                    streetName: altStreet.name || '',
+                  });
+                  if (!altInCity) {
+                    altInCity = wmeSDK.DataModel.Streets.addStreet({
+                      streetName: altStreet.name || '',
+                      cityId: city.id,
+                    });
+                  }
+                  newAltStreetIds.push(altInCity.id);
+                }
+              });
+            }
             wmeSDK.DataModel.Segments.updateAddress({
               segmentId: id,
               primaryStreetId: street.id,
+              alternateStreetIds: newAltStreetIds.length > 0 ? newAltStreetIds : undefined,
+            });
+          } else {
+            // New/empty street fallback
+            let autoCity = getTopCity() || getEmptyCity();
+            let autoStreet = wmeSDK.DataModel.Streets.getStreet({ cityId: autoCity.id, streetName: '' });
+            if (!autoStreet) {
+              autoStreet = wmeSDK.DataModel.Streets.addStreet({ streetName: '', cityId: autoCity.id });
+            }
+            street = autoStreet;
+            city = autoCity;
+            wmeSDK.DataModel.Segments.updateAddress({
+              segmentId: id,
+              primaryStreetId: street.id,
+              alternateStreetIds: undefined,
             });
           }
-          if (options.setStreetCity) {
-            pushCityNameAlert(city.id, alertMessageParts);
-            updatedCityName = true;
-          }
-        } catch (error) {
-          log('Error updating address:', error);
         }
+        log(`City Name: ${city?.name}, City ID: ${city?.id}, Street ID: ${street?.id}`);
       }
-
-      log(options);
 
       // Updated unpaved handler with SegmentFlagAttributes and fallback
       updatePromises.push(
@@ -991,9 +1053,9 @@
       },
       {
         id: 'setStreetCity',
-        text: 'Set Street City as None',
+        text: 'Set city as none (uncheck to add auto)',
         key: 'setStreetCity',
-        tooltip: 'Sets the street city to None for selected segments. If unchecked, leaves the city unchanged. The WME will automatically set the city name either to the available city or to None.',
+        tooltip: 'If checked, sets the city to None for selected segments (primary and alt). If unchecked, adds the available city name automatically to both primary and alt streets.',
       },
       {
         id: 'autosave',
@@ -1339,7 +1401,11 @@
 Change Log
 
 Version
-<b>2.5.8-beta - 2025-06-15</b><br>
+2.5.7.5-beta - 2025-06-17
+        - When "Set Street Name to None" is checked, the primary street is set to none and all alternate street names are removed.
+        - When "Set city as none" is checked, all primary and alternate city names are set to none (empty city).
+        - Other behaviors remain unchanged.
+2.5.7.4-beta - 2025-06-15
         - Set street to none only handles street name now.
         - Added option for setting up city to none.
         - The lock and speed setting can be exported or imported.
