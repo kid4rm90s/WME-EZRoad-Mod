@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.5.8
+// @version      2.5.8.1
 // @description  Easily update roads
 // @author       https://github.com/michaelrosstarr, https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -26,7 +26,7 @@
 (function main() {
   'use strict';
   const updateMessage = `
-<b>2.5.8 - 2025-06-21</b><br>
+<b>2.5.8.1 - 2025-06-21</b><br>
 - When "Set Street Name to None" is checked, the primary street is set to none and all alternate street names are removed.<br>
 - When "Set city as none" is checked, all primary and alternate city names are set to none (empty city).<br>
 - "Set street to none" now only handles the street name.<br>
@@ -1105,6 +1105,7 @@
       const id = `road-${roadType.id}`;
       const isChecked = localOptions.roadType === roadType.value;
       const lockSetting = localOptions.locks.find((l) => l.id === roadType.id) || { id: roadType.id, lock: 1 };
+      const speedSetting = localOptions.speeds.find((s) => s.id === roadType.id) || { id: roadType.id, speed: 40 };
 
       const div = $(`<div class="ezroadsmod-option">
             <div class="ezroadsmod-radio-container">
