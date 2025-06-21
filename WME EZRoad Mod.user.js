@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.5.7
+// @version      2.5.8
 // @description  Easily update roads
 // @author       https://github.com/michaelrosstarr, https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -11,7 +11,7 @@
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_info
-// @grant 		   unsafeWindow
+// @grant        unsafeWindow
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=waze.com
 // @license      GNU GPL(v3)
 // @connect      greasyfork.org
@@ -26,16 +26,20 @@
 (function main() {
   'use strict';
   const updateMessage = `
-<b>2.5.8 - 2025-06-13</b><br>
-- Fixed: Autosave now works when "Copy Connected Segment Attribute" is enabled.<br>
-- When both "Autosave on Action" and "Copy Connected Segment Attribute" are checked, pressing the quick update button or shortcut will copy attributes and then autosave.<br>
-- All other options continue to function as before.<br>`;
+<b>2.5.8 - 2025-06-21</b><br>
+- When "Set Street Name to None" is checked, the primary street is set to none and all alternate street names are removed.<br>
+- When "Set city as none" is checked, all primary and alternate city names are set to none (empty city).<br>
+- "Set street to none" now only handles the street name.<br>
+- Added option for setting city to none.<br>
+- Lock and speed settings can be exported or imported.<br>
+- In case of shortcut key conflict, the shortcut key becomes null.<br>
+- Default shortcut key is now "G".<br>
+- Minor code cleanup.<br>
+- Other behaviors remain unchanged.<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
-  const downloadUrl =
-    'https://greasyfork.org/scripts/528552-wme-ezroad-mod/code/wme-ezroad-mod.user.js';
-  const forumURL =
-    'https://greasyfork.org/scripts/528552-wme-ezroad-mod/feedback';
+  const downloadUrl = 'https://greasyfork.org/scripts/528552-wme-ezroad-mod/code/wme-ezroad-mod.user.js';
+  const forumURL = 'https://greasyfork.org/scripts/528552-wme-ezroad-mod/feedback';
   let wmeSDK;
 
   const roadTypes = [
@@ -60,24 +64,26 @@
     roadType: 1,
     unpaved: false,
     setStreet: false,
+    setStreetCity: false,
+    setStreetState: false,
     autosave: false,
     setSpeed: 40,
     setLock: false,
     updateSpeed: false,
     copySegmentName: false,
-    locks: roadTypes.map((roadType) => ({ id: roadType.id, lock: 1 })),
+    locks: roadTypes.map((roadType) => ({ id: roadType.id, lock: String(1) })),
     speeds: roadTypes.map((roadType) => ({ id: roadType.id, speed: 40 })),
     copySegmentAttributes: false,
-    shortcutKey: 'A+g',
+    shortcutKey: 'g',
   };
 
   const locks = [
-    { id: 1, value: 1 },
-    { id: 2, value: 2 },
-    { id: 3, value: 3 },
-    { id: 4, value: 4 },
-    { id: 5, value: 5 },
-    { id: 6, value: 6 },
+    { id: 1, value: '1' },
+    { id: 2, value: '2' },
+    { id: 3, value: '3' },
+    { id: 4, value: '4' },
+    { id: 5, value: '5' },
+    { id: 6, value: '6' },
     { id: 'HRCS', value: 'HRCS' },
   ];
 
@@ -112,24 +118,36 @@
   };
 
   const saveOptions = (options) => {
-    window.localStorage.setItem(
-      'WME_EZRoads_Mod_Options',
-      JSON.stringify(options)
-    );
+    window.localStorage.setItem('WME_EZRoads_Mod_Options', JSON.stringify(options));
   };
 
   const getOptions = () => {
-    const savedOptions =
-      JSON.parse(window.localStorage.getItem('WME_EZRoads_Mod_Options')) || {};
-    // Merge saved options with defaults to ensure all expected options exist
-    return { ...defaultOptions, ...savedOptions };
+    const savedOptions = JSON.parse(window.localStorage.getItem('WME_EZRoads_Mod_Options')) || {};
+    // Deep merge for locks and speeds arrays
+    const mergeById = (defaults, saved, key) => {
+      if (!Array.isArray(defaults)) return defaults;
+      if (!Array.isArray(saved)) return defaults;
+      return defaults.map((def) => {
+        const found = saved.find((s) => s.id === def.id);
+        return found ? { ...def, ...found } : def;
+      });
+    };
+    const mergedLocks = mergeById(
+      defaultOptions.locks,
+      (savedOptions.locks || []).map((l) => ({ ...l, lock: String(l.lock) })),
+      'locks'
+    );
+    const mergedSpeeds = mergeById(defaultOptions.speeds, savedOptions.speeds || [], 'speeds');
+    return {
+      ...defaultOptions,
+      ...savedOptions,
+      locks: mergedLocks,
+      speeds: mergedSpeeds,
+    };
   };
 
   const WME_EZRoads_Mod_bootstrap = () => {
-    if (
-      !document.getElementById('edit-panel') ||
-      !wmeSDK.DataModel.Countries.getTopCountry()
-    ) {
+    if (!document.getElementById('edit-panel') || !wmeSDK.DataModel.Countries.getTopCountry()) {
       setTimeout(WME_EZRoads_Mod_bootstrap, 250);
       return;
     }
@@ -137,9 +155,7 @@
     if (wmeSDK.State.isReady) {
       WME_EZRoads_Mod_init();
     } else {
-      wmeSDK.Events.once({ eventName: 'wme-ready' }).then(
-        WME_EZRoads_Mod_init()
-      );
+      wmeSDK.Events.once({ eventName: 'wme-ready' }).then(WME_EZRoads_Mod_init());
     }
   };
 
@@ -152,7 +168,7 @@
     const shortcutId = 'EZRoad_Mod_QuickUpdate';
     // Only register if not already present
     if (!wmeSDK.Shortcuts.isShortcutRegistered({ shortcutId })) {
-      registerShortcut(options.shortcutKey || 'A+g');
+      registerShortcut(options.shortcutKey || 'g');
     }
 
     // Observe the edit panel for segment changes and add the quick update button
@@ -165,22 +181,14 @@
             if (editSegment) {
               openPanel = editSegment;
               const parentElement = editSegment.parentNode;
-              if (
-                !parentElement.querySelector('[data-ez-roadmod-button="true"]')
-              ) {
+              if (!parentElement.querySelector('[data-ez-roadmod-button="true"]')) {
                 log('Creating Quick Set Road button for this panel');
                 const quickButton = document.createElement('wz-button');
                 quickButton.setAttribute('type', 'button');
-                quickButton.setAttribute(
-                  'style',
-                  'margin-bottom: 5px; width: 100%'
-                );
+                quickButton.setAttribute('style', 'margin-bottom: 5px; width: 100%');
                 quickButton.setAttribute('disabled', 'false');
                 quickButton.setAttribute('data-ez-roadmod-button', 'true');
-                quickButton.setAttribute(
-                  'id',
-                  'ez-roadmod-quick-button-' + Date.now()
-                ); // Unique ID using timestamp
+                quickButton.setAttribute('id', 'ez-roadmod-quick-button-' + Date.now()); // Unique ID using timestamp
                 quickButton.classList.add('send-button', 'ez-comment-button');
                 quickButton.textContent = 'Quick Update Segment';
                 parentElement.insertBefore(quickButton, editSegment);
@@ -225,13 +233,7 @@
               saveOptions(options);
               updateRoadTypeRadios(rt.value);
               if (WazeWrap?.Alerts) {
-                WazeWrap.Alerts.success(
-                  'EZRoads Mod',
-                  `Selected road type: <b>${rt.name}</b>`,
-                  false,
-                  false,
-                  1500
-                );
+                WazeWrap.Alerts.success('EZRoads Mod', `Selected road type: <b>${rt.name}</b>`, false, false, 1500);
               }
             },
             description: `Select road type: ${rt.name}`,
@@ -255,15 +257,32 @@
     if (wmeSDK.Shortcuts.isShortcutRegistered({ shortcutId })) {
       wmeSDK.Shortcuts.deleteShortcut({ shortcutId });
     }
-    wmeSDK.Shortcuts.createShortcut({
-      callback: handleUpdate,
-      description: 'Quick Update Segments.',
-      shortcutId,
-      shortcutKeys: shortcutKey,
-    });
-    console.log(
-      `[EZRoads Mod] Shortcut '${shortcutKey}' for Quick Update Segments enabled.`
-    );
+    try {
+      wmeSDK.Shortcuts.createShortcut({
+        callback: handleUpdate,
+        description: 'Quick Update Segments.',
+        shortcutId,
+        shortcutKeys: shortcutKey,
+      });
+      console.log(`[EZRoads Mod] Shortcut '${shortcutKey}' for Quick Update Segments enabled.`);
+    } catch (e) {
+      // If shortcut registration fails (e.g., conflict), register with no key so it appears in WME UI
+      console.warn('[EZRoads Mod] Shortcut registration failed:', e);
+      try {
+        wmeSDK.Shortcuts.createShortcut({
+          callback: handleUpdate,
+          description: 'Quick Update Segments.',
+          shortcutId,
+          shortcutKeys: null, // Register with no key so it appears in WME UI
+        });
+        console.log('[EZRoads Mod] Registered shortcut with no key due to conflict.');
+      } catch (e2) {
+        console.error('[EZRoads Mod] Failed to register shortcut with no key:', e2);
+      }
+      const options = getOptions();
+      options.shortcutKey = null;
+      saveOptions(options);
+    }
   }
 
   const getEmptyCity = () => {
@@ -291,9 +310,7 @@
   function getHighestSegLock(segID) {
     const segObj = wmeSDK.DataModel.Segments.getById({ segmentId: segID });
     if (!segObj) {
-      console.warn(
-        `Segment object with ID ${segID} not found in DataModel.Segments.`
-      );
+      console.warn(`Segment object with ID ${segID} not found in DataModel.Segments.`);
       return 1; // Default lock level if segment not found
     }
     const segType = segObj.roadType;
@@ -310,9 +327,7 @@
 
       // Get all segments connected to this node
       const allSegs = wmeSDK.DataModel.Segments.getAll();
-      const forNodeSegs = allSegs
-        .filter((s) => s.fromNodeId === forNodeId || s.toNodeId === forNodeId)
-        .map((s) => s.id);
+      const forNodeSegs = allSegs.filter((s) => s.fromNodeId === forNodeId || s.toNodeId === forNodeId).map((s) => s.id);
 
       // Remove the current segment from the list
       const filteredSegs = forNodeSegs.filter((id) => id !== forwardID);
@@ -343,9 +358,7 @@
 
       // Get all segments connected to this node
       const allSegs = wmeSDK.DataModel.Segments.getAll();
-      const revNodeSegs = allSegs
-        .filter((s) => s.fromNodeId === revNodeId || s.toNodeId === revNodeId)
-        .map((s) => s.id);
+      const revNodeSegs = allSegs.filter((s) => s.fromNodeId === revNodeId || s.toNodeId === revNodeId).map((s) => s.id);
 
       // Remove the current segment from the list
       const filteredSegs = revNodeSegs.filter((id) => id !== reverseID);
@@ -408,13 +421,7 @@
               let connectedSegId = null;
               const allSegs = wmeSDK.DataModel.Segments.getAll();
               for (let s of allSegs) {
-                if (
-                  s.id !== id &&
-                  (s.fromNodeId === fromNode ||
-                    s.toNodeId === fromNode ||
-                    s.fromNodeId === toNode ||
-                    s.toNodeId === toNode)
-                ) {
+                if (s.id !== id && (s.fromNodeId === fromNode || s.toNodeId === fromNode || s.fromNodeId === toNode || s.toNodeId === toNode)) {
                   connectedSegId = s.id;
                   break;
                 }
@@ -438,24 +445,15 @@
                   alternateStreetIds: connectedSeg.alternateStreetIds || [],
                 });
                 // Copy paved/unpaved
-                const isUnpaved =
-                  connectedSeg.flagAttributes &&
-                  connectedSeg.flagAttributes.unpaved === true;
+                const isUnpaved = connectedSeg.flagAttributes && connectedSeg.flagAttributes.unpaved === true;
                 let toggled = false;
                 const segPanel = openPanel;
                 if (segPanel) {
-                  const unpavedIcon = segPanel.querySelector(
-                    '.w-icon-unpaved-fill'
-                  );
+                  const unpavedIcon = segPanel.querySelector('.w-icon-unpaved-fill');
                   if (unpavedIcon) {
-                    const unpavedChip =
-                      unpavedIcon.closest('wz-checkable-chip');
+                    const unpavedChip = unpavedIcon.closest('wz-checkable-chip');
                     if (unpavedChip) {
-                      if (
-                        isUnpaved !==
-                        (seg.flagAttributes &&
-                          seg.flagAttributes.unpaved === true)
-                      ) {
+                      if (isUnpaved !== (seg.flagAttributes && seg.flagAttributes.unpaved === true)) {
                         unpavedChip.click();
                         toggled = true;
                       }
@@ -464,33 +462,22 @@
                   // Fallback for non-compact mode if compact mode failed
                   if (!toggled) {
                     try {
-                      const wzCheckbox = segPanel.querySelector(
-                        'wz-checkbox[name="unpaved"]'
-                      );
+                      const wzCheckbox = segPanel.querySelector('wz-checkbox[name="unpaved"]');
                       if (wzCheckbox) {
-                        const hiddenInput = wzCheckbox.querySelector(
-                          'input[type="checkbox"][name="unpaved"]'
-                        );
+                        const hiddenInput = wzCheckbox.querySelector('input[type="checkbox"][name="unpaved"]');
                         if (hiddenInput && hiddenInput.checked !== isUnpaved) {
                           hiddenInput.click();
                           toggled = true;
                         }
                       }
                     } catch (e) {
-                      log(
-                        'Fallback to non-compact mode unpaved toggle method failed: ' +
-                          e
-                      );
+                      log('Fallback to non-compact mode unpaved toggle method failed: ' + e);
                     }
                   }
                 }
-                alertMessageParts.push(
-                  `Copied all attributes from connected segment.`
-                );
+                alertMessageParts.push(`Copied all attributes from connected segment.`);
               } else {
-                alertMessageParts.push(
-                  `No connected segment found to copy attributes.`
-                );
+                alertMessageParts.push(`No connected segment found to copy attributes.`);
               }
             } catch (error) {
               console.error('Error copying all attributes:', error);
@@ -501,13 +488,7 @@
       Promise.all(updatePromises).then(() => {
         if (alertMessageParts.length) {
           if (WazeWrap?.Alerts) {
-            WazeWrap.Alerts.info(
-              'EZRoads Mod',
-              alertMessageParts.join('<br>'),
-              false,
-              false,
-              7000
-            );
+            WazeWrap.Alerts.info('EZRoads Mod', alertMessageParts.join('<br>'), false, false, 5000);
           } else {
             alert('EZRoads Mod: ' + alertMessageParts.join('\n'));
           }
@@ -531,21 +512,13 @@
         delayedUpdate(() => {
           if (options.roadType) {
             const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
-            const selectedRoad = roadTypes.find(
-              (rt) => rt.value === options.roadType
-            );
+            const selectedRoad = roadTypes.find((rt) => rt.value === options.roadType);
             //alertMessageParts.push(`Road Type: <b>${selectedRoad.name}</b>`);
             //updatedRoadType = true;
-            log(
-              `Segment ID: ${id}, Current Road Type: ${seg.roadType}, Target Road Type: ${options.roadType}, Target Road Name : ${selectedRoad.name}`
-            ); // Log current and target road type
+            log(`Segment ID: ${id}, Current Road Type: ${seg.roadType}, Target Road Type: ${options.roadType}, Target Road Name : ${selectedRoad.name}`); // Log current and target road type
             if (seg.roadType === options.roadType) {
-              log(
-                `Segment ID: ${id} already has the target road type: ${options.roadType}. Skipping update.`
-              );
-              alertMessageParts.push(
-                `Road Type: <b>${selectedRoad.name} exists. Skipping update.</b>`
-              );
+              log(`Segment ID: ${id} already has the target road type: ${options.roadType}. Skipping update.`);
+              alertMessageParts.push(`Road Type: <b>${selectedRoad.name} exists. Skipping update.</b>`);
               updatedRoadType = true;
             } else {
               try {
@@ -554,9 +527,7 @@
                   roadType: options.roadType,
                 });
                 log('Road type updated successfully.');
-                alertMessageParts.push(
-                  `Road Type: <b>${selectedRoad.name}</b>`
-                );
+                alertMessageParts.push(`Road Type: <b>${selectedRoad.name}</b>`);
                 updatedRoadType = true;
               } catch (error) {
                 console.error('Error updating road type:', error);
@@ -571,13 +542,9 @@
         delayedUpdate(() => {
           if (options.setLock) {
             const rank = wmeSDK.State.getUserInfo().rank;
-            const selectedRoad = roadTypes.find(
-              (rt) => rt.value === options.roadType
-            );
+            const selectedRoad = roadTypes.find((rt) => rt.value === options.roadType);
             if (selectedRoad) {
-              let lockSetting = options.locks.find(
-                (l) => l.id === selectedRoad.id
-              );
+              let lockSetting = options.locks.find((l) => l.id === selectedRoad.id);
               if (lockSetting) {
                 let toLock = lockSetting.lock;
                 if (toLock === 'HRCS') {
@@ -595,10 +562,7 @@
                   const seg = wmeSDK.DataModel.Segments.getById({
                     segmentId: id,
                   });
-                  let displayLockLevel =
-                    toLock === 'HRCS' || isNaN(toLock)
-                      ? 'HRCS'
-                      : `L${toLock + 1}`;
+                  let displayLockLevel = toLock === 'HRCS' || isNaN(toLock) ? 'HRCS' : `L${toLock + 1}`;
                   let currentDisplayLockLevel;
                   if (seg.lockRank === 'HRCS') {
                     // Should not happen, but for safety
@@ -606,27 +570,17 @@
                   } else {
                     currentDisplayLockLevel = `L${seg.lockRank + 1}`;
                   }
-                  if (
-                    seg.lockRank === toLock ||
-                    (lockSetting.lock === 'HRCS' &&
-                      currentDisplayLockLevel === displayLockLevel)
-                  ) {
+                  if (seg.lockRank === toLock || (lockSetting.lock === 'HRCS' && currentDisplayLockLevel === displayLockLevel)) {
                     // Compare lock levels
-                    log(
-                      `Segment ID: ${id} already has the target lock level: ${displayLockLevel}. Skipping update.`
-                    );
-                    alertMessageParts.push(
-                      `Lock Level: <b>${displayLockLevel} exists. Skipping update.</b>`
-                    );
+                    log(`Segment ID: ${id} already has the target lock level: ${displayLockLevel}. Skipping update.`);
+                    alertMessageParts.push(`Lock Level: <b>${displayLockLevel} exists. Skipping update.</b>`);
                     updatedLockLevel = true;
                   } else {
                     wmeSDK.DataModel.Segments.updateSegment({
                       segmentId: id,
                       lockRank: toLock,
                     });
-                    alertMessageParts.push(
-                      `Lock Level: <b>${displayLockLevel}</b>`
-                    );
+                    alertMessageParts.push(`Lock Level: <b>${displayLockLevel}</b>`);
                     updatedLockLevel = true;
                   }
                 } catch (error) {
@@ -642,13 +596,9 @@
       updatePromises.push(
         delayedUpdate(() => {
           if (options.updateSpeed) {
-            const selectedRoad = roadTypes.find(
-              (rt) => rt.value === options.roadType
-            );
+            const selectedRoad = roadTypes.find((rt) => rt.value === options.roadType);
             if (selectedRoad) {
-              const speedSetting = options.speeds.find(
-                (s) => s.id === selectedRoad.id
-              );
+              const speedSetting = options.speeds.find((s) => s.id === selectedRoad.id);
               log('Selected road for speed: ' + selectedRoad.name);
               log('Speed setting found: ' + (speedSetting ? 'yes' : 'no'));
 
@@ -662,10 +612,7 @@
                   const seg = wmeSDK.DataModel.Segments.getById({
                     segmentId: id,
                   });
-                  if (
-                    seg.fwdSpeedLimit !== speedValue ||
-                    seg.revSpeedLimit !== speedValue
-                  ) {
+                  if (seg.fwdSpeedLimit !== speedValue || seg.revSpeedLimit !== speedValue) {
                     wmeSDK.DataModel.Segments.updateSegment({
                       segmentId: id,
                       fwdSpeedLimit: speedValue,
@@ -674,23 +621,15 @@
                     alertMessageParts.push(`Speed Limit: <b>${speedValue}</b>`);
                     updatedSpeedLimit = true;
                   } else {
-                    log(
-                      `Segment ID: ${id} already has the target speed limit: ${speedValue}. Skipping update.`
-                    );
-                    alertMessageParts.push(
-                      `Speed Limit: <b>${speedValue} exists. Skipping update.</b>`
-                    );
+                    log(`Segment ID: ${id} already has the target speed limit: ${speedValue}. Skipping update.`);
+                    alertMessageParts.push(`Speed Limit: <b>${speedValue} exists. Skipping update.</b>`);
                     updatedSpeedLimit = true;
                   }
                   //alertMessageParts.push(`Speed Limit: <b>${speedValue}</b>`);
                   //updatedSpeedLimit = true;
                 } else {
-                  log(
-                    'Not applying speed - invalid value: ' + speedSetting.speed
-                  );
-                  alertMessageParts.push(
-                    `Speed Limit: <b>Invalid value ${speedValue}</b>`
-                  );
+                  log('Not applying speed - invalid value: ' + speedSetting.speed);
+                  alertMessageParts.push(`Speed Limit: <b>Invalid value ${speedValue}</b>`);
                   updatedSpeedLimit = true;
                 }
               }
@@ -702,52 +641,148 @@
       ); // 300ms delay before lock rank update
 
       // Handling the street
-      if (options.setStreet) {
-        let city;
-        let street;
-        city = getTopCity() || getEmptyCity();
-        street = wmeSDK.DataModel.Streets.getStreet({
-          cityId: city.id,
-          streetName: '',
-        });
-        log(
-          `City Name: ${city?.name}, City ID: ${city?.id}, Street ID: ${street?.id}`
-        );
-        if (!street) {
-          street = wmeSDK.DataModel.Streets.addStreet({
-            streetName: '',
-            cityId: city.id,
-          });
-          log(`Created new empty street. Street ID: ${street?.id}`);
+      if (options.setStreet || options.setStreetCity || (!options.setStreet && !options.setStreetCity)) {
+        let city = null;
+        let street = null;
+        const segment = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+        // --- City assignment logic ---
+        if (options.setStreetCity) {
+          // Checked: set city as none (empty city)
+          city = wmeSDK.DataModel.Cities.getAll().find((city) => city.isEmpty) || wmeSDK.DataModel.Cities.addCity({ cityName: '' });
+        } else {
+          // Unchecked: add available city name automatically
+          city = getTopCity() || getEmptyCity();
         }
-        try {
+        // --- Street assignment logic ---
+        if (options.setStreet) {
+          // Set street name to none and remove all alt street names
+          street = wmeSDK.DataModel.Streets.getStreet({
+            cityId: city.id,
+            streetName: '',
+          });
+          if (!street) {
+            street = wmeSDK.DataModel.Streets.addStreet({
+              streetName: '',
+              cityId: city.id,
+            });
+          }
+          // Remove all alternate street names
           wmeSDK.DataModel.Segments.updateAddress({
             segmentId: id,
             primaryStreetId: street.id,
+            alternateStreetIds: [],
+          });
+        } else if (options.setStreetCity) {
+          // Use the same street name as current, but in the empty city for both primary and all alts
+          const currentStreet =
+            segment && segment.primaryStreetId
+              ? wmeSDK.DataModel.Streets.getById({
+                  streetId: segment.primaryStreetId,
+                })
+              : null;
+          const streetName = currentStreet ? currentStreet.name || '' : '';
+          street = wmeSDK.DataModel.Streets.getStreet({
+            cityId: city.id,
+            streetName: streetName,
+          });
+          if (!street) {
+            street = wmeSDK.DataModel.Streets.addStreet({
+              streetName: streetName,
+              cityId: city.id,
+            });
+          }
+          // For all alternate street names, set them to the empty city as well
+          let newAltStreetIds = [];
+          if (segment && segment.alternateStreetIds) {
+            segment.alternateStreetIds.forEach((altStreetId) => {
+              const altStreet = wmeSDK.DataModel.Streets.getById({ streetId: altStreetId });
+              if (altStreet && altStreet.name !== undefined) {
+                let altInCity = wmeSDK.DataModel.Streets.getStreet({
+                  cityId: city.id,
+                  streetName: altStreet.name || '',
+                });
+                if (!altInCity) {
+                  altInCity = wmeSDK.DataModel.Streets.addStreet({
+                    streetName: altStreet.name || '',
+                    cityId: city.id,
+                  });
+                }
+                newAltStreetIds.push(altInCity.id);
+              }
+            });
+          }
+          wmeSDK.DataModel.Segments.updateAddress({
+            segmentId: id,
+            primaryStreetId: street.id,
+            alternateStreetIds: newAltStreetIds,
           });
           pushCityNameAlert(city.id, alertMessageParts);
           updatedCityName = true;
-        } catch (error) {
-          console.error('Error updating segment address:', error);
+        } else {
+          // If both setStreet and setStreetCity are unchecked, always update city for primary and alt names
+          if (segment && (segment.primaryStreetId || (segment.alternateStreetIds && segment.alternateStreetIds.length))) {
+            // Update primary street to new city
+            let currentStreet = segment.primaryStreetId ? wmeSDK.DataModel.Streets.getById({ streetId: segment.primaryStreetId }) : null;
+            let streetName = currentStreet ? currentStreet.name || '' : '';
+            street = wmeSDK.DataModel.Streets.getStreet({ cityId: city.id, streetName });
+            if (!street) {
+              street = wmeSDK.DataModel.Streets.addStreet({ streetName, cityId: city.id });
+            }
+            // Update alt streets to new city
+            let newAltStreetIds = [];
+            if (segment && segment.alternateStreetIds && city) {
+              segment.alternateStreetIds.forEach((altStreetId) => {
+                const altStreet = wmeSDK.DataModel.Streets.getById({ streetId: altStreetId });
+                if (altStreet && altStreet.name !== undefined) {
+                  let altInCity = wmeSDK.DataModel.Streets.getStreet({
+                    cityId: city.id,
+                    streetName: altStreet.name || '',
+                  });
+                  if (!altInCity) {
+                    altInCity = wmeSDK.DataModel.Streets.addStreet({
+                      streetName: altStreet.name || '',
+                      cityId: city.id,
+                    });
+                  }
+                  newAltStreetIds.push(altInCity.id);
+                }
+              });
+            }
+            wmeSDK.DataModel.Segments.updateAddress({
+              segmentId: id,
+              primaryStreetId: street.id,
+              alternateStreetIds: newAltStreetIds.length > 0 ? newAltStreetIds : undefined,
+            });
+          } else {
+            // New/empty street fallback
+            let autoCity = getTopCity() || getEmptyCity();
+            let autoStreet = wmeSDK.DataModel.Streets.getStreet({ cityId: autoCity.id, streetName: '' });
+            if (!autoStreet) {
+              autoStreet = wmeSDK.DataModel.Streets.addStreet({ streetName: '', cityId: autoCity.id });
+            }
+            street = autoStreet;
+            city = autoCity;
+            wmeSDK.DataModel.Segments.updateAddress({
+              segmentId: id,
+              primaryStreetId: street.id,
+              alternateStreetIds: undefined,
+            });
+          }
         }
+        log(`City Name: ${city?.name}, City ID: ${city?.id}, Street ID: ${street?.id}`);
       }
-
-      log(options);
 
       // Updated unpaved handler with SegmentFlagAttributes and fallback
       updatePromises.push(
         delayedUpdate(() => {
           if (options.unpaved) {
             const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
-            const isUnpaved =
-              seg.flagAttributes && seg.flagAttributes.unpaved === true;
+            const isUnpaved = seg.flagAttributes && seg.flagAttributes.unpaved === true;
             let unpavedToggled = false;
 
             if (!isUnpaved) {
               // Only click if segment is not already unpaved
-              const unpavedIcon = openPanel.querySelector(
-                '.w-icon-unpaved-fill'
-              );
+              const unpavedIcon = openPanel.querySelector('.w-icon-unpaved-fill');
               if (unpavedIcon) {
                 const unpavedChip = unpavedIcon.closest('wz-checkable-chip');
                 if (unpavedChip) {
@@ -759,26 +794,17 @@
               // If new method failed, try the old method as fallback for non-compact mode
               if (!unpavedToggled) {
                 try {
-                  const wzCheckbox = openPanel.querySelector(
-                    'wz-checkbox[name="unpaved"]'
-                  );
+                  const wzCheckbox = openPanel.querySelector('wz-checkbox[name="unpaved"]');
                   if (wzCheckbox) {
-                    const hiddenInput = wzCheckbox.querySelector(
-                      'input[type="checkbox"][name="unpaved"]'
-                    );
+                    const hiddenInput = wzCheckbox.querySelector('input[type="checkbox"][name="unpaved"]');
                     if (hiddenInput && !hiddenInput.checked) {
                       hiddenInput.click();
-                      log(
-                        'Clicked unpaved checkbox (set to unpaved, non-compact mode)'
-                      );
+                      log('Clicked unpaved checkbox (set to unpaved, non-compact mode)');
                       unpavedToggled = true;
                     }
                   }
                 } catch (e) {
-                  log(
-                    'Fallback to non-compact mode unpaved toggle method failed: ' +
-                      e
-                  );
+                  log('Fallback to non-compact mode unpaved toggle method failed: ' + e);
                 }
               }
               if (unpavedToggled) {
@@ -787,23 +813,18 @@
               }
             } else {
               // Already unpaved, no action needed
-              alertMessageParts.push(
-                `Paved Status: <b>Unpaved (already set)</b>`
-              );
+              alertMessageParts.push(`Paved Status: <b>Unpaved (already set)</b>`);
               updatedPaved = true;
             }
           } else {
             // If option is not checked and segment is unpaved, set it as paved
             const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
-            const isUnpaved =
-              seg.flagAttributes && seg.flagAttributes.unpaved === true;
+            const isUnpaved = seg.flagAttributes && seg.flagAttributes.unpaved === true;
             let pavedToggled = false;
 
             if (isUnpaved) {
               // Click to set as paved
-              const unpavedIcon = openPanel.querySelector(
-                '.w-icon-unpaved-fill'
-              );
+              const unpavedIcon = openPanel.querySelector('.w-icon-unpaved-fill');
               if (unpavedIcon) {
                 const unpavedChip = unpavedIcon.closest('wz-checkable-chip');
                 if (unpavedChip) {
@@ -815,26 +836,17 @@
               // If new method failed, try the old method as fallback for non-compact mode
               if (!pavedToggled) {
                 try {
-                  const wzCheckbox = openPanel.querySelector(
-                    'wz-checkbox[name="unpaved"]'
-                  );
+                  const wzCheckbox = openPanel.querySelector('wz-checkbox[name="unpaved"]');
                   if (wzCheckbox) {
-                    const hiddenInput = wzCheckbox.querySelector(
-                      'input[type="checkbox"][name="unpaved"]'
-                    );
+                    const hiddenInput = wzCheckbox.querySelector('input[type="checkbox"][name="unpaved"]');
                     if (hiddenInput && hiddenInput.checked) {
                       hiddenInput.click();
-                      log(
-                        'Clicked unpaved checkbox (set to paved, non-compact mode)'
-                      );
+                      log('Clicked unpaved checkbox (set to paved, non-compact mode)');
                       pavedToggled = true;
                     }
                   }
                 } catch (e) {
-                  log(
-                    'Fallback to non-compact mode paved toggle method failed: ' +
-                      e
-                  );
+                  log('Fallback to non-compact mode paved toggle method failed: ' + e);
                 }
               }
               if (pavedToggled) {
@@ -843,9 +855,7 @@
               }
             } else {
               // Already paved, no action needed
-              alertMessageParts.push(
-                `Paved Status: <b>Paved (already set)</b>`
-              );
+              alertMessageParts.push(`Paved Status: <b>Paved (already set)</b>`);
               updatedPaved = true;
             }
           }
@@ -863,13 +873,7 @@
               let connectedSegId = null;
               const allSegs = wmeSDK.DataModel.Segments.getAll();
               for (let s of allSegs) {
-                if (
-                  s.id !== id &&
-                  (s.fromNodeId === fromNode ||
-                    s.toNodeId === fromNode ||
-                    s.fromNodeId === toNode ||
-                    s.toNodeId === toNode)
-                ) {
+                if (s.id !== id && (s.fromNodeId === fromNode || s.toNodeId === fromNode || s.fromNodeId === toNode || s.toNodeId === toNode)) {
                   connectedSegId = s.id;
                   break;
                 }
@@ -880,45 +884,56 @@
                 });
                 const streetId = connectedSeg.primaryStreetId;
                 const altStreetIds = connectedSeg.alternateStreetIds || [];
-                const street = wmeSDK.DataModel.Streets.getById({ streetId });
+                let street = wmeSDK.DataModel.Streets.getById({ streetId });
                 // Get alternate street names
                 let altNames = [];
                 altStreetIds.forEach((streetId) => {
                   const altStreet = wmeSDK.DataModel.Streets.getById({
                     streetId,
                   });
-                  if (altStreet && altStreet.name)
-                    altNames.push(altStreet.name);
+                  if (altStreet && altStreet.name) altNames.push(altStreet.name);
                 });
-                if (
-                  street &&
-                  (street.name || street.englishName || street.signText)
-                ) {
+                // --- FIX: If setStreetCity is true, use empty city for the street name ---
+                if (options.setStreetCity && street) {
+                  const emptyCity = wmeSDK.DataModel.Cities.getAll().find((city) => city.isEmpty) || wmeSDK.DataModel.Cities.addCity({ cityName: '' });
+                  // Try to find or create a street with the same name but in the empty city
+                  let noneStreet = wmeSDK.DataModel.Streets.getStreet({
+                    cityId: emptyCity.id,
+                    streetName: street.name || '',
+                  });
+                  if (!noneStreet) {
+                    noneStreet = wmeSDK.DataModel.Streets.addStreet({
+                      streetName: street.name || '',
+                      cityId: emptyCity.id,
+                    });
+                  }
+                  wmeSDK.DataModel.Segments.updateAddress({
+                    segmentId: id,
+                    primaryStreetId: noneStreet.id,
+                    alternateStreetIds: altStreetIds,
+                  });
+                  let aliasMsg = altNames.length ? ` (Alternatives: ${altNames.join(', ')})` : '';
+                  alertMessageParts.push(`Copied Name: <b>${street.name || ''}</b>${aliasMsg}`);
+                  updatedSegmentName = true;
+                  pushCityNameAlert(emptyCity.id, alertMessageParts);
+                  updatedCityName = true;
+                } else if (street && (street.name || street.englishName || street.signText)) {
                   wmeSDK.DataModel.Segments.updateAddress({
                     segmentId: id,
                     primaryStreetId: streetId,
                     alternateStreetIds: altStreetIds,
                   });
-                  let aliasMsg = altNames.length
-                    ? ` (Alternatives: ${altNames.join(', ')})`
-                    : '';
-                  alertMessageParts.push(
-                    `Copied Name: <b>${street.name || ''}</b>${aliasMsg}`
-                  );
+                  let aliasMsg = altNames.length ? ` (Alternatives: ${altNames.join(', ')})` : '';
+                  alertMessageParts.push(`Copied Name: <b>${street.name || ''}</b>${aliasMsg}`);
                   updatedSegmentName = true;
+                  pushCityNameAlert(street.cityId, alertMessageParts);
+                  updatedCityName = true;
                 } else {
-                  alertMessageParts.push(
-                    `Copied Name: <b>None (connected segment has no name)</b>`
-                  );
+                  alertMessageParts.push(`Copied Name: <b>None (connected segment has no name)</b>`);
                   updatedSegmentName = true;
                 }
-                // Always push city name as a separate alert
-                pushCityNameAlert(street.cityId, alertMessageParts);
-                updatedCityName = true;
               } else {
-                alertMessageParts.push(
-                  `Copied Name: <b>None (no connected segment found)</b>`
-                );
+                alertMessageParts.push(`Copied Name: <b>None (no connected segment found)</b>`);
                 updatedSegmentName = true;
               }
             } catch (error) {
@@ -948,44 +963,18 @@
 
       const showAlert = () => {
         const updatedFeatures = [];
-        if (updatedCityName)
-          updatedFeatures.push(
-            alertMessageParts.find((part) => part.startsWith('City'))
-          );
-        if (updatedSegmentName)
-          updatedFeatures.push(
-            alertMessageParts.find((part) => part.startsWith('Copied Name'))
-          );
-        if (updatedRoadType)
-          updatedFeatures.push(
-            alertMessageParts.find((part) => part.startsWith('Road Type'))
-          );
-        if (updatedLockLevel)
-          updatedFeatures.push(
-            alertMessageParts.find((part) => part.startsWith('Lock Level'))
-          );
-        if (updatedSpeedLimit)
-          updatedFeatures.push(
-            alertMessageParts.find((part) => part.startsWith('Speed Limit'))
-          );
-        if (updatedPaved)
-          updatedFeatures.push(
-            alertMessageParts.find((part) => part.startsWith('Paved'))
-          );
+        if (updatedCityName) updatedFeatures.push(alertMessageParts.find((part) => part.startsWith('City')));
+        if (updatedSegmentName) updatedFeatures.push(alertMessageParts.find((part) => part.startsWith('Copied Name')));
+        if (updatedRoadType) updatedFeatures.push(alertMessageParts.find((part) => part.startsWith('Road Type')));
+        if (updatedLockLevel) updatedFeatures.push(alertMessageParts.find((part) => part.startsWith('Lock Level')));
+        if (updatedSpeedLimit) updatedFeatures.push(alertMessageParts.find((part) => part.startsWith('Speed Limit')));
+        if (updatedPaved) updatedFeatures.push(alertMessageParts.find((part) => part.startsWith('Paved')));
         const message = updatedFeatures.filter(Boolean).join(', ');
         if (message) {
           if (WazeWrap?.Alerts) {
-            WazeWrap.Alerts.info(
-              'EZRoads Mod',
-              `Segment updated with: ${message}`,
-              false,
-              false,
-              7000
-            );
+            WazeWrap.Alerts.info('EZRoads Mod', `Segment updated with: ${message}`, false, false, 5000);
           } else {
-            alert(
-              'EZRoads Mod: Segment updated (WazeWrap Alerts not available)'
-            );
+            alert('EZRoads Mod: Segment updated (WazeWrap Alerts not available)');
           }
         }
       };
@@ -1024,13 +1013,7 @@
         localOptions.locks = options.locks;
         saveOptions(options);
         if (WazeWrap?.Alerts) {
-          WazeWrap.Alerts.success(
-            'EZRoads Mod',
-            'Lock Levels saved!',
-            false,
-            false,
-            1500
-          );
+          WazeWrap.Alerts.success('EZRoads Mod', 'Lock Levels saved!', false, false, 1500);
         } else {
           alert('EZRoads Mod: Lock Levels saved!');
         }
@@ -1051,13 +1034,7 @@
         localOptions.speeds = options.speeds;
         saveOptions(options);
         if (WazeWrap?.Alerts) {
-          WazeWrap.Alerts.success(
-            'EZRoads Mod',
-            'Speed Values saved!',
-            false,
-            false,
-            1500
-          );
+          WazeWrap.Alerts.success('EZRoads Mod', 'Speed Values saved!', false, false, 1500);
         } else {
           alert('EZRoads Mod: Speed Values saved!');
         }
@@ -1075,10 +1052,15 @@
     const checkboxOptions = [
       {
         id: 'setStreet',
-        text: 'Set Street To None',
+        text: 'Set Street Name to None',
         key: 'setStreet',
-        tooltip:
-          'Removes the street name (sets to None) for selected segments.',
+        tooltip: 'Sets the street name to None for selected segments. If unchecked, leaves the street name unchanged.',
+      },
+      {
+        id: 'setStreetCity',
+        text: 'Set city as none (uncheck to add auto)',
+        key: 'setStreetCity',
+        tooltip: 'If checked, sets the city to None for selected segments (primary and alt). If unchecked, adds the available city name automatically to both primary and alt streets.',
       },
       {
         id: 'autosave',
@@ -1096,29 +1078,25 @@
         id: 'setLock',
         text: 'Set the lock level',
         key: 'setLock',
-        tooltip:
-          'Sets the lock level for the selected road type. It also enables the lock level dropdown.',
+        tooltip: 'Sets the lock level for the selected road type. It also enables the lock level dropdown.',
       },
       {
         id: 'updateSpeed',
         text: 'Update speed limits',
         key: 'updateSpeed',
-        tooltip:
-          'Updates the speed limit for the selected road type. it also enables the speed input field.',
+        tooltip: 'Updates the speed limit for the selected road type. it also enables the speed input field.',
       },
       {
         id: 'copySegmentName',
         text: 'Copy connected Segment Name',
         key: 'copySegmentName',
-        tooltip:
-          'Copies the name from a connected segment to the selected segment.',
+        tooltip: 'Copies the name and city from a connected segment to the selected segment. When Set Street City as None is enabled, it will not copy the city name.',
       },
       {
         id: 'copySegmentAttributes',
         text: 'Copy Connected Segment Attribute',
         key: 'copySegmentAttributes',
-        tooltip:
-          'Copies all major attributes from a connected segment. When enabled, it will override the other options.',
+        tooltip: 'Copies all major attributes from a connected segment. When enabled, it will override the other options.',
       },
     ];
 
@@ -1126,41 +1104,17 @@
     const createRadioButton = (roadType) => {
       const id = `road-${roadType.id}`;
       const isChecked = localOptions.roadType === roadType.value;
-      const lockSetting = localOptions.locks.find(
-        (l) => l.id === roadType.id
-      ) || { id: roadType.id, lock: 1 };
-      const speedSetting = localOptions.speeds.find(
-        (s) => s.id === roadType.id
-      ) || { id: roadType.id, speed: 40 };
+      const lockSetting = localOptions.locks.find((l) => l.id === roadType.id) || { id: roadType.id, lock: 1 };
 
       const div = $(`<div class="ezroadsmod-option">
             <div class="ezroadsmod-radio-container">
-                <input type="radio" id="${id}" name="defaultRoad" data-road-value="${
-        roadType.value
-      }" ${isChecked ? 'checked' : ''}>
+                <input type="radio" id="${id}" name="defaultRoad" data-road-value="${roadType.value}" ${isChecked ? 'checked' : ''}>
                 <label for="${id}">${roadType.name}</label>
-                <select id="lock-level-${
-                  roadType.id
-                }" class="road-lock-level" data-road-id="${roadType.id}" ${
-        !localOptions.setLock ? 'disabled' : ''
-      }>
-                    ${locks
-                      .map(
-                        (lock) =>
-                          `<option value="${lock.value}" ${
-                            lockSetting.lock === lock.value ? 'selected' : ''
-                          }>${
-                            lock.value === 'HRCS' ? 'HRCS' : 'L' + lock.value
-                          }</option>`
-                      )
-                      .join('')}
+                <select id="lock-level-${roadType.id}" class="road-lock-level" data-road-id="${roadType.id}" ${!localOptions.setLock ? 'disabled' : ''}>
+                    ${locks.map((lock) => `<option value="${lock.value}" ${lockSetting.lock === lock.value ? 'selected' : ''}>${lock.value === 'HRCS' ? 'HRCS' : 'L' + lock.value}</option>`).join('')}
                 </select>
-                <input type="number" id="speed-${
-                  roadType.id
-                }" class="road-speed" data-road-id="${roadType.id}"
-                       value="${speedSetting.speed}" min="-1" ${
-        !localOptions.updateSpeed ? 'disabled' : ''
-      }>
+                <input type="number" id="speed-${roadType.id}" class="road-speed" data-road-id="${roadType.id}"
+                       value="${speedSetting.speed}" min="-1" ${!localOptions.updateSpeed ? 'disabled' : ''}>
             </div>
         </div>`);
 
@@ -1191,23 +1145,11 @@
     // Helper function to create checkboxes
     const createCheckbox = (option) => {
       const isChecked = localOptions[option.key];
-      const otherClass =
-        option.key !== 'autosave' && option.key !== 'copySegmentAttributes'
-          ? 'ezroadsmod-other-checkbox'
-          : '';
-      const attrClass =
-        option.key === 'copySegmentAttributes'
-          ? 'ezroadsmod-attr-checkbox'
-          : '';
+      const otherClass = option.key !== 'autosave' && option.key !== 'copySegmentAttributes' ? 'ezroadsmod-other-checkbox' : '';
+      const attrClass = option.key === 'copySegmentAttributes' ? 'ezroadsmod-attr-checkbox' : '';
       const div = $(`<div class="ezroadsmod-option">
-    <input type="checkbox" id="${option.id}" name="${
-        option.id
-      }" class="${otherClass} ${attrClass}" ${
-        isChecked ? 'checked' : ''
-      } title="${option.tooltip || ''}">
-    <label for="${option.id}" title="${option.tooltip || ''}">${
-        option.text
-      }</label>
+    <input type="checkbox" id="${option.id}" name="${option.id}" class="${otherClass} ${attrClass}" ${isChecked ? 'checked' : ''} title="${option.tooltip || ''}">
+    <label for="${option.id}" title="${option.tooltip || ''}">${option.text}</label>
   </div>`);
       div.on('click', () => {
         // Mutually exclusive logic for setStreet and copySegmentName
@@ -1215,10 +1157,7 @@
           $('#copySegmentName').prop('checked', false);
           update('copySegmentName', false);
         }
-        if (
-          option.key === 'copySegmentName' &&
-          $(`#${option.id}`).prop('checked')
-        ) {
+        if (option.key === 'copySegmentName' && $(`#${option.id}`).prop('checked')) {
           $('#setStreet').prop('checked', false);
           update('setStreet', false);
         }
@@ -1309,10 +1248,9 @@
 
       // Header section
       const header = $(`<div class="ezroadsmod-section">
-
 		<h2>EZRoads Mod</h2>
 		<div>Current Version: <b>${scriptVersion}</b></div>
-		<div>Update Keybind: <kbd>Alt+G</kbd></div>
+		<div>Update Keybind: <kbd>G</kbd></div>
 		<div style="font-size: 0.8em;">You can change it in WME keyboard setting!</div>
 		</div>`);
       scriptContentPane.append(header);
@@ -1363,31 +1301,96 @@
       });
 
       // Reset button section
-      const resetButton = $(
-        `<button class="ezroadsmod-reset-button">Reset All Options</button>`
-      );
+      const resetButton = $(`<button class="ezroadsmod-reset-button">Reset All Options</button>`);
       resetButton.on('click', function () {
-        if (
-          confirm(
-            'Are you sure you want to reset all options to default values? It will reload the webpage!'
-          )
-        ) {
+        if (confirm('Are you sure you want to reset all options to default values? It will reload the webpage!')) {
           resetOptions();
         }
       });
       scriptContentPane.append(resetButton);
+
+      // --- Export/Import Config UI ---
+      const exportImportSection = $(
+        `<div class="ezroadsmod-section" style="margin-top:10px;">
+          <button id="ezroadsmod-export-btn" style="margin-right:8px;">Export Lock/Speed Config</button>
+          <button id="ezroadsmod-import-btn">Import Lock/Speed Config</button>
+          <input id="ezroadsmod-import-input" type="text" placeholder="Paste config here" style="width:60%;margin-left:8px;">
+        </div>`
+      );
+      scriptContentPane.append(exportImportSection);
+
+      // Export logic
+      $(document).on('click', '#ezroadsmod-export-btn', function () {
+        const options = getOptions();
+        const exportData = {
+          locks: options.locks,
+          speeds: options.speeds,
+        };
+        const exportStr = JSON.stringify(exportData, null, 2);
+        // Copy to clipboard
+        navigator.clipboard.writeText(exportStr).then(
+          () => {
+            if (WazeWrap?.Alerts) {
+              WazeWrap.Alerts.success('EZRoads Mod', 'Lock/Speed config copied to clipboard!', false, false, 2000);
+            } else {
+              alert('Lock/Speed config copied to clipboard!');
+            }
+          },
+          () => {
+            alert('Failed to copy config to clipboard.');
+          }
+        );
+      });
+
+      // Import logic
+      $(document).on('click', '#ezroadsmod-import-btn', function () {
+        const importStr = $('#ezroadsmod-import-input').val();
+        if (!importStr) {
+          alert('Please paste a config string to import.');
+          return;
+        }
+        let importData;
+        try {
+          importData = JSON.parse(importStr);
+        } catch (e) {
+          alert('Invalid config string!');
+          return;
+        }
+        if (importData.locks && importData.speeds) {
+          const options = getOptions();
+          options.locks = importData.locks;
+          options.speeds = importData.speeds;
+          saveOptions(options);
+          // Update in-memory localOptions and UI
+          localOptions.locks = importData.locks;
+          localOptions.speeds = importData.speeds;
+          // Update lock dropdowns
+          $('.road-lock-level').each(function () {
+            const roadId = $(this).data('road-id');
+            const lockSetting = localOptions.locks.find((l) => l.id == roadId);
+            if (lockSetting) $(this).val(lockSetting.lock);
+          });
+          // Update speed inputs
+          $('.road-speed').each(function () {
+            const roadId = $(this).data('road-id');
+            const speedSetting = localOptions.speeds.find((s) => s.id == roadId);
+            if (speedSetting) $(this).val(speedSetting.speed);
+          });
+          if (WazeWrap?.Alerts) {
+            WazeWrap.Alerts.success('EZRoads Mod', 'Config imported and applied!', false, false, 2000);
+          } else {
+            alert('Config imported and applied!');
+          }
+        } else {
+          alert('Config missing lock/speed data!');
+        }
+      });
     });
   };
   function scriptupdatemonitor() {
     if (WazeWrap?.Ready) {
       bootstrap({ scriptUpdateMonitor: { downloadUrl } });
-      WazeWrap.Interface.ShowScriptUpdate(
-        scriptName,
-        scriptVersion,
-        updateMessage,
-        downloadUrl,
-        forumURL
-      );
+      WazeWrap.Interface.ShowScriptUpdate(scriptName, scriptVersion, updateMessage, downloadUrl, forumURL);
     } else {
       setTimeout(scriptupdatemonitor, 250);
     }
@@ -1400,7 +1403,24 @@
 Change Log
 
 Version
-2.5.8 - 2025-06-13
+2.5.8 - 2025-06-21</b><br>
+- When "Set Street Name to None" is checked, the primary street is set to none and all alternate street names are removed.<br>
+- When "Set city as none" is checked, all primary and alternate city names are set to none (empty city).<br>
+- "Set street to none" now only handles the street name.<br>
+- Added option for setting city to none.<br>
+- Lock and speed settings can be exported or imported.<br>
+- In case of shortcut key conflict, the shortcut key becomes null.<br>
+- Default shortcut key is now "G".<br>
+- Minor code cleanup.<br>
+- Other behaviors remain unchanged.<br>
+2.5.7.4 - 2025-06-15
+        - Set street to none only handles street name now.
+        - Added option for setting up city to none.
+        - The lock and speed setting can be exported or imported.
+        - Incase of the shortcutkey conflict, the shortcut key becomes null.
+        - Default shortcut key is now "G".
+        - Minor code cleanup.
+2.5.7 - 2025-06-13
         - Fixed: Autosave now works when "Copy Connected Segment Attribute" is enabled.
         - When both "Autosave on Action" and "Copy Connected Segment Attribute" are checked, pressing the quick update button or shortcut will copy attributes and then autosave.
         - All other options continue to function as before.
