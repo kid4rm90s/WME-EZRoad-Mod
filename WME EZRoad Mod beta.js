@@ -33,7 +33,7 @@
 - Other behaviors remain unchanged.<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
-  const downloadUrl = 'https://raw.githubusercontent.com/kid4rm90s/WME-EZRoad-Mod/main/WME%20EZRoad%20Mod%20beta.js';
+  const downloadUrl = 'https://raw.githubusercontent.com/kid4rm90s/WME-EZRoad-Mod/main/WME%20EZRoad%20Mod%20beta.user.js';
   const forumURL = 'https://greasyfork.org/scripts/528552-wme-ezroad-Mod-Beta/feedback';
   let wmeSDK;
 
