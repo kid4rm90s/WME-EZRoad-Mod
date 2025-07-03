@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.5.8.1
+// @version      2.5.9
 // @description  Easily update roads
 // @author       https://github.com/michaelrosstarr, https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -26,16 +26,14 @@
 (function main() {
   'use strict';
   const updateMessage = `
-<b>2.5.8.1 - 2025-06-21</b><br>
-- When "Set Street Name to None" is checked, the primary street is set to none and all alternate street names are removed.<br>
-- When "Set city as none" is checked, all primary and alternate city names are set to none (empty city).<br>
-- "Set street to none" now only handles the street name.<br>
-- Added option for setting city to none.<br>
-- Lock and speed settings can be exported or imported.<br>
-- In case of shortcut key conflict, the shortcut key becomes null.<br>
-- Default shortcut key is now "G".<br>
-- Minor code cleanup.<br>
-- Other behaviors remain unchanged.<br>`;
+<b>2.5.9 - 2025-06-23</b><br>
+- Added a confirmation popup before changing between Street and Footpath/Pedestrianised Area/Stairway types.<br>
+- If you cancel, the segment will not be changed.<br>
+- Prevents accidental deletion and recreation of special segment types.<br>
+- Segment name copying now works for both one-way and two-way segments when converting to pedestrian types.<br>
+- When "Copy connected Segment Name" is on, the script copies the name from the connected segment before conversion and applies it after.<br>
+- Improved reliability for segment recreation and name copying.<br>
+- Includes all previous improvements and bug fixes.<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://greasyfork.org/scripts/528552-wme-ezroad-mod/code/wme-ezroad-mod.user.js';
@@ -393,6 +391,92 @@
     alertMessageParts.push(`City Name: <b>${cityName || 'None'}</b>`);
   }
 
+  // Helper: Returns true if the roadType is Footpath, Pedestrianised Area, or Stairway
+  function isPedestrianType(roadType) {
+    return [5, 10, 16].includes(roadType);
+  }
+
+  // Helper: If switching between pedestrian and non-pedestrian types, delete and recreate the segment
+  function recreateSegmentIfNeeded(segmentId, targetRoadType, copyConnectedNameData) {
+    const seg = wmeSDK.DataModel.Segments.getById({ segmentId });
+    if (!seg) return segmentId;
+
+    const currentIsPed = isPedestrianType(seg.roadType);
+    const targetIsPed = isPedestrianType(targetRoadType);
+
+    if (currentIsPed !== targetIsPed) {
+      // Show confirmation dialog before swapping
+      let swapMsg = currentIsPed
+        ? 'You are about to convert a Pedestrian type segment (Footpath, Pedestrianised Area, or Stairway) to a regular street type. This will delete and recreate the segment. Continue?'
+        : 'You are about to convert a regular street segment to a Pedestrian type (Footpath, Pedestrianised Area, or Stairway). This will delete and recreate the segment. Continue?';
+      if (!window.confirm(swapMsg)) {
+        return null; // Cancel operation
+      }
+      // Save geometry and address
+      const geometry = seg.geometry;
+      const oldPrimaryStreetId = seg.primaryStreetId;
+      const oldAltStreetIds = seg.alternateStreetIds;
+
+      try {
+        wmeSDK.DataModel.Segments.deleteSegment({ segmentId });
+      } catch (ex) {
+        if (ex instanceof wmeSDK.Errors.InvalidStateError) {
+          if (WazeWrap?.Alerts) {
+            WazeWrap.Alerts.error('EZRoads Mod Beta', 'Segment could not be deleted. Please check for restrictions or junctions.');
+          }
+          return null;
+        }
+      }
+
+      // Create new segment
+      const newSegmentId = wmeSDK.DataModel.Segments.addSegment({ geometry, roadType: targetRoadType });
+
+      // Ensure primaryStreetId is valid (not null or undefined)
+      let validPrimaryStreetId = oldPrimaryStreetId;
+      if (!validPrimaryStreetId) {
+        // Use a blank street in the current city
+        let segCityId = getTopCity()?.id;
+        if (!segCityId) {
+          // fallback to country if city is not available
+          segCityId = getCurrentCountry()?.id;
+        }
+        let blankStreet = wmeSDK.DataModel.Streets.getStreet({
+          cityId: segCityId,
+          streetName: '',
+        });
+        if (!blankStreet) {
+          blankStreet = wmeSDK.DataModel.Streets.addStreet({
+            streetName: '',
+            cityId: segCityId,
+          });
+        }
+        validPrimaryStreetId = blankStreet.id;
+      }
+
+      // Restore address with valid primaryStreetId
+      wmeSDK.DataModel.Segments.updateAddress({
+        segmentId: newSegmentId,
+        primaryStreetId: validPrimaryStreetId,
+        alternateStreetIds: oldAltStreetIds,
+      });
+
+      // If we have connected segment name data to copy, apply it now
+      if (copyConnectedNameData && copyConnectedNameData.primaryStreetId) {
+        wmeSDK.DataModel.Segments.updateAddress({
+          segmentId: newSegmentId,
+          primaryStreetId: copyConnectedNameData.primaryStreetId,
+          alternateStreetIds: copyConnectedNameData.alternateStreetIds || [],
+        });
+      }
+
+      // Reselect new segment
+      wmeSDK.Editing.setSelection({ selection: { ids: [newSegmentId], objectType: 'segment' } });
+
+      return newSegmentId;
+    }
+    return segmentId;
+  }
+
   const handleUpdate = () => {
     const selection = wmeSDK.Editing.getSelection();
 
@@ -506,7 +590,42 @@
       return;
     }
 
-    selection.ids.forEach((id) => {
+    selection.ids.forEach((origId, idx) => {
+      let id = origId;
+      let copyConnectedNameData = null;
+      // --- Pedestrian type switching logic ---
+      if (options.roadType) {
+        // If copySegmentName is enabled and switching Street → Pedestrian, prefetch connected segment name
+        const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+        const currentIsPed = isPedestrianType(seg.roadType);
+        const targetIsPed = isPedestrianType(options.roadType);
+        if (!currentIsPed && targetIsPed && options.copySegmentName) {
+          // Find connected segment and store its name info
+          const fromNode = seg.fromNodeId;
+          const toNode = seg.toNodeId;
+          let connectedSegId = null;
+          const allSegs = wmeSDK.DataModel.Segments.getAll();
+          for (let s of allSegs) {
+            if (s.id !== id && (s.fromNodeId === fromNode || s.toNodeId === fromNode || s.fromNodeId === toNode || s.toNodeId === toNode)) {
+              connectedSegId = s.id;
+              break;
+            }
+          }
+          if (connectedSegId) {
+            const connectedSeg = wmeSDK.DataModel.Segments.getById({ segmentId: connectedSegId });
+            copyConnectedNameData = {
+              primaryStreetId: connectedSeg.primaryStreetId,
+              alternateStreetIds: connectedSeg.alternateStreetIds || [],
+            };
+          }
+        }
+        const newId = recreateSegmentIfNeeded(id, options.roadType, copyConnectedNameData);
+        if (!newId) return; // If failed, skip further updates
+        if (newId !== id) {
+          id = newId; // Use the new segment ID for further updates
+        }
+      }
+
       // Road Type
       updatePromises.push(
         delayedUpdate(() => {
@@ -775,8 +894,47 @@
       // Updated unpaved handler with SegmentFlagAttributes and fallback
       updatePromises.push(
         delayedUpdate(() => {
-          if (options.unpaved) {
-            const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+          const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+          const isPedestrian = isPedestrianType(seg.roadType);
+          if (isPedestrian) {
+            // Always set as paved for pedestrian types, regardless of checkbox
+            const isUnpaved = seg.flagAttributes && seg.flagAttributes.unpaved === true;
+            let pavedToggled = false;
+            if (isUnpaved) {
+              // Click to set as paved
+              const unpavedIcon = openPanel.querySelector('.w-icon-unpaved-fill');
+              if (unpavedIcon) {
+                const unpavedChip = unpavedIcon.closest('wz-checkable-chip');
+                if (unpavedChip) {
+                  unpavedChip.click();
+                  log('Clicked unpaved chip (set to paved for pedestrian type)');
+                  pavedToggled = true;
+                }
+              }
+              if (!pavedToggled) {
+                try {
+                  const wzCheckbox = openPanel.querySelector('wz-checkbox[name="unpaved"]');
+                  if (wzCheckbox) {
+                    const hiddenInput = wzCheckbox.querySelector('input[type="checkbox"][name="unpaved"]');
+                    if (hiddenInput && hiddenInput.checked) {
+                      hiddenInput.click();
+                      log('Clicked unpaved checkbox (set to paved, non-compact mode, pedestrian type)');
+                      pavedToggled = true;
+                    }
+                  }
+                } catch (e) {
+                  log('Fallback to non-compact mode paved toggle method failed: ' + e);
+                }
+              }
+              if (pavedToggled) {
+                alertMessageParts.push(`Paved Status: <b>Paved (pedestrian type)</b>`);
+                updatedPaved = true;
+              }
+            } else {
+              alertMessageParts.push(`Paved Status: <b>Paved (pedestrian type, already set)</b>`);
+              updatedPaved = true;
+            }
+          } else if (options.unpaved) {
             const isUnpaved = seg.flagAttributes && seg.flagAttributes.unpaved === true;
             let unpavedToggled = false;
 
@@ -817,8 +975,6 @@
               updatedPaved = true;
             }
           } else {
-            // If option is not checked and segment is unpaved, set it as paved
-            const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
             const isUnpaved = seg.flagAttributes && seg.flagAttributes.unpaved === true;
             let pavedToggled = false;
 
@@ -1404,6 +1560,14 @@
 Change Log
 
 Version
+<b>2.5.9 - 2025-06-23</b><br>
+- Added a confirmation popup before changing between Street and Footpath/Pedestrianised Area/Stairway types.<br>
+- If you cancel, the segment will not be changed.<br>
+- Prevents accidental deletion and recreation of special segment types.<br>
+- Segment name copying now works for both one-way and two-way segments when converting to pedestrian types.<br>
+- When "Copy connected Segment Name" is on, the script copies the name from the connected segment before conversion and applies it after.<br>
+- Improved reliability for segment recreation and name copying.<br>
+- Includes all previous improvements and bug fixes.<br>
 2.5.8 - 2025-06-21</b><br>
 - When "Set Street Name to None" is checked, the primary street is set to none and all alternate street names are removed.<br>
 - When "Set city as none" is checked, all primary and alternate city names are set to none (empty city).<br>

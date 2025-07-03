@@ -573,7 +573,7 @@
       Promise.all(updatePromises).then(() => {
         if (alertMessageParts.length) {
           if (WazeWrap?.Alerts) {
-            WazeWrap.Alerts.info('EZRoads Mod Beta', alertMessageParts.join('<br>'), false, false, 7000);
+            WazeWrap.Alerts.info('EZRoads Mod Beta', alertMessageParts.join('<br>'), false, false, 5000);
           } else {
             alert('EZRoads Mod Beta: ' + alertMessageParts.join('\n'));
           }
