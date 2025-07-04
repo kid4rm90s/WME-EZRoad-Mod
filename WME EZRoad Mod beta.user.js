@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.5.9
+// @version      2.5.9.3
 // @description  Easily update roads
 // @author       https://github.com/michaelrosstarr, https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -27,13 +27,11 @@
 (function main() {
   'use strict';
   const updateMessage = `
-<b>2.5.9 - 2025-06-23</b><br>
-- Added a confirmation popup before changing between Street and Footpath/Pedestrianised Area/Stairway types.<br>
-- If you cancel, the segment will not be changed.<br>
-- Prevents accidental deletion and recreation of special segment types.<br>
-- Segment name copying now works for both one-way and two-way segments when converting to pedestrian types.<br>
-- When "Copy connected Segment Name" is on, the script copies the name from the connected segment before conversion and applies it after.<br>
-- Improved reliability for segment recreation and name copying.<br>
+<b>2.5.9.3 - 2025-07-04</b><br>
+- Updated logic for speed limit: will not update speed limit if set to 0 or -1.<br>
+<b>2.5.9.2 - 2025-07-03-01</b><br>
+- Improved logic for copying the first connected segment name and/or city.<br>
+- Now works reliably with the road type button in compact mode.<br>
 - Includes all previous improvements and bug fixes.<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
@@ -49,12 +47,12 @@
     { id: 5, name: 'Primary Street', value: 2, shortcutKey: 'S+5' },
     { id: 6, name: 'Street', value: 1, shortcutKey: 'S+6' },
     { id: 7, name: 'Narrow Street', value: 22, shortcutKey: 'S+7' },
-    { id: 8, name: 'Offroad', value: 8, shortcutKey: 'S+8' },
+    { id: 8, name: 'Off-road/ Not maintained', value: 8, shortcutKey: 'S+8' },
     { id: 9, name: 'Parking Road', value: 20, shortcutKey: 'S+9' },
     { id: 10, name: 'Private Road', value: 17, shortcutKey: 'S+0' },
     { id: 11, name: 'Ferry', value: 15, shortcutKey: 'A+1' },
-    { id: 12, name: 'Railroad', value: 18, shortcutKey: 'A+2' },
-    { id: 13, name: 'Runway/Taxiway', value: 19, shortcutKey: 'A+3' },
+    { id: 12, name: 'Railway', value: 18, shortcutKey: 'A+2' },
+    { id: 13, name: 'Runway', value: 19, shortcutKey: 'A+3' },
     { id: 14, name: 'Foothpath', value: 5, shortcutKey: 'A+4' },
     { id: 15, name: 'Pedestrianised Area', value: 10, shortcutKey: 'A+5' },
     { id: 16, name: 'Stairway', value: 16, shortcutKey: 'A+6' },
@@ -116,6 +114,40 @@
     return wmeSDK.DataModel.Cities.getAll();
   };
 
+  // --- NEW: Helper to get all connected segment IDs ---
+  function getConnectedSegmentIDs(segmentId) {
+    // Returns unique IDs of all segments connected to the given segment
+    const segs = [...wmeSDK.DataModel.Segments.getConnectedSegments({ segmentId, reverseDirection: false }), ...wmeSDK.DataModel.Segments.getConnectedSegments({ segmentId, reverseDirection: true })];
+    const ids = segs.map((segment) => segment.id);
+    // Remove duplicates
+    return [...new Set(ids)];
+  }
+
+  // --- NEW: Helper to get the first connected segment's address (recursively) ---
+  function getFirstConnectedSegmentAddress(segmentId) {
+    const nonMatches = [];
+    const segmentIDsToSearch = [segmentId];
+    const hasAddress = (id) => {
+      const addr = wmeSDK.DataModel.Segments.getAddress({ segmentId: id });
+      return addr && !addr.isEmpty;
+    };
+    while (segmentIDsToSearch.length > 0) {
+      const startSegmentID = segmentIDsToSearch.pop();
+      const connectedSegmentIDs = getConnectedSegmentIDs(startSegmentID);
+      const hasAddrSegmentId = connectedSegmentIDs.find(hasAddress);
+      if (hasAddrSegmentId) {
+        return wmeSDK.DataModel.Segments.getAddress({ segmentId: hasAddrSegmentId });
+      }
+      nonMatches.push(startSegmentID);
+      connectedSegmentIDs.forEach((segmentID) => {
+        if (!nonMatches.includes(segmentID) && !segmentIDsToSearch.includes(segmentID)) {
+          segmentIDsToSearch.push(segmentID);
+        }
+      });
+    }
+    return null;
+  }
+
   const saveOptions = (options) => {
     window.localStorage.setItem('WME_EZRoads_Mod_Beta_Options', JSON.stringify(options));
   };
@@ -170,7 +202,47 @@
       registerShortcut(options.shortcutKey || 'g');
     }
 
-    // Observe the edit panel for segment changes and add the quick update button
+    // --- ENHANCED: Add event listeners to each road-type chip for direct click handling ---
+    function addRoadTypeChipListeners() {
+      const chipSelect = document.querySelector('.road-type-chip-select');
+      if (!chipSelect) return;
+      const chips = chipSelect.querySelectorAll('wz-checkable-chip');
+      chips.forEach((chip) => {
+        if (!chip._ezroadmod_listener) {
+          chip._ezroadmod_listener = true;
+          chip.addEventListener('click', function () {
+            // Log every chip click for debugging
+            log('Chip clicked: value=' + chip.getAttribute('value') + ', checked=' + chip.getAttribute('checked'));
+            setTimeout(() => {
+              // Only act if this chip is now the selected one (checked="")
+              if (chip.getAttribute('checked') === '') {
+                const rtValue = parseInt(chip.getAttribute('value'), 10);
+                log('Detected chip selection, applying EZRoadMod logic for roadType value: ' + rtValue);
+                if (isNaN(rtValue)) return;
+                const options = getOptions();
+                options.roadType = rtValue;
+                saveOptions(options);
+                if (typeof updateRoadTypeRadios === 'function') {
+                  updateRoadTypeRadios(rtValue);
+                }
+                const selection = wmeSDK.Editing.getSelection();
+                if (selection && selection.objectType === 'segment') {
+                  wmeSDK.Editing.setSelection({ selection });
+                }
+                setTimeout(() => {
+                  log('Calling handleUpdate() after chip click for roadType value: ' + rtValue);
+                  handleUpdate();
+                }, 100);
+              }
+            }, 50);
+          });
+        }
+      });
+    }
+
+    // Call after panel is available and after any UI changes that might re-render the chips
+    setTimeout(addRoadTypeChipListeners, 1200);
+    // Also call after every edit panel mutation to re-attach listeners
     const roadObserver = new MutationObserver((mutations) => {
       mutations.forEach((mutation) => {
         for (let i = 0; i < mutation.addedNodes.length; i++) {
@@ -196,12 +268,13 @@
               } else {
                 log('This panel already has the button, skipping creation');
               }
+              // Always re-attach chip listeners after panel mutation
+              addRoadTypeChipListeners();
             }
           }
         }
       });
     });
-
     roadObserver.observe(document.getElementById('edit-panel'), {
       childList: true,
       subtree: true,
@@ -726,30 +799,22 @@
                 const speedValue = parseInt(speedSetting.speed, 10);
                 log('Speed value to set: ' + speedValue);
 
-                // Apply speed if it's a valid number (including 0)
-                if (!isNaN(speedValue) && speedValue >= 0) {
-                  log('Applying speed: ' + speedValue);
-                  const seg = wmeSDK.DataModel.Segments.getById({
+                // If speedValue is 0 or less, treat as unset (undefined)
+                const speedToSet = !isNaN(speedValue) && speedValue > 0 ? speedValue : undefined;
+                const seg = wmeSDK.DataModel.Segments.getById({
+                  segmentId: id,
+                });
+                if (seg.fwdSpeedLimit !== speedToSet || seg.revSpeedLimit !== speedToSet) {
+                  wmeSDK.DataModel.Segments.updateSegment({
                     segmentId: id,
+                    fwdSpeedLimit: speedToSet,
+                    revSpeedLimit: speedToSet,
                   });
-                  if (seg.fwdSpeedLimit !== speedValue || seg.revSpeedLimit !== speedValue) {
-                    wmeSDK.DataModel.Segments.updateSegment({
-                      segmentId: id,
-                      fwdSpeedLimit: speedValue,
-                      revSpeedLimit: speedValue,
-                    });
-                    alertMessageParts.push(`Speed Limit: <b>${speedValue}</b>`);
-                    updatedSpeedLimit = true;
-                  } else {
-                    log(`Segment ID: ${id} already has the target speed limit: ${speedValue}. Skipping update.`);
-                    alertMessageParts.push(`Speed Limit: <b>${speedValue} exists. Skipping update.</b>`);
-                    updatedSpeedLimit = true;
-                  }
-                  //alertMessageParts.push(`Speed Limit: <b>${speedValue}</b>`);
-                  //updatedSpeedLimit = true;
+                  alertMessageParts.push(`Speed Limit: <b>${speedToSet !== undefined ? speedToSet : 'unset'}</b>`);
+                  updatedSpeedLimit = true;
                 } else {
-                  log('Not applying speed - invalid value: ' + speedSetting.speed);
-                  alertMessageParts.push(`Speed Limit: <b>Invalid value ${speedValue}</b>`);
+                  log(`Segment ID: ${id} already has the target speed limit: ${speedToSet}. Skipping update.`);
+                  alertMessageParts.push(`Speed Limit: <b>${speedToSet !== undefined ? speedToSet : 'unset'} exists. Skipping update.</b>`);
                   updatedSpeedLimit = true;
                 }
               }
@@ -1408,11 +1473,11 @@
 
       // Header section
       const header = $(`<div class="ezroadsmodbeta-section">
-		<h2>EZRoads Mod Beta</h2>
-		<div>Current Version: <b>${scriptVersion}</b></div>
-		<div>Update Keybind: <kbd>G</kbd></div>
-		<div style="font-size: 0.8em;">You can change it in WME keyboard setting!</div>
-		</div>`);
+    <h2>EZRoads Mod Beta</h2>
+    <div>Current Version: <b>${scriptVersion}</b></div>
+    <div>Update Keybind: <kbd>G</kbd></div>
+    <div style="font-size: 0.8em;">You can change it in WME keyboard setting!</div>
+    </div>`);
       scriptContentPane.append(header);
 
       // Road type and options header
@@ -1563,6 +1628,11 @@
 Change Log
 
 Version
+2.5.9.3 - 2025-07-04
+- Updated logic for speed limit. Now it will not update speed limit set to 0 or -1.
+2.5.9.2 - 2025-07-03-01
+- improved logic for copy first connected segment name and/or city.
+- Able to work with road type button in compact mode.
 <b>2.5.9 - 2025-06-23</b><br>
 - Added a confirmation popup before changing between Street and Footpath/Pedestrianised Area/Stairway types.<br>
 - If you cancel, the segment will not be changed.<br>
@@ -1577,6 +1647,7 @@ Version
         - Other behaviors remain unchanged.
 2.5.7.4-beta - 2025-06-15
         - Set street to none only handles street name now.
+       
         - Added option for setting up city to none.
         - The lock and speed setting can be exported or imported.
         - Incase of the shortcutkey conflict, the shortcut key becomes null.
@@ -1598,8 +1669,9 @@ Version
 2.5.5 - 2025-06-08.01
         - Minor bugfixes
 2.5.4 - 2025-06-07.01
-		    - Road Types can be selected using keyboard shortcuts.
+        - Road Types can be selected using keyboard shortcuts.
         - Fully migrated to WME SDK.
+
 2.5.3 - 2025-05-31
         - Improved shortcut keybind logic and UI.
         - The unpaved attribute is now copied in Non-compact mode.
@@ -1639,6 +1711,6 @@ Version
        Added Support for HRCS
        Fixed -
         - Various other bugs        
-		
+    
 */
 })();
