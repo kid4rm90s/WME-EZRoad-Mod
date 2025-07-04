@@ -3,7 +3,7 @@
 // @namespace    https://greasyfork.org/users/1087400
 // @version      2.5.9.3
 // @description  Easily update roads
-// @author       https://github.com/michaelrosstarr, https://greasyfork.org/en/users/1087400-kid4rm90s
+// @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
 // @exclude      https://www.waze.com/user/*editor/*
 // @exclude      https://www.waze.com/*/user/*editor/*
@@ -11,7 +11,7 @@
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_info
-// @grant 		   unsafeWindow
+// @grant 		 unsafeWindow
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=waze.com
 // @license      GNU GPL(v3)
 // @connect      githubusercontent.com
@@ -47,7 +47,7 @@
     { id: 5, name: 'Primary Street', value: 2, shortcutKey: 'S+5' },
     { id: 6, name: 'Street', value: 1, shortcutKey: 'S+6' },
     { id: 7, name: 'Narrow Street', value: 22, shortcutKey: 'S+7' },
-    { id: 8, name: 'Off-road/ Not maintained', value: 8, shortcutKey: 'S+8' },
+    { id: 8, name: 'Offroad', value: 8, shortcutKey: 'S+8' },
     { id: 9, name: 'Parking Road', value: 20, shortcutKey: 'S+9' },
     { id: 10, name: 'Private Road', value: 17, shortcutKey: 'S+0' },
     { id: 11, name: 'Ferry', value: 15, shortcutKey: 'A+1' },
@@ -203,6 +203,8 @@
     }
 
     // --- ENHANCED: Add event listeners to each road-type chip for direct click handling ---
+    // Global flag to suppress attribute copy when chip is clicked
+    window.suppressCopySegmentAttributes = false;
     function addRoadTypeChipListeners() {
       const chipSelect = document.querySelector('.road-type-chip-select');
       if (!chipSelect) return;
@@ -231,7 +233,10 @@
                 }
                 setTimeout(() => {
                   log('Calling handleUpdate() after chip click for roadType value: ' + rtValue);
-                  handleUpdate();
+                  window.suppressCopySegmentAttributes = true;
+                  Promise.resolve(handleUpdate()).finally(() => {
+                    window.suppressCopySegmentAttributes = false;
+                  });
                 }, 100);
               }
             }, 50);
@@ -243,6 +248,7 @@
     // Call after panel is available and after any UI changes that might re-render the chips
     setTimeout(addRoadTypeChipListeners, 1200);
     // Also call after every edit panel mutation to re-attach listeners
+    // Observe the edit panel for segment changes and add the quick update button
     const roadObserver = new MutationObserver((mutations) => {
       mutations.forEach((mutation) => {
         for (let i = 0; i < mutation.addedNodes.length; i++) {
@@ -568,73 +574,84 @@
     const updatePromises = [];
 
     // If copySegmentAttributes is checked, copy all attributes from a connected segment
-    if (options.copySegmentAttributes) {
+    if (options.copySegmentAttributes && !window.suppressCopySegmentAttributes) {
       selection.ids.forEach((id) => {
         updatePromises.push(
           delayedUpdate(() => {
             try {
               const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
               const fromNode = seg.fromNodeId;
-              const toNode = seg.toNodeId;
-              let connectedSegId = null;
-              const allSegs = wmeSDK.DataModel.Segments.getAll();
-              for (let s of allSegs) {
-                if (s.id !== id && (s.fromNodeId === fromNode || s.toNodeId === fromNode || s.fromNodeId === toNode || s.toNodeId === toNode)) {
-                  connectedSegId = s.id;
-                  break;
-                }
+              const connectedSegIds = getConnectedSegmentIDs(id);
+              // Gather all segments connected to fromNode (excluding self)
+              const fromNodeSegs = connectedSegIds.map((sid) => wmeSDK.DataModel.Segments.getById({ segmentId: sid })).filter((s) => s && (s.fromNodeId === fromNode || s.toNodeId === fromNode) && s.id !== id);
+              // Prefer the first fromNode segment with a valid primary street name (and optionally other attributes)
+              let preferredSeg = fromNodeSegs.find((s) => {
+                if (!s) return false;
+                const street = wmeSDK.DataModel.Streets.getById({ streetId: s.primaryStreetId });
+                return street && street.name;
+              });
+              let segsToTry = [];
+              if (preferredSeg) {
+                segsToTry.push(preferredSeg.id);
+                // Add the rest, excluding preferredSeg.id
+                segsToTry = segsToTry.concat(connectedSegIds.filter((cid) => cid !== preferredSeg.id));
+              } else {
+                segsToTry = connectedSegIds;
               }
-              if (connectedSegId) {
-                const connectedSeg = wmeSDK.DataModel.Segments.getById({
-                  segmentId: connectedSegId,
-                });
-                // Copy speed limits
-                wmeSDK.DataModel.Segments.updateSegment({
-                  segmentId: id,
-                  fwdSpeedLimit: connectedSeg.fwdSpeedLimit,
-                  revSpeedLimit: connectedSeg.revSpeedLimit,
-                  roadType: connectedSeg.roadType,
-                  lockRank: connectedSeg.lockRank,
-                });
-                // Copy address (primary, alt, city)
-                wmeSDK.DataModel.Segments.updateAddress({
-                  segmentId: id,
-                  primaryStreetId: connectedSeg.primaryStreetId,
-                  alternateStreetIds: connectedSeg.alternateStreetIds || [],
-                });
-                // Copy paved/unpaved
-                const isUnpaved = connectedSeg.flagAttributes && connectedSeg.flagAttributes.unpaved === true;
-                let toggled = false;
-                const segPanel = openPanel;
-                if (segPanel) {
-                  const unpavedIcon = segPanel.querySelector('.w-icon-unpaved-fill');
-                  if (unpavedIcon) {
-                    const unpavedChip = unpavedIcon.closest('wz-checkable-chip');
-                    if (unpavedChip) {
-                      if (isUnpaved !== (seg.flagAttributes && seg.flagAttributes.unpaved === true)) {
-                        unpavedChip.click();
-                        toggled = true;
-                      }
-                    }
-                  }
-                  // Fallback for non-compact mode if compact mode failed
-                  if (!toggled) {
-                    try {
-                      const wzCheckbox = segPanel.querySelector('wz-checkbox[name="unpaved"]');
-                      if (wzCheckbox) {
-                        const hiddenInput = wzCheckbox.querySelector('input[type="checkbox"][name="unpaved"]');
-                        if (hiddenInput && hiddenInput.checked !== isUnpaved) {
-                          hiddenInput.click();
+              let found = false;
+              for (let connectedSegId of segsToTry) {
+                const connectedSeg = wmeSDK.DataModel.Segments.getById({ segmentId: connectedSegId });
+                if (!connectedSeg) continue;
+                const street = wmeSDK.DataModel.Streets.getById({ streetId: connectedSeg.primaryStreetId });
+                if (street && street.name) {
+                  wmeSDK.DataModel.Segments.updateSegment({
+                    segmentId: id,
+                    fwdSpeedLimit: connectedSeg.fwdSpeedLimit,
+                    revSpeedLimit: connectedSeg.revSpeedLimit,
+                    roadType: connectedSeg.roadType,
+                    lockRank: connectedSeg.lockRank,
+                  });
+                  wmeSDK.DataModel.Segments.updateAddress({
+                    segmentId: id,
+                    primaryStreetId: connectedSeg.primaryStreetId,
+                    alternateStreetIds: connectedSeg.alternateStreetIds || [],
+                  });
+                  // Copy paved/unpaved
+                  const isUnpaved = connectedSeg.flagAttributes && connectedSeg.flagAttributes.unpaved === true;
+                  let toggled = false;
+                  const segPanel = openPanel;
+                  if (segPanel) {
+                    const unpavedIcon = segPanel.querySelector('.w-icon-unpaved-fill');
+                    if (unpavedIcon) {
+                      const unpavedChip = unpavedIcon.closest('wz-checkable-chip');
+                      if (unpavedChip) {
+                        if (isUnpaved !== (seg.flagAttributes && seg.flagAttributes.unpaved === true)) {
+                          unpavedChip.click();
                           toggled = true;
                         }
                       }
-                    } catch (e) {
-                      log('Fallback to non-compact mode unpaved toggle method failed: ' + e);
+                    }
+                    if (!toggled) {
+                      try {
+                        const wzCheckbox = segPanel.querySelector('wz-checkbox[name="unpaved"]');
+                        if (wzCheckbox) {
+                          const hiddenInput = wzCheckbox.querySelector('input[type="checkbox"][name="unpaved"]');
+                          if (hiddenInput && hiddenInput.checked !== isUnpaved) {
+                            hiddenInput.click();
+                            toggled = true;
+                          }
+                        }
+                      } catch (e) {
+                        log('Fallback to non-compact mode unpaved toggle method failed: ' + e);
+                      }
                     }
                   }
+                  alertMessageParts.push(`Copied all attributes from connected segment.`);
+                  found = true;
+                  break;
                 }
-                alertMessageParts.push(`Copied all attributes from connected segment.`);
-              } else {
+              }
+              if (!found) {
                 alertMessageParts.push(`No connected segment found to copy attributes.`);
               }
             } catch (error) {
@@ -1091,70 +1108,84 @@
             try {
               const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
               const fromNode = seg.fromNodeId;
-              const toNode = seg.toNodeId;
-              let connectedSegId = null;
-              const allSegs = wmeSDK.DataModel.Segments.getAll();
-              for (let s of allSegs) {
-                if (s.id !== id && (s.fromNodeId === fromNode || s.toNodeId === fromNode || s.fromNodeId === toNode || s.toNodeId === toNode)) {
-                  connectedSegId = s.id;
-                  break;
-                }
-              }
-              if (connectedSegId) {
-                const connectedSeg = wmeSDK.DataModel.Segments.getById({
-                  segmentId: connectedSegId,
+              const connectedSegIds = getConnectedSegmentIDs(id);
+              // Gather all segments connected to fromNode (excluding self)
+              const fromNodeSegs = connectedSegIds.map((sid) => wmeSDK.DataModel.Segments.getById({ segmentId: sid })).filter((s) => s && (s.fromNodeId === fromNode || s.toNodeId === fromNode) && s.id !== id);
+              // Prefer the first fromNode segment with a name/city/alias
+              let preferredSeg = fromNodeSegs.find((s) => {
+                if (!s) return false;
+                const street = wmeSDK.DataModel.Streets.getById({ streetId: s.primaryStreetId });
+                const altStreetIds = s.alternateStreetIds || [];
+                let altNames = [];
+                altStreetIds.forEach((altId) => {
+                  const altStreet = wmeSDK.DataModel.Streets.getById({ streetId: altId });
+                  if (altStreet && altStreet.name) altNames.push(altStreet.name);
                 });
+                return street && (street.name || street.englishName || street.signText || altNames.length > 0);
+              });
+              let segsToTry = [];
+              if (preferredSeg) {
+                segsToTry.push(preferredSeg.id);
+                // Add the rest, excluding preferredSeg.id
+                segsToTry = segsToTry.concat(connectedSegIds.filter((cid) => cid !== preferredSeg.id));
+              } else {
+                segsToTry = connectedSegIds;
+              }
+              let found = false;
+              for (let connectedSegId of segsToTry) {
+                const connectedSeg = wmeSDK.DataModel.Segments.getById({ segmentId: connectedSegId });
+                if (!connectedSeg) continue;
                 const streetId = connectedSeg.primaryStreetId;
                 const altStreetIds = connectedSeg.alternateStreetIds || [];
                 let street = wmeSDK.DataModel.Streets.getById({ streetId });
                 // Get alternate street names
                 let altNames = [];
-                altStreetIds.forEach((streetId) => {
-                  const altStreet = wmeSDK.DataModel.Streets.getById({
-                    streetId,
-                  });
+                altStreetIds.forEach((altId) => {
+                  const altStreet = wmeSDK.DataModel.Streets.getById({ streetId: altId });
                   if (altStreet && altStreet.name) altNames.push(altStreet.name);
                 });
-                // --- FIX: If setStreetCity is true, use empty city for the street name ---
-                if (options.setStreetCity && street) {
-                  const emptyCity = wmeSDK.DataModel.Cities.getAll().find((city) => city.isEmpty) || wmeSDK.DataModel.Cities.addCity({ cityName: '' });
-                  // Try to find or create a street with the same name but in the empty city
-                  let noneStreet = wmeSDK.DataModel.Streets.getStreet({
-                    cityId: emptyCity.id,
-                    streetName: street.name || '',
-                  });
-                  if (!noneStreet) {
-                    noneStreet = wmeSDK.DataModel.Streets.addStreet({
-                      streetName: street.name || '',
+                // If any connected segment has a name or alias, use it
+                if (street && (street.name || street.englishName || street.signText || altNames.length > 0)) {
+                  if (options.setStreetCity && street) {
+                    const emptyCity = wmeSDK.DataModel.Cities.getAll().find((city) => city.isEmpty) || wmeSDK.DataModel.Cities.addCity({ cityName: '' });
+                    // Try to find or create a street with the same name but in the empty city
+                    let noneStreet = wmeSDK.DataModel.Streets.getStreet({
                       cityId: emptyCity.id,
+                      streetName: street.name || '',
                     });
+                    if (!noneStreet) {
+                      noneStreet = wmeSDK.DataModel.Streets.addStreet({
+                        streetName: street.name || '',
+                        cityId: emptyCity.id,
+                      });
+                    }
+                    wmeSDK.DataModel.Segments.updateAddress({
+                      segmentId: id,
+                      primaryStreetId: noneStreet.id,
+                      alternateStreetIds: altStreetIds,
+                    });
+                    let aliasMsg = altNames.length ? ` (Alternatives: ${altNames.join(', ')})` : '';
+                    alertMessageParts.push(`Copied Name: <b>${street.name || ''}</b>${aliasMsg}`);
+                    updatedSegmentName = true;
+                    pushCityNameAlert(emptyCity.id, alertMessageParts);
+                    updatedCityName = true;
+                  } else {
+                    wmeSDK.DataModel.Segments.updateAddress({
+                      segmentId: id,
+                      primaryStreetId: streetId,
+                      alternateStreetIds: altStreetIds,
+                    });
+                    let aliasMsg = altNames.length ? ` (Alternatives: ${altNames.join(', ')})` : '';
+                    alertMessageParts.push(`Copied Name: <b>${street.name || ''}</b>${aliasMsg}`);
+                    updatedSegmentName = true;
+                    pushCityNameAlert(street.cityId, alertMessageParts);
+                    updatedCityName = true;
                   }
-                  wmeSDK.DataModel.Segments.updateAddress({
-                    segmentId: id,
-                    primaryStreetId: noneStreet.id,
-                    alternateStreetIds: altStreetIds,
-                  });
-                  let aliasMsg = altNames.length ? ` (Alternatives: ${altNames.join(', ')})` : '';
-                  alertMessageParts.push(`Copied Name: <b>${street.name || ''}</b>${aliasMsg}`);
-                  updatedSegmentName = true;
-                  pushCityNameAlert(emptyCity.id, alertMessageParts);
-                  updatedCityName = true;
-                } else if (street && (street.name || street.englishName || street.signText)) {
-                  wmeSDK.DataModel.Segments.updateAddress({
-                    segmentId: id,
-                    primaryStreetId: streetId,
-                    alternateStreetIds: altStreetIds,
-                  });
-                  let aliasMsg = altNames.length ? ` (Alternatives: ${altNames.join(', ')})` : '';
-                  alertMessageParts.push(`Copied Name: <b>${street.name || ''}</b>${aliasMsg}`);
-                  updatedSegmentName = true;
-                  pushCityNameAlert(street.cityId, alertMessageParts);
-                  updatedCityName = true;
-                } else {
-                  alertMessageParts.push(`Copied Name: <b>None (connected segment has no name)</b>`);
-                  updatedSegmentName = true;
+                  found = true;
+                  break;
                 }
-              } else {
+              }
+              if (!found) {
                 alertMessageParts.push(`Copied Name: <b>None (no connected segment found)</b>`);
                 updatedSegmentName = true;
               }
