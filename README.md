@@ -15,8 +15,10 @@ WME EZRoad Mod is a powerful enhancement for the Waze Map Editor, designed to st
 - **Street Name Tools**: Set the street to "None" or copy the name (including alternate names) from a connected segment.
 - **Copy Connected Segment Attributes**: Optionally copy all major attributes (speed, name, city, paved/unpaved, lock) from a connected segment.
 - **Autosave**: Optionally save changes automatically after updates.
-- **Highly Customizable**: Configure default options for each road type, including lock level and speed.
-- **User-Friendly Interface**: All options are accessible from a dedicated sidebar tab in WME, including shortcut key customization.
+- **Highly Customizable**: Configure default options for each road type, including lock level and speed. Export/import lock and speed settings.
+- **User-Friendly Interface**: All options are accessible from a dedicated sidebar tab in WME, including shortcut key customization and tooltips for each option.
+- **Smart Pedestrian Handling**: When switching between pedestrian and non-pedestrian road types, the script will prompt for confirmation and safely recreate the segment if needed, preserving names where possible.
+- ***Use with native Roadtype button***: All the roadtypes' properties also can be easily updated directly based on checkboxes selected by clicking at roadtypes in 'Segment Edit Panel' in compact mode.
 
 ---
 
@@ -24,7 +26,7 @@ WME EZRoad Mod is a powerful enhancement for the Waze Map Editor, designed to st
 
 1. Open Waze Map Editor and select one or more segments.
 2. Open the **EZRoads Mod** tab in the sidebar to configure your settings.
-3. Click the **Quick Update Segment** button or press your shortcut key (default: <kbd>A+g</kbd>) to apply your changes.
+3. Click the **Quick Update Segment** button or press your shortcut key (default: <kbd>g</kbd>) to apply your changes.
 4. For each Road type, the keyboard shortcuts are as below:  
    a. Motorway —------------shortcut key: <kbd>Shift+1</kbd>  
    b. Ramp —----------------shortcut key: <kbd>Shift+2</kbd>  
@@ -38,8 +40,8 @@ WME EZRoad Mod is a powerful enhancement for the Waze Map Editor, designed to st
    j. Private Road —--------shortcut key: <kbd>Shift+0</kbd>  
    k. Ferry —---------------shortcut key: <kbd>Alt+1</kbd>  
    l. Railroad —------------shortcut key: <kbd>Alt+2</kbd>  
-   m. Runway/Taxiway —------shortcut key: <kbd>Alt+3</kbd>  
-   n. Foothpath —-----------shortcut key: <kbd>Alt+4</kbd>  
+   m. Runway ---------------shortcut key: <kbd>Alt+3</kbd>  
+   n. Footpath —------------shortcut key: <kbd>Alt+4</kbd>  
    o. Pedestrianised Area —-shortcut key: <kbd>Alt+5</kbd>  
    p. Stairway —------------shortcut key: <kbd>Alt+6</kbd>
 
@@ -54,3 +56,10 @@ See the script comments for a full version history.
 ### Support
 
 For questions, suggestions, or bug reports, please contact the authors via [Greasy Fork](https://greasyfork.org/scripts/528552-wme-ezroad-mod/feedback).
+
+### Note:
+
+- When "Copy Connected Segment Attribute" is enabled, all other options (except Autosave) are automatically unchecked for safety.
+- When switching between pedestrian and non-pedestrian types, the script will prompt for confirmation and handle segment recreation as needed.
+- Speed limits set to 0 or -1 will not be applied (treated as unset).
+- Export/import your lock and speed settings for easy backup or sharing.
