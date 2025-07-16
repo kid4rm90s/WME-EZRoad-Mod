@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.5.9.3
+// @version      2.5.9.4
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -25,14 +25,10 @@
 /*Script modified from WME EZRoad (https://greasyfork.org/en/scripts/518381-wme-ezsegments) original author: Michaelrosstarr and thanks to him*/
 
 (function main() {
-  'use strict';
+  ('use strict');
   const updateMessage = `
-<b>2.5.9.3 - 2025-07-04</b><br>
-- Updated logic for speed limit: will not update speed limit if set to 0 or -1.<br>
-<b>2.5.9.2 - 2025-07-03-01</b><br>
-- Improved logic for copying the first connected segment name and/or city.<br>
-- Now works reliably with the road type button in compact mode.<br>
-- Includes all previous improvements and bug fixes.<br>`;
+<b>2.5.9.4 - 2025-07-15</b><br>
+- Bug fix: Enhanced "Copy Connected Segment Attribute" logic.<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://raw.githubusercontent.com/kid4rm90s/WME-EZRoad-Mod/main/WME%20EZRoad%20Mod%20beta.user.js';
@@ -651,8 +647,68 @@
                   break;
                 }
               }
+              // If no connected segment with valid street name was found, fallback to any connected segment (like the other logic)
               if (!found) {
-                alertMessageParts.push(`No connected segment found to copy attributes.`);
+                let fallbackSegId = null;
+                const segObj = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+                const fromNode = segObj.fromNodeId;
+                const toNode = segObj.toNodeId;
+                const allSegs = wmeSDK.DataModel.Segments.getAll();
+                for (let s of allSegs) {
+                  if (s.id !== id && (s.fromNodeId === fromNode || s.toNodeId === fromNode || s.fromNodeId === toNode || s.toNodeId === toNode)) {
+                    fallbackSegId = s.id;
+                    break;
+                  }
+                }
+                if (fallbackSegId) {
+                  const connectedSeg = wmeSDK.DataModel.Segments.getById({ segmentId: fallbackSegId });
+                  wmeSDK.DataModel.Segments.updateSegment({
+                    segmentId: id,
+                    fwdSpeedLimit: connectedSeg.fwdSpeedLimit,
+                    revSpeedLimit: connectedSeg.revSpeedLimit,
+                    roadType: connectedSeg.roadType,
+                    lockRank: connectedSeg.lockRank,
+                  });
+                  wmeSDK.DataModel.Segments.updateAddress({
+                    segmentId: id,
+                    primaryStreetId: connectedSeg.primaryStreetId,
+                    alternateStreetIds: connectedSeg.alternateStreetIds || [],
+                  });
+                  // Copy paved/unpaved
+                  const isUnpaved = connectedSeg.flagAttributes && connectedSeg.flagAttributes.unpaved === true;
+                  let toggled = false;
+                  const segPanel = openPanel;
+                  if (segPanel) {
+                    const unpavedIcon = segPanel.querySelector('.w-icon-unpaved-fill');
+                    if (unpavedIcon) {
+                      const unpavedChip = unpavedIcon.closest('wz-checkable-chip');
+                      if (unpavedChip) {
+                        if (isUnpaved !== (seg.flagAttributes && seg.flagAttributes.unpaved === true)) {
+                          unpavedChip.click();
+                          toggled = true;
+                        }
+                      }
+                    }
+                    if (!toggled) {
+                      try {
+                        const wzCheckbox = segPanel.querySelector('wz-checkbox[name="unpaved"]');
+                        if (wzCheckbox) {
+                          const hiddenInput = wzCheckbox.querySelector('input[type="checkbox"][name="unpaved"]');
+                          if (hiddenInput && hiddenInput.checked !== isUnpaved) {
+                            hiddenInput.click();
+                            toggled = true;
+                          }
+                        }
+                      } catch (e) {
+                        log('Fallback to non-compact mode unpaved toggle method failed: ' + e);
+                      }
+                    }
+                  }
+                  alertMessageParts.push(`Copied all attributes from connected segment.`);
+                  log(`Copied all attributes from connected segment (fallback, no valid street name).`);
+                } else {
+                  alertMessageParts.push(`No connected segment found to copy attributes.`);
+                }
               }
             } catch (error) {
               console.error('Error copying all attributes:', error);
@@ -1313,7 +1369,7 @@
         id: 'setStreetCity',
         text: 'Set city as none (uncheck to add auto)',
         key: 'setStreetCity',
-        tooltip: 'If checked, sets the city to None for selected segments (primary and alt). If unchecked, adds the available city name automatically to both primary and alt streets.',
+        tooltip: 'If checked, sets the city to None for selected segments for both primary and alternate streets.. If unchecked, adds the available city name automatically to both primary and alt streets.',
       },
       {
         id: 'autosave',
@@ -1343,13 +1399,13 @@
         id: 'copySegmentName',
         text: 'Copy connected Segment Name',
         key: 'copySegmentName',
-        tooltip: 'Copies the name and city from a connected segment to the selected segment. When Set Street City as None is enabled, it will not copy the city name.',
+        tooltip: "Copies the name and city from a connected segment to the selected segment. If 'Set city as none' is enabled, the city will be set to none regardless of the copied value.",
       },
       {
         id: 'copySegmentAttributes',
         text: 'Copy Connected Segment Attribute',
         key: 'copySegmentAttributes',
-        tooltip: 'Copies all major attributes from a connected segment. When enabled, it will override the other options.',
+        tooltip: 'Copies all major attributes (road type, lock level, speed limits, paved/unpaved status, primary and alternate street names, and city) from a connected segment. When enabled, it overrides all other options except Autosave. Use shortcut key or (Quick Update Segment) to apply.',
       },
     ];
 
@@ -1659,6 +1715,9 @@
 Change Log
 
 Version
+2.5.9.4 - 2025-07-15
+- Enhanced "Copy Connected Segment Attribute" logic: reliably copies from segments with valid street names, falls back to any connected segment if needed.
+- Added more robust paved/unpaved attribute copying.
 2.5.9.3 - 2025-07-04
 - Updated logic for speed limit. Now it will not update speed limit set to 0 or -1.
 2.5.9.2 - 2025-07-03-01
