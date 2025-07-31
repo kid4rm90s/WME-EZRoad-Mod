@@ -1728,6 +1728,8 @@
 Change Log
 
 Version
+2.5.9.5 - 2025-07-15
+- Minor bug fixes.
 2.5.9.4 - 2025-07-15
 - Enhanced "Copy Connected Segment Attribute" logic: reliably copies from segments with valid street names, falls back to any connected segment if needed.
 - Added more robust paved/unpaved attribute copying.

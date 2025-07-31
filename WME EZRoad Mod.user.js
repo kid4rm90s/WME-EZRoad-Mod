@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.5.9.4
+// @version      2.5.9.5
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -908,8 +908,21 @@
           // Checked: set city as none (empty city)
           city = wmeSDK.DataModel.Cities.getAll().find((city) => city.isEmpty) || wmeSDK.DataModel.Cities.addCity({ cityName: '' });
         } else {
-          // Unchecked: add available city name automatically
-          city = getTopCity() || getEmptyCity();
+          // Unchecked: try top city, then connected segment's city, then fallback to none
+          city = null;
+          // 1. Try top city
+          city = getTopCity();
+          // 2. If not found, try connected segment's city
+          if (!city) {
+            const connectedAddress = getFirstConnectedSegmentAddress(id);
+            if (connectedAddress && connectedAddress.city && connectedAddress.city.id) {
+              city = wmeSDK.DataModel.Cities.getById({ cityId: connectedAddress.city.id });
+            }
+          }
+          // 3. If still not found, fallback to none
+          if (!city) {
+            city = wmeSDK.DataModel.Cities.getAll().find((city) => city.isEmpty) || wmeSDK.DataModel.Cities.addCity({ cityName: '' });
+          }
         }
         // --- Street assignment logic ---
         if (options.setStreet) {
@@ -1405,8 +1418,7 @@
         id: 'copySegmentAttributes',
         text: 'Copy Connected Segment Attribute',
         key: 'copySegmentAttributes',
-        tooltip:
-          'Copies all major attributes (road type, lock level, speed limits, paved/unpaved status, primary and alternate street names, and city) from a connected segment. When enabled, it overrides all other options except Autosave. Use shortcut key or (Quick Update Segment) to apply.',
+        tooltip: 'Copies all major attributes (road type, lock level, speed limits, paved/unpaved status, primary and alternate street names, and city) from a connected segment. When enabled, it overrides all other options except Autosave. Use shortcut key or (Quick Update Segment) to apply.',
       },
     ];
 
@@ -1715,9 +1727,8 @@
 Change Log
 
 Version
-2.5.9.4 - 2025-07-15
-- Enhanced "Copy Connected Segment Attribute" logic: reliably copies from segments with valid street names, falls back to any connected segment if needed.
-- Added more robust paved/unpaved attribute copying.
+2.5.9.5 - 2025-07-31
+- Minor bug fixes.
 2.5.9.3 - 2025-07-04
 - Updated logic for speed limit. Now it will not update speed limit set to 0 or -1.
 2.5.9.2 - 2025-07-03-01
