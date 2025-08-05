@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.5.9.5
+// @version      2.5.9.6
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -27,7 +27,7 @@
 (function main() {
   ('use strict');
   const updateMessage = `
-<b>2.5.9.4 - 2025-07-15</b><br>
+<b>2.5.9.6 - 2025-08-05</b><br>
 - Bug fix: Enhanced "Copy Connected Segment Attribute" logic.<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
@@ -1228,10 +1228,28 @@
                         cityId: emptyCity.id,
                       });
                     }
+                    // For alternate streets, also convert them to the empty city
+                    let newAltStreetIds = [];
+                    altStreetIds.forEach((altId) => {
+                      const altStreet = wmeSDK.DataModel.Streets.getById({ streetId: altId });
+                      if (altStreet && altStreet.name) {
+                        let altInEmptyCity = wmeSDK.DataModel.Streets.getStreet({
+                          cityId: emptyCity.id,
+                          streetName: altStreet.name || '',
+                        });
+                        if (!altInEmptyCity) {
+                          altInEmptyCity = wmeSDK.DataModel.Streets.addStreet({
+                            streetName: altStreet.name || '',
+                            cityId: emptyCity.id,
+                          });
+                        }
+                        newAltStreetIds.push(altInEmptyCity.id);
+                      }
+                    });
                     wmeSDK.DataModel.Segments.updateAddress({
                       segmentId: id,
                       primaryStreetId: noneStreet.id,
-                      alternateStreetIds: altStreetIds,
+                      alternateStreetIds: newAltStreetIds,
                     });
                     let aliasMsg = altNames.length ? ` (Alternatives: ${altNames.join(', ')})` : '';
                     alertMessageParts.push(`Copied Name: <b>${street.name || ''}</b>${aliasMsg}`);
@@ -1418,7 +1436,8 @@
         id: 'copySegmentAttributes',
         text: 'Copy Connected Segment Attribute',
         key: 'copySegmentAttributes',
-        tooltip: 'Copies all major attributes (road type, lock level, speed limits, paved/unpaved status, primary and alternate street names, and city) from a connected segment. When enabled, it overrides all other options except Autosave. Use shortcut key or (Quick Update Segment) to apply.',
+        tooltip:
+          'Copies all major attributes (road type, lock level, speed limits, paved/unpaved status, primary and alternate street names, and city) from a connected segment. When enabled, it overrides all other options except Autosave. Use shortcut key or (Quick Update Segment) to apply.',
       },
     ];
 
@@ -1728,6 +1747,8 @@
 Change Log
 
 Version
+2.5.9.6 - 2025-08-05
+- Bug fix: Enhanced "Copy Connected Segment Attribute" logic.
 2.5.9.5 - 2025-07-15
 - Minor bug fixes.
 2.5.9.4 - 2025-07-15
