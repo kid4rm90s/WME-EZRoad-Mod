@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.5.9.6
+// @version      2.5.9.7
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -27,8 +27,11 @@
 (function main() {
   'use strict';
   const updateMessage = `
-<b>2.5.9.6 - 2025-08-05</b><br>
-- Bug fix: Enhanced "Copy Connected Segment Attribute" logic.<br>`;
+<b>2.5.9.7 - 2025-12-24</b><br>
+- Added custom preset system for lock/speed configurations<br>
+- Save and load multiple custom lock/speed presets with custom names<br>
+- Improved UI with compact design and better dark mode support<br>
+- Export/Import buttons reorganized for better layout<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://greasyfork.org/scripts/528552-wme-ezroad-mod/code/wme-ezroad-mod.user.js';
@@ -171,6 +174,41 @@
       locks: mergedLocks,
       speeds: mergedSpeeds,
     };
+  };
+
+  const saveCustomPreset = (presetName) => {
+    const options = getOptions();
+    const presets = getCustomPresets();
+    presets[presetName] = {
+      locks: options.locks,
+      speeds: options.speeds,
+      savedAt: new Date().toISOString(),
+    };
+    window.localStorage.setItem('WME_EZRoads_Mod_CustomPresets', JSON.stringify(presets));
+    return true;
+  };
+
+  const loadCustomPreset = (presetName) => {
+    const presets = getCustomPresets();
+    if (!presets[presetName]) return false;
+    const options = getOptions();
+    options.locks = presets[presetName].locks;
+    options.speeds = presets[presetName].speeds;
+    saveOptions(options);
+    return true;
+  };
+
+  const deleteCustomPreset = (presetName) => {
+    const presets = getCustomPresets();
+    if (!presets[presetName]) return false;
+    delete presets[presetName];
+    window.localStorage.setItem('WME_EZRoads_Mod_CustomPresets', JSON.stringify(presets));
+    return true;
+  };
+
+  const getCustomPresets = () => {
+    const presets = JSON.parse(window.localStorage.getItem('WME_EZRoads_Mod_CustomPresets')) || {};
+    return presets;
   };
 
   const WME_EZRoads_Mod_bootstrap = () => {
@@ -1654,9 +1692,11 @@
       // --- Export/Import Config UI ---
       const exportImportSection = $(
         `<div class="ezroadsmod-section" style="margin-top:10px;">
-          <button id="ezroadsmod-export-btn" style="margin-right:8px;">Export Lock/Speed Config</button>
-          <button id="ezroadsmod-import-btn">Import Lock/Speed Config</button>
-          <input id="ezroadsmod-import-input" type="text" placeholder="Paste config here" style="width:60%;margin-left:8px;">
+          <div style="display:flex; align-items:center; gap:5px; margin-bottom:5px;">
+            <button id="ezroadsmod-export-btn" style="font-size:0.9em;padding:4px 8px;white-space:nowrap;">Export Lock/Speed Config</button>
+            <button id="ezroadsmod-import-btn" style="font-size:0.9em;padding:4px 8px;white-space:nowrap;">Import Lock/Speed Config</button>
+          </div>
+          <input id="ezroadsmod-import-input" type="text" placeholder="Paste config here" style="width:95%;font-size:0.9em;padding:3px;">
         </div>`
       );
       scriptContentPane.append(exportImportSection);
@@ -1664,18 +1704,20 @@
       // Export logic
       $(document).on('click', '#ezroadsmod-export-btn', function () {
         const options = getOptions();
+        const presets = getCustomPresets();
         const exportData = {
           locks: options.locks,
           speeds: options.speeds,
+          customPresets: presets,
         };
         const exportStr = JSON.stringify(exportData, null, 2);
         // Copy to clipboard
         navigator.clipboard.writeText(exportStr).then(
           () => {
             if (WazeWrap?.Alerts) {
-              WazeWrap.Alerts.success('EZRoads Mod', 'Lock/Speed config copied to clipboard!', false, false, 2000);
+              WazeWrap.Alerts.success('EZRoads Mod', 'Lock/Speed config with all presets copied to clipboard!', false, false, 2000);
             } else {
-              alert('Lock/Speed config copied to clipboard!');
+              alert('Lock/Speed config with all presets copied to clipboard!');
             }
           },
           () => {
@@ -1706,6 +1748,13 @@
           // Update in-memory localOptions and UI
           localOptions.locks = importData.locks;
           localOptions.speeds = importData.speeds;
+          
+          // Import custom presets if they exist
+          if (importData.customPresets) {
+            window.localStorage.setItem('WME_EZRoads_Mod_CustomPresets', JSON.stringify(importData.customPresets));
+            refreshPresetsList();
+          }
+          
           // Update lock dropdowns
           $('.road-lock-level').each(function () {
             const roadId = $(this).data('road-id');
@@ -1719,12 +1768,144 @@
             if (speedSetting) $(this).val(speedSetting.speed);
           });
           if (WazeWrap?.Alerts) {
-            WazeWrap.Alerts.success('EZRoads Mod', 'Config imported and applied!', false, false, 2000);
+            const presetsCount = importData.customPresets ? Object.keys(importData.customPresets).length : 0;
+            const message = presetsCount > 0 
+              ? `Config imported with ${presetsCount} preset(s)!` 
+              : 'Config imported and applied!';
+            WazeWrap.Alerts.success('EZRoads Mod', message, false, false, 2000);
           } else {
             alert('Config imported and applied!');
           }
         } else {
           alert('Config missing lock/speed data!');
+        }
+      });
+
+      // --- Custom Presets UI ---
+      const customPresetsSection = $(
+        `<div class="ezroadsmod-section" style="margin-top:15px; padding-top:12px; border-top: 1px solid #ccc;">
+          <div style="font-weight:bold; margin-bottom:6px; font-size:0.95em;">Custom Lock/Speed Presets</div>
+          <div style="margin-bottom:6px;">
+            <input id="ezroadsmod-preset-name" type="text" placeholder="Preset name" style="width:45%;margin-right:5px;font-size:0.9em;padding:3px;">
+            <button id="ezroadsmod-save-preset-btn" style="font-size:0.9em;padding:3px 8px;">Save</button>
+          </div>
+          <div id="ezroadsmod-presets-list" style="margin-top:6px;"></div>
+        </div>`
+      );
+      scriptContentPane.append(customPresetsSection);
+
+      // Function to refresh the presets list UI
+      const refreshPresetsList = () => {
+        const presets = getCustomPresets();
+        const presetsListDiv = $('#ezroadsmod-presets-list');
+        presetsListDiv.empty();
+
+        const presetNames = Object.keys(presets);
+        if (presetNames.length === 0) {
+          presetsListDiv.append('<div style="color:#888;font-style:italic;font-size:0.85em;">No presets saved.</div>');
+          return;
+        }
+
+        presetNames.forEach((presetName) => {
+          const presetData = presets[presetName];
+          const savedDate = presetData.savedAt ? new Date(presetData.savedAt).toLocaleDateString() : 'Unknown';
+          
+          const presetDiv = $(
+            `<div class="ezroadsmod-preset-item" style="margin-bottom:5px; padding:5px 5px 5px 5px; background-color:rgba(128, 128, 128, 0.12); border-radius:3px;">
+              <div style="display:flex; align-items:center; justify-content:space-between; padding-right:15px;">
+                <div style="font-size:1.0em;">
+                  <strong>${presetName}</strong>
+                  <span style="font-size:0.85em; color: #949494ff; margin-left:5px;">(${savedDate})</span>
+                </div>
+                <div style="white-space:nowrap;">
+                  <button class="ezroadsmod-load-preset-btn" data-preset-name="${presetName}" style="margin-right:2px;font-size:0.9em;padding:2px 5px;">Load</button>
+                  <button class="ezroadsmod-delete-preset-btn" data-preset-name="${presetName}" style="background-color:#f44336; color:white;font-size:0.9em;padding:3px 8px;">Delete</button>
+                </div>
+              </div>
+            </div>`
+          );
+          presetsListDiv.append(presetDiv);
+        });
+      };
+
+      // Initial load of presets list
+      refreshPresetsList();
+
+      // Save preset
+      $(document).on('click', '#ezroadsmod-save-preset-btn', function () {
+        const presetName = $('#ezroadsmod-preset-name').val().trim();
+        if (!presetName) {
+          alert('Please enter a preset name.');
+          return;
+        }
+        
+        const presets = getCustomPresets();
+        if (presets[presetName]) {
+          if (!confirm(`Preset "${presetName}" already exists. Overwrite it?`)) {
+            return;
+          }
+        }
+
+        if (saveCustomPreset(presetName)) {
+          $('#ezroadsmod-preset-name').val('');
+          refreshPresetsList();
+          if (WazeWrap?.Alerts) {
+            WazeWrap.Alerts.success('EZRoads Mod', `Preset "${presetName}" saved!`, false, false, 2000);
+          } else {
+            alert(`Preset "${presetName}" saved!`);
+          }
+        }
+      });
+
+      // Load preset
+      $(document).on('click', '.ezroadsmod-load-preset-btn', function () {
+        const presetName = $(this).data('preset-name');
+        if (loadCustomPreset(presetName)) {
+          // Update in-memory localOptions
+          const options = getOptions();
+          localOptions.locks = options.locks;
+          localOptions.speeds = options.speeds;
+          
+          // Update lock dropdowns
+          $('.road-lock-level').each(function () {
+            const roadId = $(this).data('road-id');
+            const lockSetting = localOptions.locks.find((l) => l.id == roadId);
+            if (lockSetting) $(this).val(lockSetting.lock);
+          });
+          
+          // Update speed inputs
+          $('.road-speed').each(function () {
+            const roadId = $(this).data('road-id');
+            const speedSetting = localOptions.speeds.find((s) => s.id == roadId);
+            if (speedSetting) $(this).val(speedSetting.speed);
+          });
+          
+          if (WazeWrap?.Alerts) {
+            WazeWrap.Alerts.success('EZRoads Mod', `Preset "${presetName}" loaded!`, false, false, 2000);
+          } else {
+            alert(`Preset "${presetName}" loaded!`);
+          }
+        } else {
+          alert(`Failed to load preset "${presetName}".`);
+        }
+      });
+
+      // Delete preset
+      $(document).on('click', '.ezroadsmod-delete-preset-btn', function () {
+        const presetName = $(this).data('preset-name');
+        if (!confirm(`Are you sure you want to delete preset "${presetName}"?`)) {
+          return;
+        }
+        
+        if (deleteCustomPreset(presetName)) {
+          refreshPresetsList();
+          if (WazeWrap?.Alerts) {
+            WazeWrap.Alerts.success('EZRoads Mod', `Preset "${presetName}" deleted!`, false, false, 2000);
+          } else {
+            alert(`Preset "${presetName}" deleted!`);
+          }
+        } else {
+          alert(`Failed to delete preset "${presetName}".`);
         }
       });
     });
@@ -1745,6 +1926,14 @@
 Change Log
 
 Version
+2.5.9.7 - 2025-12-24
+- Added custom preset system for saving and loading lock/speed configurations with custom names.
+- Users can now save unlimited presets (e.g., "Custom 1", "Highway Settings", "City Streets").
+- Load any saved preset with one click to quickly apply lock/speed settings.
+- Delete unwanted presets with confirmation.
+- Improved UI: Compact design with better spacing and dark mode support.
+- Export/Import buttons reorganized into a cleaner layout.
+- Preset items use semi-transparent backgrounds for better theme compatibility.
 2.5.9.6 - 2025-08-05
 - Bug fix: Enhanced "Copy Connected Segment Attribute" logic.
 2.5.9.5 - 2025-07-31
