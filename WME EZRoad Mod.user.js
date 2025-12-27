@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.5.9.8
+// @version      2.5.9.9
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -338,8 +338,8 @@
               options.roadType = rt.value;
               saveOptions(options);
               updateRoadTypeRadios(rt.value);
-              if (WazeWrap?.Alerts) {
-                WazeWrap.Alerts.success('EZRoads Mod', `Selected road type: <b>${rt.name}</b>`, false, false, 1500);
+              if (WazeToastr?.Alerts) {
+                WazeToastr.Alerts.success('EZRoads Mod', `Selected road type: <b>${rt.name}</b>`, false, false, 1500);
               }
             },
             description: `Select road type: ${rt.name}`,
@@ -529,8 +529,8 @@
         wmeSDK.DataModel.Segments.deleteSegment({ segmentId });
       } catch (ex) {
         if (ex instanceof wmeSDK.Errors.InvalidStateError) {
-          if (WazeWrap?.Alerts) {
-            WazeWrap.Alerts.error('EZRoads Mod Beta', 'Segment could not be deleted. Please check for restrictions or junctions.');
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.error('EZRoads Mod Beta', 'Segment could not be deleted. Please check for restrictions or junctions.');
           }
           return null;
         }
@@ -750,8 +750,8 @@
       });
       Promise.all(updatePromises).then(() => {
         if (alertMessageParts.length) {
-          if (WazeWrap?.Alerts) {
-            WazeWrap.Alerts.info('EZRoads Mod', alertMessageParts.join('<br>'), false, false, 5000);
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.info('EZRoads Mod', alertMessageParts.join('<br>'), false, false, 5000);
           } else {
             alert('EZRoads Mod: ' + alertMessageParts.join('\n'));
           }
@@ -1343,10 +1343,10 @@
         if (updatedPaved) updatedFeatures.push(alertMessageParts.find((part) => part.startsWith('Paved')));
         const message = updatedFeatures.filter(Boolean).join(', ');
         if (message) {
-          if (WazeWrap?.Alerts) {
-            WazeWrap.Alerts.info('EZRoads Mod', `Segment updated with: ${message}`, false, false, 5000);
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.info('EZRoads Mod', `Segment updated with: ${message}`, false, false, 5000);
           } else {
-            alert('EZRoads Mod: Segment updated (WazeWrap Alerts not available)');
+            alert('EZRoads Mod: Segment updated (WazeToastr Alerts not available)');
           }
         }
       };
@@ -1384,8 +1384,8 @@
         options.locks[lockIndex].lock = lockLevel; // Keep as string to handle 'HRCS'
         localOptions.locks = options.locks;
         saveOptions(options);
-        if (WazeWrap?.Alerts) {
-          WazeWrap.Alerts.success('EZRoads Mod', 'Lock Levels saved!', false, false, 1500);
+        if (WazeToastr?.Alerts) {
+          WazeToastr.Alerts.success('EZRoads Mod', 'Lock Levels saved!', false, false, 1500);
         } else {
           alert('EZRoads Mod: Lock Levels saved!');
         }
@@ -1405,8 +1405,8 @@
         options.speeds[speedIndex].speed = speedValue;
         localOptions.speeds = options.speeds;
         saveOptions(options);
-        if (WazeWrap?.Alerts) {
-          WazeWrap.Alerts.success('EZRoads Mod', 'Speed Values saved!', false, false, 1500);
+        if (WazeToastr?.Alerts) {
+          WazeToastr.Alerts.success('EZRoads Mod', 'Speed Values saved!', false, false, 1500);
         } else {
           alert('EZRoads Mod: Speed Values saved!');
         }
@@ -1708,8 +1708,8 @@
         // Copy to clipboard
         navigator.clipboard.writeText(exportStr).then(
           () => {
-            if (WazeWrap?.Alerts) {
-              WazeWrap.Alerts.success('EZRoads Mod', 'Lock/Speed config with all presets copied to clipboard!', false, false, 2000);
+            if (WazeToastr?.Alerts) {
+              WazeToastr.Alerts.success('EZRoads Mod', 'Lock/Speed config with all presets copied to clipboard!', false, false, 2000);
             } else {
               alert('Lock/Speed config with all presets copied to clipboard!');
             }
@@ -1761,12 +1761,12 @@
             const speedSetting = localOptions.speeds.find((s) => s.id == roadId);
             if (speedSetting) $(this).val(speedSetting.speed);
           });
-          if (WazeWrap?.Alerts) {
+          if (WazeToastr?.Alerts) {
             const presetsCount = importData.customPresets ? Object.keys(importData.customPresets).length : 0;
             const message = presetsCount > 0 
               ? `Config imported with ${presetsCount} preset(s)!` 
               : 'Config imported and applied!';
-            WazeWrap.Alerts.success('EZRoads Mod', message, false, false, 2000);
+            WazeToastr.Alerts.success('EZRoads Mod', message, false, false, 2000);
           } else {
             alert('Config imported and applied!');
           }
@@ -1843,8 +1843,8 @@
         if (saveCustomPreset(presetName)) {
           $('#ezroadsmod-preset-name').val('');
           refreshPresetsList();
-          if (WazeWrap?.Alerts) {
-            WazeWrap.Alerts.success('EZRoads Mod', `Preset "${presetName}" saved!`, false, false, 2000);
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.success('EZRoads Mod', `Preset "${presetName}" saved!`, false, false, 2000);
           } else {
             alert(`Preset "${presetName}" saved!`);
           }
@@ -1874,8 +1874,8 @@
             if (speedSetting) $(this).val(speedSetting.speed);
           });
           
-          if (WazeWrap?.Alerts) {
-            WazeWrap.Alerts.success('EZRoads Mod', `Preset "${presetName}" loaded!`, false, false, 2000);
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.success('EZRoads Mod', `Preset "${presetName}" loaded!`, false, false, 2000);
           } else {
             alert(`Preset "${presetName}" loaded!`);
           }
@@ -1893,8 +1893,8 @@
         
         if (deleteCustomPreset(presetName)) {
           refreshPresetsList();
-          if (WazeWrap?.Alerts) {
-            WazeWrap.Alerts.success('EZRoads Mod', `Preset "${presetName}" deleted!`, false, false, 2000);
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.success('EZRoads Mod', `Preset "${presetName}" deleted!`, false, false, 2000);
           } else {
             alert(`Preset "${presetName}" deleted!`);
           }
