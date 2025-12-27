@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.5.9.7
+// @version      2.5.9.8
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -15,8 +15,7 @@
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=waze.com
 // @license      GNU GPL(v3)
 // @connect      greasyfork.org
-// @require      https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
-// @require      https://update.greasyfork.org/scripts/509664/WME%20Utils%20-%20Bootstrap.js
+// @require      https://greasyfork.org/scripts/560385/code/WazeToastr.js
 // @downloadURL https://update.greasyfork.org/scripts/528552/WME%20EZRoad%20Mod.user.js
 // @updateURL https://update.greasyfork.org/scripts/528552/WME%20EZRoad%20Mod.meta.js
 
@@ -26,12 +25,7 @@
 
 (function main() {
   'use strict';
-  const updateMessage = `
-<b>2.5.9.7 - 2025-12-24</b><br>
-- Added custom preset system for lock/speed configurations<br>
-- Save and load multiple custom lock/speed presets with custom names<br>
-- Improved UI with compact design and better dark mode support<br>
-- Export/Import buttons reorganized for better layout<br>`;
+  const updateMessage = `<strong>Fixed :</strong><br> - Temporary fix for alerts not displaying properly.`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://greasyfork.org/scripts/528552-wme-ezroad-mod/code/wme-ezroad-mod.user.js';
@@ -1910,22 +1904,27 @@
       });
     });
   };
-  function scriptupdatemonitor() {
-    if (WazeWrap?.Ready) {
-      bootstrap({ scriptUpdateMonitor: { downloadUrl } });
-      WazeWrap.Interface.ShowScriptUpdate(scriptName, scriptVersion, updateMessage, downloadUrl, forumURL);
-    } else {
-      setTimeout(scriptupdatemonitor, 250);
+    function scriptupdatemonitor() {
+      if (WazeToastr?.Ready) {
+        // Create and start the ScriptUpdateMonitor
+        const updateMonitor = new WazeToastr.Alerts.ScriptUpdateMonitor(scriptName, scriptVersion, downloadUrl, GM_xmlhttpRequest);
+        updateMonitor.start(2, true); // Check every 2 hours, check immediately
+
+        // Show the update dialog for the current version
+        WazeToastr.Interface.ShowScriptUpdate(scriptName, scriptVersion, updateMessage, downloadUrl, forumURL);
+      } else {
+        setTimeout(scriptupdatemonitor, 250);
+      }
     }
-  }
-  // Start the "scriptupdatemonitor"
-  scriptupdatemonitor();
+    scriptupdatemonitor();
   console.log(`${scriptName} initialized.`);
 
   /*
 Change Log
 
 Version
+2.5.9.8 - 2025-12-27
+- Temporarily fix for alerts infos not showing issue.
 2.5.9.7 - 2025-12-24
 - Added custom preset system for saving and loading lock/speed configurations with custom names.
 - Users can now save unlimited presets (e.g., "Custom 1", "Highway Settings", "City Streets").
