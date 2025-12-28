@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.5.9.9
+// @version      2.6.0.0
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -25,7 +25,7 @@
 
 (function main() {
   'use strict';
-  const updateMessage = `<strong>Fixed :</strong><br> - Temporary fix for alerts not displaying properly.`;
+  const updateMessage = `<strong>New Features:</strong><br> - Added "Current" preset indicator to show which preset is currently loaded and unmodified.<br> - Fixed speed limit removal: Setting speed to 0 or -1 now properly removes the speed limit.`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://greasyfork.org/scripts/528552-wme-ezroad-mod/code/wme-ezroad-mod.user.js';
@@ -143,6 +143,7 @@
 
   const saveOptions = (options) => {
     window.localStorage.setItem('WME_EZRoads_Mod_Options', JSON.stringify(options));
+    // Note: We don't clear current preset here, we check for modifications instead
   };
 
   const getOptions = () => {
@@ -179,6 +180,11 @@
       savedAt: new Date().toISOString(),
     };
     window.localStorage.setItem('WME_EZRoads_Mod_CustomPresets', JSON.stringify(presets));
+    // If we're saving the current preset, it's now in sync
+    const currentPreset = getCurrentPresetName();
+    if (currentPreset === presetName) {
+      setCurrentPresetName(presetName); // Refresh to confirm it's current
+    }
     return true;
   };
 
@@ -189,6 +195,7 @@
     options.locks = presets[presetName].locks;
     options.speeds = presets[presetName].speeds;
     saveOptions(options);
+    setCurrentPresetName(presetName);
     return true;
   };
 
@@ -197,12 +204,47 @@
     if (!presets[presetName]) return false;
     delete presets[presetName];
     window.localStorage.setItem('WME_EZRoads_Mod_CustomPresets', JSON.stringify(presets));
+    // Clear current preset if we're deleting it
+    if (getCurrentPresetName() === presetName) {
+      setCurrentPresetName(null);
+    }
     return true;
   };
 
   const getCustomPresets = () => {
     const presets = JSON.parse(window.localStorage.getItem('WME_EZRoads_Mod_CustomPresets')) || {};
     return presets;
+  };
+
+  const getCurrentPresetName = () => {
+    return window.localStorage.getItem('WME_EZRoads_Mod_CurrentPreset') || null;
+  };
+
+  const setCurrentPresetName = (presetName) => {
+    if (presetName) {
+      window.localStorage.setItem('WME_EZRoads_Mod_CurrentPreset', presetName);
+    } else {
+      window.localStorage.removeItem('WME_EZRoads_Mod_CurrentPreset');
+    }
+  };
+
+  const isCurrentPresetModified = () => {
+    const currentPresetName = getCurrentPresetName();
+    if (!currentPresetName) return false;
+    
+    const presets = getCustomPresets();
+    const preset = presets[currentPresetName];
+    if (!preset) {
+      setCurrentPresetName(null);
+      return false;
+    }
+    
+    const currentOptions = getOptions();
+    // Compare locks and speeds
+    const locksMatch = JSON.stringify(currentOptions.locks) === JSON.stringify(preset.locks);
+    const speedsMatch = JSON.stringify(currentOptions.speeds) === JSON.stringify(preset.speeds);
+    
+    return !(locksMatch && speedsMatch);
   };
 
   const WME_EZRoads_Mod_bootstrap = () => {
@@ -904,22 +946,28 @@
                 const speedValue = parseInt(speedSetting.speed, 10);
                 log('Speed value to set: ' + speedValue);
 
-                // If speedValue is 0 or less, treat as unset (undefined)
-                const speedToSet = !isNaN(speedValue) && speedValue > 0 ? speedValue : undefined;
+                // If speedValue is 0 or less, treat as unset (null for removal)
+                // Use null instead of undefined to properly remove speed limits
+                const speedToSet = !isNaN(speedValue) && speedValue > 0 ? speedValue : null;
                 const seg = wmeSDK.DataModel.Segments.getById({
                   segmentId: id,
                 });
-                if (seg.fwdSpeedLimit !== speedToSet || seg.revSpeedLimit !== speedToSet) {
+                // Compare using loose equality (==) to treat null and undefined as equivalent
+                // This ensures we don't try to update when segment already has no speed limit
+                const needsUpdate = (seg.fwdSpeedLimit != speedToSet || seg.revSpeedLimit != speedToSet);
+                log(`Current fwd speed: ${seg.fwdSpeedLimit}, rev speed: ${seg.revSpeedLimit}, target speed: ${speedToSet}, needs update: ${needsUpdate}`);
+                
+                if (needsUpdate) {
                   wmeSDK.DataModel.Segments.updateSegment({
                     segmentId: id,
                     fwdSpeedLimit: speedToSet,
                     revSpeedLimit: speedToSet,
                   });
-                  alertMessageParts.push(`Speed Limit: <b>${speedToSet !== undefined ? speedToSet : 'unset'}</b>`);
+                  alertMessageParts.push(`Speed Limit: <b>${speedToSet !== null ? speedToSet : 'unset'}</b>`);
                   updatedSpeedLimit = true;
                 } else {
                   log(`Segment ID: ${id} already has the target speed limit: ${speedToSet}. Skipping update.`);
-                  alertMessageParts.push(`Speed Limit: <b>${speedToSet !== undefined ? speedToSet : 'unset'} exists. Skipping update.</b>`);
+                  alertMessageParts.push(`Speed Limit: <b>${speedToSet !== null ? speedToSet : 'unset'} exists. Skipping update.</b>`);
                   updatedSpeedLimit = true;
                 }
               }
@@ -1384,6 +1432,10 @@
         options.locks[lockIndex].lock = lockLevel; // Keep as string to handle 'HRCS'
         localOptions.locks = options.locks;
         saveOptions(options);
+        // Trigger preset list refresh if settings panel is open
+        if ($('#ezroadsmod-presets-list').length) {
+          $('#ezroadsmod-presets-list').trigger('refresh-presets');
+        }
         if (WazeToastr?.Alerts) {
           WazeToastr.Alerts.success('EZRoads Mod', 'Lock Levels saved!', false, false, 1500);
         } else {
@@ -1405,6 +1457,10 @@
         options.speeds[speedIndex].speed = speedValue;
         localOptions.speeds = options.speeds;
         saveOptions(options);
+        // Trigger preset list refresh if settings panel is open
+        if ($('#ezroadsmod-presets-list').length) {
+          $('#ezroadsmod-presets-list').trigger('refresh-presets');
+        }
         if (WazeToastr?.Alerts) {
           WazeToastr.Alerts.success('EZRoads Mod', 'Speed Values saved!', false, false, 1500);
         } else {
@@ -1795,6 +1851,9 @@
         presetsListDiv.empty();
 
         const presetNames = Object.keys(presets);
+        const currentPresetName = getCurrentPresetName();
+        const isModified = isCurrentPresetModified();
+        
         if (presetNames.length === 0) {
           presetsListDiv.append('<div style="color:#888;font-style:italic;font-size:0.85em;">No presets saved.</div>');
           return;
@@ -1803,6 +1862,8 @@
         presetNames.forEach((presetName) => {
           const presetData = presets[presetName];
           const savedDate = presetData.savedAt ? new Date(presetData.savedAt).toLocaleDateString() : 'Unknown';
+          const isCurrent = (currentPresetName === presetName && !isModified);
+          const currentIndicator = isCurrent ? '<span style="color:#4CAF50; font-weight:bold; margin-right:5px;">Current</span>' : '';
           
           const presetDiv = $(
             `<div class="ezroadsmod-preset-item" style="margin-bottom:5px; padding:5px 5px 5px 5px; background-color:rgba(128, 128, 128, 0.12); border-radius:3px;">
@@ -1812,6 +1873,7 @@
                   <span style="font-size:0.85em; color: #949494ff; margin-left:5px;">(${savedDate})</span>
                 </div>
                 <div style="white-space:nowrap;">
+                  ${currentIndicator}
                   <button class="ezroadsmod-load-preset-btn" data-preset-name="${presetName}" style="margin-right:2px;font-size:0.9em;padding:2px 5px;">Load</button>
                   <button class="ezroadsmod-delete-preset-btn" data-preset-name="${presetName}" style="background-color:#f44336; color:white;font-size:0.9em;padding:3px 8px;">Delete</button>
                 </div>
@@ -1824,6 +1886,9 @@
 
       // Initial load of presets list
       refreshPresetsList();
+      
+      // Add event listener for refreshing presets list when settings change
+      $('#ezroadsmod-presets-list').on('refresh-presets', refreshPresetsList);
 
       // Save preset
       $(document).on('click', '#ezroadsmod-save-preset-btn', function () {
@@ -1874,6 +1939,9 @@
             if (speedSetting) $(this).val(speedSetting.speed);
           });
           
+          // Refresh the presets list to show the current indicator
+          refreshPresetsList();
+          
           if (WazeToastr?.Alerts) {
             WazeToastr.Alerts.success('EZRoads Mod', `Preset "${presetName}" loaded!`, false, false, 2000);
           } else {
@@ -1923,6 +1991,12 @@
 Change Log
 
 Version
+2.6.0.0 - 2025-12-28
+- Added "Current" preset indicator: Shows which preset is currently loaded with a green badge.
+- Current indicator disappears when settings are modified, reappears when saved back to the same preset.
+- Fixed speed limit removal: Setting speed to 0 or -1 now properly removes speed limits (uses null instead of undefined).
+- Improved speed limit update logic with better comparison handling.
+- Preset list automatically refreshes when lock levels or speed values are modified.
 2.5.9.8 - 2025-12-27
 - Temporarily fix for alerts infos not showing issue.
 2.5.9.7 - 2025-12-24
