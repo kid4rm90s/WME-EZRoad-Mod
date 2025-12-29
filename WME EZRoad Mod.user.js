@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.0.0
+// @version      2.6.1
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -24,8 +24,8 @@
 /*Script modified from WME EZRoad (https://greasyfork.org/en/scripts/518381-wme-ezsegments) original author: Michaelrosstarr and thanks to him*/
 
 (function main() {
-  'use strict';
-  const updateMessage = `<strong>New Features:</strong><br> - Added "Current" preset indicator to show which preset is currently loaded and unmodified.<br> - Fixed speed limit removal: Setting speed to 0 or -1 now properly removes the speed limit.`;
+  ('use strict');
+  const updateMessage = `<strong>New Features:</strong><br> - Enhanced "Copy Connected Segment Attribute" to copy all segment attributes including direction, speed limits, road type, lock rank, elevation level, street names, and unpaved status.`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://greasyfork.org/scripts/528552-wme-ezroad-mod/code/wme-ezroad-mod.user.js';
@@ -141,6 +141,92 @@
     return null;
   }
 
+  // --- Helper to get the direction value from a segment for copying ---
+  function getDirectionFromSegment(segment) {
+    if (!segment) return null;
+    if (segment.isTwoWay) return 'TWO_WAY';
+    if (segment.isAtoB) return 'A_TO_B';
+    if (segment.isBtoA) return 'B_TO_A';
+    return null;
+  }
+
+  // --- Helper to copy all flag attributes from one segment to another ---
+  function copyFlagAttributes(fromSegmentId, toSegmentId) {
+    const fromSeg = wmeSDK.DataModel.Segments.getById({ segmentId: fromSegmentId });
+    const toSeg = wmeSDK.DataModel.Segments.getById({ segmentId: toSegmentId });
+
+    if (!fromSeg || !toSeg || !fromSeg.flagAttributes) {
+      return;
+    }
+
+    const segPanel = openPanel;
+    if (!segPanel) {
+      log('Segment panel not available for flag attribute updates');
+      return;
+    }
+
+    // Flag attribute mappings: { flagName: { selectorType, selector, checkedValue } }
+    const flagMappings = {
+      unpaved: { selectorType: 'checkbox', name: 'unpaved' },
+    };
+
+    for (let flagName in flagMappings) {
+      const mapping = flagMappings[flagName];
+      const fromValue = fromSeg.flagAttributes[flagName] === true;
+      const toValue = toSeg.flagAttributes && toSeg.flagAttributes[flagName] === true;
+
+      // Only update if values differ
+      if (fromValue === toValue) {
+        continue;
+      }
+
+      try {
+        // Try to find and click the checkbox
+        let checkboxFound = false;
+
+        // Try method 1: wz-checkable-chip with icon
+        const iconClass = flagName === 'unpaved' ? '.w-icon-unpaved-fill' : `.w-icon-${flagName.toLowerCase()}-fill`;
+        const unpavedIcon = segPanel.querySelector(iconClass);
+        if (unpavedIcon) {
+          const chip = unpavedIcon.closest('wz-checkable-chip');
+          if (chip) {
+            chip.click();
+            checkboxFound = true;
+            log(`Updated flag attribute ${flagName} via chip`);
+            continue;
+          }
+        }
+
+        // Try method 2: wz-checkbox with name attribute
+        const wzCheckbox = segPanel.querySelector(`wz-checkbox[name="${mapping.name}"]`);
+        if (wzCheckbox) {
+          const hiddenInput = wzCheckbox.querySelector(`input[type="checkbox"][name="${mapping.name}"]`);
+          if (hiddenInput && hiddenInput.checked !== fromValue) {
+            hiddenInput.click();
+            checkboxFound = true;
+            log(`Updated flag attribute ${flagName} via wz-checkbox`);
+            continue;
+          }
+        }
+
+        // Try method 3: regular checkbox
+        const regularCheckbox = segPanel.querySelector(`input[type="checkbox"][name="${mapping.name}"]`);
+        if (regularCheckbox && regularCheckbox.checked !== fromValue) {
+          regularCheckbox.click();
+          checkboxFound = true;
+          log(`Updated flag attribute ${flagName} via regular checkbox`);
+          continue;
+        }
+
+        if (!checkboxFound) {
+          log(`Could not find UI element for flag attribute ${flagName}`);
+        }
+      } catch (e) {
+        log(`Error updating flag attribute ${flagName}: ${e}`);
+      }
+    }
+  }
+
   const saveOptions = (options) => {
     window.localStorage.setItem('WME_EZRoads_Mod_Options', JSON.stringify(options));
     // Note: We don't clear current preset here, we check for modifications instead
@@ -231,19 +317,19 @@
   const isCurrentPresetModified = () => {
     const currentPresetName = getCurrentPresetName();
     if (!currentPresetName) return false;
-    
+
     const presets = getCustomPresets();
     const preset = presets[currentPresetName];
     if (!preset) {
       setCurrentPresetName(null);
       return false;
     }
-    
+
     const currentOptions = getOptions();
     // Compare locks and speeds
     const locksMatch = JSON.stringify(currentOptions.locks) === JSON.stringify(preset.locks);
     const speedsMatch = JSON.stringify(currentOptions.speeds) === JSON.stringify(preset.speeds);
-    
+
     return !(locksMatch && speedsMatch);
   };
 
@@ -674,48 +760,50 @@
                 if (!connectedSeg) continue;
                 const street = wmeSDK.DataModel.Streets.getById({ streetId: connectedSeg.primaryStreetId });
                 if (street && street.name) {
-                  wmeSDK.DataModel.Segments.updateSegment({
-                    segmentId: id,
-                    fwdSpeedLimit: connectedSeg.fwdSpeedLimit,
-                    revSpeedLimit: connectedSeg.revSpeedLimit,
-                    roadType: connectedSeg.roadType,
-                    lockRank: connectedSeg.lockRank,
-                  });
-                  wmeSDK.DataModel.Segments.updateAddress({
-                    segmentId: id,
-                    primaryStreetId: connectedSeg.primaryStreetId,
-                    alternateStreetIds: connectedSeg.alternateStreetIds || [],
-                  });
-                  // Copy paved/unpaved
-                  const isUnpaved = connectedSeg.flagAttributes && connectedSeg.flagAttributes.unpaved === true;
-                  let toggled = false;
-                  const segPanel = openPanel;
-                  if (segPanel) {
-                    const unpavedIcon = segPanel.querySelector('.w-icon-unpaved-fill');
-                    if (unpavedIcon) {
-                      const unpavedChip = unpavedIcon.closest('wz-checkable-chip');
-                      if (unpavedChip) {
-                        if (isUnpaved !== (seg.flagAttributes && seg.flagAttributes.unpaved === true)) {
-                          unpavedChip.click();
-                          toggled = true;
-                        }
-                      }
-                    }
-                    if (!toggled) {
+                  try {
+                    wmeSDK.DataModel.Segments.updateSegment({
+                      segmentId: id,
+                      fwdSpeedLimit: connectedSeg.fwdSpeedLimit,
+                      revSpeedLimit: connectedSeg.revSpeedLimit,
+                      roadType: connectedSeg.roadType,
+                      lockRank: connectedSeg.lockRank,
+                      elevationLevel: connectedSeg.elevationLevel,
+                      direction: getDirectionFromSegment(connectedSeg),
+                    });
+                  } catch (updateError) {
+                    log('updateSegment error (will retry with individual properties): ' + updateError);
+                    // Fallback: try updating properties individually
+                    const propsToTry = [
+                      { name: 'fwdSpeedLimit', value: connectedSeg.fwdSpeedLimit },
+                      { name: 'revSpeedLimit', value: connectedSeg.revSpeedLimit },
+                      { name: 'roadType', value: connectedSeg.roadType },
+                      { name: 'lockRank', value: connectedSeg.lockRank },
+                      { name: 'elevationLevel', value: connectedSeg.elevationLevel },
+                      { name: 'direction', value: getDirectionFromSegment(connectedSeg) },
+                    ];
+                    for (let prop of propsToTry) {
                       try {
-                        const wzCheckbox = segPanel.querySelector('wz-checkbox[name="unpaved"]');
-                        if (wzCheckbox) {
-                          const hiddenInput = wzCheckbox.querySelector('input[type="checkbox"][name="unpaved"]');
-                          if (hiddenInput && hiddenInput.checked !== isUnpaved) {
-                            hiddenInput.click();
-                            toggled = true;
-                          }
+                        if (prop.value !== undefined && prop.value !== null) {
+                          const updateObj = { segmentId: id };
+                          updateObj[prop.name] = prop.value;
+                          wmeSDK.DataModel.Segments.updateSegment(updateObj);
                         }
                       } catch (e) {
-                        log('Fallback to non-compact mode unpaved toggle method failed: ' + e);
+                        log(`Failed to update ${prop.name}: ` + e);
                       }
                     }
                   }
+                  try {
+                    wmeSDK.DataModel.Segments.updateAddress({
+                      segmentId: id,
+                      primaryStreetId: connectedSeg.primaryStreetId,
+                      alternateStreetIds: connectedSeg.alternateStreetIds || [],
+                    });
+                  } catch (addrError) {
+                    log('updateAddress error: ' + addrError);
+                  }
+                  // Copy all flag attributes
+                  copyFlagAttributes(connectedSeg.id, id);
                   alertMessageParts.push(`Copied all attributes from connected segment.`);
                   found = true;
                   break;
@@ -736,48 +824,50 @@
                 }
                 if (fallbackSegId) {
                   const connectedSeg = wmeSDK.DataModel.Segments.getById({ segmentId: fallbackSegId });
-                  wmeSDK.DataModel.Segments.updateSegment({
-                    segmentId: id,
-                    fwdSpeedLimit: connectedSeg.fwdSpeedLimit,
-                    revSpeedLimit: connectedSeg.revSpeedLimit,
-                    roadType: connectedSeg.roadType,
-                    lockRank: connectedSeg.lockRank,
-                  });
-                  wmeSDK.DataModel.Segments.updateAddress({
-                    segmentId: id,
-                    primaryStreetId: connectedSeg.primaryStreetId,
-                    alternateStreetIds: connectedSeg.alternateStreetIds || [],
-                  });
-                  // Copy paved/unpaved
-                  const isUnpaved = connectedSeg.flagAttributes && connectedSeg.flagAttributes.unpaved === true;
-                  let toggled = false;
-                  const segPanel = openPanel;
-                  if (segPanel) {
-                    const unpavedIcon = segPanel.querySelector('.w-icon-unpaved-fill');
-                    if (unpavedIcon) {
-                      const unpavedChip = unpavedIcon.closest('wz-checkable-chip');
-                      if (unpavedChip) {
-                        if (isUnpaved !== (seg.flagAttributes && seg.flagAttributes.unpaved === true)) {
-                          unpavedChip.click();
-                          toggled = true;
-                        }
-                      }
-                    }
-                    if (!toggled) {
+                  try {
+                    wmeSDK.DataModel.Segments.updateSegment({
+                      segmentId: id,
+                      fwdSpeedLimit: connectedSeg.fwdSpeedLimit,
+                      revSpeedLimit: connectedSeg.revSpeedLimit,
+                      roadType: connectedSeg.roadType,
+                      lockRank: connectedSeg.lockRank,
+                      elevationLevel: connectedSeg.elevationLevel,
+                      direction: getDirectionFromSegment(connectedSeg),
+                    });
+                  } catch (updateError) {
+                    log('updateSegment error in fallback (will retry with individual properties): ' + updateError);
+                    // Fallback: try updating properties individually
+                    const propsToTry = [
+                      { name: 'fwdSpeedLimit', value: connectedSeg.fwdSpeedLimit },
+                      { name: 'revSpeedLimit', value: connectedSeg.revSpeedLimit },
+                      { name: 'roadType', value: connectedSeg.roadType },
+                      { name: 'lockRank', value: connectedSeg.lockRank },
+                      { name: 'elevationLevel', value: connectedSeg.elevationLevel },
+                      { name: 'direction', value: getDirectionFromSegment(connectedSeg) },
+                    ];
+                    for (let prop of propsToTry) {
                       try {
-                        const wzCheckbox = segPanel.querySelector('wz-checkbox[name="unpaved"]');
-                        if (wzCheckbox) {
-                          const hiddenInput = wzCheckbox.querySelector('input[type="checkbox"][name="unpaved"]');
-                          if (hiddenInput && hiddenInput.checked !== isUnpaved) {
-                            hiddenInput.click();
-                            toggled = true;
-                          }
+                        if (prop.value !== undefined && prop.value !== null) {
+                          const updateObj = { segmentId: id };
+                          updateObj[prop.name] = prop.value;
+                          wmeSDK.DataModel.Segments.updateSegment(updateObj);
                         }
                       } catch (e) {
-                        log('Fallback to non-compact mode unpaved toggle method failed: ' + e);
+                        log(`Failed to update ${prop.name}: ` + e);
                       }
                     }
                   }
+                  try {
+                    wmeSDK.DataModel.Segments.updateAddress({
+                      segmentId: id,
+                      primaryStreetId: connectedSeg.primaryStreetId,
+                      alternateStreetIds: connectedSeg.alternateStreetIds || [],
+                    });
+                  } catch (addrError) {
+                    log('updateAddress error in fallback: ' + addrError);
+                  }
+                  // Copy all flag attributes
+                  copyFlagAttributes(connectedSeg.id, id);
                   alertMessageParts.push(`Copied all attributes from connected segment.`);
                   log(`Copied all attributes from connected segment (fallback, no valid street name).`);
                 } else {
@@ -954,9 +1044,9 @@
                 });
                 // Compare using loose equality (==) to treat null and undefined as equivalent
                 // This ensures we don't try to update when segment already has no speed limit
-                const needsUpdate = (seg.fwdSpeedLimit != speedToSet || seg.revSpeedLimit != speedToSet);
+                const needsUpdate = seg.fwdSpeedLimit != speedToSet || seg.revSpeedLimit != speedToSet;
                 log(`Current fwd speed: ${seg.fwdSpeedLimit}, rev speed: ${seg.revSpeedLimit}, target speed: ${speedToSet}, needs update: ${needsUpdate}`);
-                
+
                 if (needsUpdate) {
                   wmeSDK.DataModel.Segments.updateSegment({
                     segmentId: id,
@@ -1524,7 +1614,8 @@
         id: 'copySegmentAttributes',
         text: 'Copy Connected Segment Attribute',
         key: 'copySegmentAttributes',
-        tooltip: 'Copies all major attributes (road type, lock level, speed limits, paved/unpaved status, primary and alternate street names, and city) from a connected segment. When enabled, it overrides all other options except Autosave. Use shortcut key or (Quick Update Segment) to apply.',
+        tooltip:
+          'Copies all major attributes (road type, lock level, speed limits, paved/unpaved status, primary and alternate street names, and city) from a connected segment. When enabled, it overrides all other options except Autosave. Use shortcut key or (Quick Update Segment) to apply.',
       },
     ];
 
@@ -1798,13 +1889,13 @@
           // Update in-memory localOptions and UI
           localOptions.locks = importData.locks;
           localOptions.speeds = importData.speeds;
-          
+
           // Import custom presets if they exist
           if (importData.customPresets) {
             window.localStorage.setItem('WME_EZRoads_Mod_CustomPresets', JSON.stringify(importData.customPresets));
             refreshPresetsList();
           }
-          
+
           // Update lock dropdowns
           $('.road-lock-level').each(function () {
             const roadId = $(this).data('road-id');
@@ -1819,9 +1910,7 @@
           });
           if (WazeToastr?.Alerts) {
             const presetsCount = importData.customPresets ? Object.keys(importData.customPresets).length : 0;
-            const message = presetsCount > 0 
-              ? `Config imported with ${presetsCount} preset(s)!` 
-              : 'Config imported and applied!';
+            const message = presetsCount > 0 ? `Config imported with ${presetsCount} preset(s)!` : 'Config imported and applied!';
             WazeToastr.Alerts.success('EZRoads Mod', message, false, false, 2000);
           } else {
             alert('Config imported and applied!');
@@ -1853,7 +1942,7 @@
         const presetNames = Object.keys(presets);
         const currentPresetName = getCurrentPresetName();
         const isModified = isCurrentPresetModified();
-        
+
         if (presetNames.length === 0) {
           presetsListDiv.append('<div style="color:#888;font-style:italic;font-size:0.85em;">No presets saved.</div>');
           return;
@@ -1862,9 +1951,9 @@
         presetNames.forEach((presetName) => {
           const presetData = presets[presetName];
           const savedDate = presetData.savedAt ? new Date(presetData.savedAt).toLocaleDateString() : 'Unknown';
-          const isCurrent = (currentPresetName === presetName && !isModified);
+          const isCurrent = currentPresetName === presetName && !isModified;
           const currentIndicator = isCurrent ? '<span style="color:#4CAF50; font-weight:bold; margin-right:5px;">Current</span>' : '';
-          
+
           const presetDiv = $(
             `<div class="ezroadsmod-preset-item" style="margin-bottom:5px; padding:5px 5px 5px 5px; background-color:rgba(128, 128, 128, 0.12); border-radius:3px;">
               <div style="display:flex; align-items:center; justify-content:space-between; padding-right:15px;">
@@ -1886,7 +1975,7 @@
 
       // Initial load of presets list
       refreshPresetsList();
-      
+
       // Add event listener for refreshing presets list when settings change
       $('#ezroadsmod-presets-list').on('refresh-presets', refreshPresetsList);
 
@@ -1897,7 +1986,7 @@
           alert('Please enter a preset name.');
           return;
         }
-        
+
         const presets = getCustomPresets();
         if (presets[presetName]) {
           if (!confirm(`Preset "${presetName}" already exists. Overwrite it?`)) {
@@ -1924,24 +2013,24 @@
           const options = getOptions();
           localOptions.locks = options.locks;
           localOptions.speeds = options.speeds;
-          
+
           // Update lock dropdowns
           $('.road-lock-level').each(function () {
             const roadId = $(this).data('road-id');
             const lockSetting = localOptions.locks.find((l) => l.id == roadId);
             if (lockSetting) $(this).val(lockSetting.lock);
           });
-          
+
           // Update speed inputs
           $('.road-speed').each(function () {
             const roadId = $(this).data('road-id');
             const speedSetting = localOptions.speeds.find((s) => s.id == roadId);
             if (speedSetting) $(this).val(speedSetting.speed);
           });
-          
+
           // Refresh the presets list to show the current indicator
           refreshPresetsList();
-          
+
           if (WazeToastr?.Alerts) {
             WazeToastr.Alerts.success('EZRoads Mod', `Preset "${presetName}" loaded!`, false, false, 2000);
           } else {
@@ -1958,7 +2047,7 @@
         if (!confirm(`Are you sure you want to delete preset "${presetName}"?`)) {
           return;
         }
-        
+
         if (deleteCustomPreset(presetName)) {
           refreshPresetsList();
           if (WazeToastr?.Alerts) {
@@ -1972,25 +2061,35 @@
       });
     });
   };
-    function scriptupdatemonitor() {
-      if (WazeToastr?.Ready) {
-        // Create and start the ScriptUpdateMonitor
-        const updateMonitor = new WazeToastr.Alerts.ScriptUpdateMonitor(scriptName, scriptVersion, downloadUrl, GM_xmlhttpRequest);
-        updateMonitor.start(2, true); // Check every 2 hours, check immediately
+  function scriptupdatemonitor() {
+    if (WazeToastr?.Ready) {
+      // Create and start the ScriptUpdateMonitor
+      const updateMonitor = new WazeToastr.Alerts.ScriptUpdateMonitor(scriptName, scriptVersion, downloadUrl, GM_xmlhttpRequest);
+      updateMonitor.start(2, true); // Check every 2 hours, check immediately
 
-        // Show the update dialog for the current version
-        WazeToastr.Interface.ShowScriptUpdate(scriptName, scriptVersion, updateMessage, downloadUrl, forumURL);
-      } else {
-        setTimeout(scriptupdatemonitor, 250);
-      }
+      // Show the update dialog for the current version
+      WazeToastr.Interface.ShowScriptUpdate(scriptName, scriptVersion, updateMessage, downloadUrl, forumURL);
+    } else {
+      setTimeout(scriptupdatemonitor, 250);
     }
-    scriptupdatemonitor();
+  }
+  scriptupdatemonitor();
   console.log(`${scriptName} initialized.`);
 
   /*
 Change Log
 
 Version
+2.6.1 - 2025-12-29
+- Enhanced "Copy Connected Segment Attribute" feature:
+  - Now copies all segment attributes including:
+    - Direction (one-way A→B, B→A, or two-way)
+    - Forward and reverse speed limits
+    - Road type
+    - Lock rank
+    - Elevation level
+    - Primary and alternate street names
+    - Unpaved status
 2.6.0.0 - 2025-12-28
 - Added "Current" preset indicator: Shows which preset is currently loaded with a green badge.
 - Current indicator disappears when settings are modified, reappears when saved back to the same preset.
