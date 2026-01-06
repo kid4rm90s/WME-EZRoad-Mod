@@ -17,8 +17,8 @@
 // @connect      greasyfork.org
 // @require      https://cdn.jsdelivr.net/npm/@turf/turf@7/turf.min.js
 // @require      https://greasyfork.org/scripts/560385/code/WazeToastr.js
-// @downloadURL https://update.greasyfork.org/scripts/528552/WME%20EZRoad%20Mod%20Beta.user.js
-// @updateURL https://update.greasyfork.org/scripts/528552/WME%20EZRoad%20Mod%20Beta.meta.js
+// @downloadURL https://github.com/kid4rm90s/WME-EZRoad-Mod/raw/refs/heads/main/WME%20EZRoad%20Mod%20beta.user.js
+// @updateURL https://github.com/kid4rm90s/WME-EZRoad-Mod/raw/refs/heads/main/WME%20EZRoad%20Mod%20beta.user.js
 
 // ==/UserScript==
 
