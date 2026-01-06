@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.3
+// @version      2.6.4
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -66,6 +66,7 @@
     speeds: roadTypes.map((roadType) => ({ id: roadType.id, speed: 40 })),
     copySegmentAttributes: false,
     showSegmentLength: false,
+    checkGeometryIssues: false,
     shortcutKey: 'g',
   };
 
@@ -498,9 +499,82 @@
     log('Completed Init');
   };
 
+  // ===== Geometry Quality Check Helper =====
+  /**
+   * Checks if any intermediate geometry nodes are too close to segment endpoints
+   * @param {Object} segment - WME segment object
+   * @param {number} thresholdMeters - Distance threshold in meters (default: 1)
+   * @returns {Object} { hasIssue: boolean, details: Array }
+   */
+  function checkGeometryNodePlacement(segment, thresholdMeters = 1) {
+    if (!segment || !segment.geometry || !segment.geometry.coordinates) {
+      return { hasIssue: false, details: [] };
+    }
+    
+    if (typeof turf === 'undefined') {
+      log('ERROR: Turf.js is not loaded!');
+      return { hasIssue: false, details: [] };
+    }
+    
+    const coords = segment.geometry.coordinates;
+    
+    // Need at least 3 points (start, intermediate, end) to have geometry nodes
+    if (coords.length < 3) {
+      return { hasIssue: false, details: [] };
+    }
+    
+    const nodeA = turf.point(coords[0]); // First coordinate (Node A)
+    const nodeB = turf.point(coords[coords.length - 1]); // Last coordinate (Node B)
+    const issues = [];
+    
+    // Check intermediate points (geometry nodes)
+    for (let i = 1; i < coords.length - 1; i++) {
+      const geometryNode = turf.point(coords[i]);
+      
+      // Calculate distance to Node A
+      const distanceToA = turf.distance(geometryNode, nodeA, { units: 'meters' });
+      if (distanceToA <= thresholdMeters) {
+        issues.push({
+          nodeIndex: i,
+          distanceToA: distanceToA,
+          distanceToB: null,
+          closeTo: 'A',
+          coordinates: coords[i]
+        });
+      }
+      
+      // Calculate distance to Node B
+      const distanceToB = turf.distance(geometryNode, nodeB, { units: 'meters' });
+      if (distanceToB <= thresholdMeters) {
+        issues.push({
+          nodeIndex: i,
+          distanceToA: null,
+          distanceToB: distanceToB,
+          closeTo: 'B',
+          coordinates: coords[i]
+        });
+      }
+    }
+    
+    return {
+      hasIssue: issues.length > 0,
+      details: issues,
+      segmentId: segment.id,
+      totalGeometryNodes: coords.length - 2 // Exclude start and end
+    };
+  }
+
   // ===== Segment Length Display Functionality =====
   let segmentLengthContainer = null;
   let segmentLabelCache = []; // Cache segment data and label elements
+  
+  // Store last map bounds to detect changes
+  let lastBounds = null;
+  let lastZoom = null;
+  let updateInterval = null;
+  let isMapMoving = false;
+  let updateFrameRequest = null;
+
   
   // Define helper functions first
   function clearSegmentLengthDisplay() {
@@ -513,7 +587,7 @@
   // Rebuild segment data and create new labels (expensive - only on zoom/data changes)
   function rebuildSegmentLengthDisplay() {
     const options = getOptions();
-    if (!options.showSegmentLength || !segmentLengthContainer) {
+    if ((!options.showSegmentLength && !options.checkGeometryIssues) || !segmentLengthContainer) {
       return;
     }
     
@@ -544,60 +618,103 @@
         north: extent[3]
       };
       
+      // Use a DocumentFragment to batch DOM insertions (Performance optimization)
+      const fragment = document.createDocumentFragment();
+
       allSegments.forEach(segment => {
         try {
           const geometry = segment.geometry;
           if (!geometry || !geometry.coordinates || geometry.coordinates.length < 2) {
             return;
           }
-          
-          const line = turf.lineString(geometry.coordinates);
-          const lengthMeters = turf.length(line, { units: 'meters' });
-          
-          if (lengthMeters > 20) {
-            return;
+
+          // 1. Check for geometry issues (Priority)
+          if (options.checkGeometryIssues) {
+             const geoResult = checkGeometryNodePlacement(segment, 1);
+             if (geoResult.hasIssue) {
+                geoResult.details.forEach(issue => {
+                     // Check visibility
+                     if (issue.coordinates[0] < mapBounds.west || issue.coordinates[0] > mapBounds.east ||
+                         issue.coordinates[1] < mapBounds.south || issue.coordinates[1] > mapBounds.north) {
+                        return; 
+                     }
+
+                     const pinDiv = document.createElement('div');
+                     pinDiv.innerHTML = '📍'; // Pin icon
+                     pinDiv.style.position = 'absolute';
+                     pinDiv.style.width = '30px';
+                     pinDiv.style.height = '30px';
+                     pinDiv.style.display = 'flex';
+                     pinDiv.style.alignItems = 'center';
+                     pinDiv.style.justifyContent = 'center';
+                     pinDiv.style.fontSize = '30px';
+                     pinDiv.style.pointerEvents = 'none';
+                     
+                     fragment.appendChild(pinDiv);
+                     
+                     segmentLabelCache.push({
+                         lon: issue.coordinates[0],
+                         lat: issue.coordinates[1],
+                         labelDiv: pinDiv,
+                         offsetX: 10, // Center of 20px
+                         offsetY: 20  // Shift up
+                     });
+                });
+             }
           }
           
-          const midPointFeature = turf.along(line, lengthMeters / 2, { units: 'meters' });
-          const midCoords = midPointFeature.geometry.coordinates;
-          
-          if (midCoords[0] < mapBounds.west || midCoords[0] > mapBounds.east ||
-              midCoords[1] < mapBounds.south || midCoords[1] > mapBounds.north) {
-            return;
+          // 2. Show Segment Length
+          if (options.showSegmentLength) {
+              const line = turf.lineString(geometry.coordinates);
+              const lengthMeters = turf.length(line, { units: 'meters' });
+              
+              if (lengthMeters <= 20) {
+                  const midPointFeature = turf.along(line, lengthMeters / 2, { units: 'meters' });
+                  const midCoords = midPointFeature.geometry.coordinates;
+                  
+                  if (midCoords[0] >= mapBounds.west && midCoords[0] <= mapBounds.east &&
+                      midCoords[1] >= mapBounds.south && midCoords[1] <= mapBounds.north) {
+                      
+                      // Create label element
+                      const labelDiv = document.createElement('div');
+                      labelDiv.style.position = 'absolute';
+                      labelDiv.style.width = '30px';
+                      labelDiv.style.height = '30px';
+                      labelDiv.style.borderRadius = '50%';
+                      labelDiv.style.backgroundColor = '#ff6600a1';
+                      labelDiv.style.display = 'flex';
+                      labelDiv.style.alignItems = 'center';
+                      labelDiv.style.justifyContent = 'center';
+                      labelDiv.style.color = 'white';
+                      labelDiv.style.fontSize = '12px';
+                      labelDiv.style.fontWeight = 'bold';
+                      labelDiv.style.pointerEvents = 'none';
+                      labelDiv.textContent = Math.round(lengthMeters);
+                      
+                      fragment.appendChild(labelDiv);
+                      
+                      segmentLabelCache.push({
+                        lon: midCoords[0],
+                        lat: midCoords[1],
+                        labelDiv: labelDiv,
+                        offsetX: 15,
+                        offsetY: 35
+                      });
+                  }
+              }
           }
-          
-          // Create label element
-          const labelDiv = document.createElement('div');
-          labelDiv.style.position = 'absolute';
-          labelDiv.style.width = '30px';
-          labelDiv.style.height = '30px';
-          labelDiv.style.borderRadius = '50%';
-          labelDiv.style.backgroundColor = '#ff6600a1';
-          labelDiv.style.display = 'flex';
-          labelDiv.style.alignItems = 'center';
-          labelDiv.style.justifyContent = 'center';
-          labelDiv.style.color = 'white';
-          labelDiv.style.fontSize = '12px';
-          labelDiv.style.fontWeight = 'bold';
-          labelDiv.style.pointerEvents = 'none';
-          labelDiv.textContent = Math.round(lengthMeters);
-          
-          segmentLengthContainer.appendChild(labelDiv);
-          
-          // Cache the segment data and label element
-          segmentLabelCache.push({
-            lon: midCoords[0],
-            lat: midCoords[1],
-            labelDiv: labelDiv
-          });
           
         } catch (err) {
           // Silent error handling
         }
       });
       
+      // Batch append all elements to the DOM
+      segmentLengthContainer.appendChild(fragment);
+
       // Update positions after creating labels
       updateSegmentLabelPositions();
+      
       
     } catch (error) {
       log('Error rebuilding segment length display: ' + error.message);
@@ -617,8 +734,10 @@
         });
         
         if (pixel && typeof pixel.x === 'number' && typeof pixel.y === 'number') {
-          cached.labelDiv.style.left = (pixel.x - 15) + 'px';
-          cached.labelDiv.style.top = (pixel.y - 35) + 'px';
+          const offX = cached.offsetX || 15;
+          const offY = cached.offsetY || 35;
+          cached.labelDiv.style.left = (pixel.x - offX) + 'px';
+          cached.labelDiv.style.top = (pixel.y - offY) + 'px';
         }
       });
     } catch (err) {
@@ -626,14 +745,71 @@
     }
   }
   
+  // Poll for map changes and update display
+  function checkAndUpdate() {
+      // Do not update if map is currently moving
+      if (typeof isMapMoving !== 'undefined' && isMapMoving) return;
+
+      const options = getOptions();
+      if (!options.showSegmentLength && !options.checkGeometryIssues) {
+        if (segmentLengthContainer) segmentLengthContainer.style.display = 'none';
+        return;
+      } else {
+        if (segmentLengthContainer) segmentLengthContainer.style.display = 'block';
+      }
+      
+      try {
+        let extent;
+        let currentZoom;
+        
+        try {
+           extent = wmeSDK.Map.getMapExtent();
+           currentZoom = wmeSDK.Map.getZoomLevel();
+        } catch(e) {
+           return;
+        }
+
+        const currentBounds = {
+          west: extent[0],
+          south: extent[1],
+          east: extent[2],
+          north: extent[3]
+        };
+        
+        // Check if map has moved or zoomed
+        if (!lastBounds || 
+            lastBounds.north !== currentBounds.north ||
+            lastBounds.south !== currentBounds.south ||
+            lastBounds.east !== currentBounds.east ||
+            lastBounds.west !== currentBounds.west ||
+            lastZoom !== currentZoom) {
+          
+          lastBounds = currentBounds;
+          lastZoom = currentZoom;
+          rebuildSegmentLengthDisplay();
+        }
+      } catch (e) {}
+  }
+
   function handleSegmentLengthToggle() {
     const options = getOptions();
-    if (options.showSegmentLength) {
+    if (options.showSegmentLength || options.checkGeometryIssues) {
       if (segmentLengthContainer) segmentLengthContainer.style.display = 'block';
+      
+      // Ensure polling is active
+      if (!updateInterval) {
+          updateInterval = setInterval(checkAndUpdate, 500);
+      }
       rebuildSegmentLengthDisplay();
     } else {
       if (segmentLengthContainer) segmentLengthContainer.style.display = 'none';
       clearSegmentLengthDisplay();
+      
+      // Stop polling
+      if (updateInterval) {
+          clearInterval(updateInterval);
+          updateInterval = null;
+      }
     }
   }
   
@@ -674,12 +850,8 @@
     viewportDiv.appendChild(segmentLengthContainer);
     log('Container appended to map viewport');
     
-    // Store last map bounds to detect changes
-    let lastBounds = null;
-    let lastZoom = null;
-    let updateInterval = null;
-    let isMapMoving = false;
-    let updateFrameRequest = null;
+    // Variables are now defined in outer scope to allow access from handleSegmentLengthToggle
+    // lastBounds, lastZoom, updateInterval, isMapMoving, updateFrameRequest
 
     // Event handlers for map movement using SDK events
     const onMapMove = function() {
@@ -692,7 +864,7 @@
         updateFrameRequest = requestAnimationFrame(() => {
             updateFrameRequest = null;
             const options = getOptions();
-            if (options.showSegmentLength && segmentLengthContainer && segmentLengthContainer.style.display !== 'none') {
+            if ((options.showSegmentLength || options.checkGeometryIssues) && segmentLengthContainer && segmentLengthContainer.style.display !== 'none') {
                 updateSegmentLabelPositions(); // Fast position update only
             }
         });
@@ -702,7 +874,7 @@
         isMapMoving = false;
         // Rebuild labels after movement ends (checks if segments entered/left viewport)
         const options = getOptions();
-        if (options.showSegmentLength && segmentLengthContainer) {
+        if ((options.showSegmentLength || options.checkGeometryIssues) && segmentLengthContainer) {
             segmentLengthContainer.style.display = 'block';
             rebuildSegmentLengthDisplay();
 
@@ -722,7 +894,7 @@
 
     const onZoomChanged = function() {
         const options = getOptions();
-        if (options.showSegmentLength && segmentLengthContainer) {
+        if ((options.showSegmentLength || options.checkGeometryIssues) && segmentLengthContainer) {
             rebuildSegmentLengthDisplay(); // Full rebuild on zoom
             try {
                 let extent = wmeSDK.Map.getMapExtent();
@@ -753,86 +925,12 @@
         eventHandler: onZoomChanged
     });
     
-    // Poll for map changes and update display
-    const checkAndUpdate = function() {
-      // Do not update if map is currently moving
-      if (isMapMoving) return;
-
-      const options = getOptions();
-      if (!options.showSegmentLength) {
-        if (segmentLengthContainer) segmentLengthContainer.style.display = 'none';
-        return;
-      } else {
-        if (segmentLengthContainer) segmentLengthContainer.style.display = 'block';
-      }
-      
-      try {
-        let extent;
-        let currentZoom;
-        
-        try {
-           extent = wmeSDK.Map.getMapExtent(); // Updated method name
-           currentZoom = wmeSDK.Map.getZoomLevel(); // Updated method name
-        } catch(e) {
-           return;
-        }
-
-        // BBox is [left, bottom, right, top]
-        const currentBounds = {
-          west: extent[0],
-          south: extent[1],
-          east: extent[2],
-          north: extent[3]
-        };
-        
-        // Check if map has moved or zoomed
-        if (!lastBounds || 
-            lastBounds.north !== currentBounds.north ||
-            lastBounds.south !== currentBounds.south ||
-            lastBounds.east !== currentBounds.east ||
-            lastBounds.west !== currentBounds.west ||
-            lastZoom !== currentZoom) {
-          
-          lastBounds = currentBounds;
-          lastZoom = currentZoom;
-          rebuildSegmentLengthDisplay();
-        }
-      } catch (e) {
-        // log('Error checking map changes: ' + e.message);
-      }
-    };
     
-    // Listen for option changes
-    const checkInterval = setInterval(() => {
-      const showLengthCheckbox = document.getElementById('showSegmentLength');
-      if (showLengthCheckbox) {
-        showLengthCheckbox.addEventListener('change', function() {
-          handleSegmentLengthToggle();
-          
-          // Start/stop polling based on checkbox state
-          const options = getOptions();
-          if (options.showSegmentLength) {
-            if (!updateInterval) {
-              updateInterval = setInterval(checkAndUpdate, 500); // Check every 500ms
-            }
-            updateSegmentLengthDisplay(); // Initial update
-          } else {
-            if (updateInterval) {
-            rebuildrInterval(updateInterval);
-              updateInterval = null;
-            }
-          }
-        });
-        clearInterval(checkInterval);
-        
-        // Initialize polling if already enabled
-        const options = getOptions();
-        if (options.showSegmentLength) {
-            updateSegmentLengthDisplay();
-            updateInterval = setInterval(checkAndUpdate, 500);
-        }
-      }rebuild
-    }, 500);
+    // Initialize polling if already enabled
+    const options = getOptions();
+    if (options.showSegmentLength || options.checkGeometryIssues) {
+        handleSegmentLengthToggle();
+    }
     
     log('Segment length layer initialized');
   }
@@ -1990,6 +2088,12 @@
         key: 'showSegmentLength',
         tooltip: 'Displays segment length in an orange circle with white font for segments 20 meters or shorter in the visible map area.',
       },
+      {
+        id: 'checkGeometryIssues',
+        text: 'Check Geometry issues near node',
+        key: 'checkGeometryIssues',
+        tooltip: 'Checks if any intermediate geometry nodes are too close (within 1m) to the start or end nodes. Displays a pin icon if an issue is found.',
+      },
     ];
 
     // Helper function to create radio buttons
@@ -2079,6 +2183,11 @@
         } else {
           // Autosave
           update(option.key, $(`#${option.id}`).prop('checked'));
+        }
+        
+        // Handle Segment Length / Geometry Check toggle
+        if (option.key === 'showSegmentLength' || option.key === 'checkGeometryIssues' || option.key === 'copySegmentAttributes') {
+            handleSegmentLengthToggle();
         }
       });
       return div;
