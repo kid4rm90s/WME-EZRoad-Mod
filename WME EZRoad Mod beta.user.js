@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         WME EZRoad Mod beta
+// @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.5.9.6
+// @version      2.6.3
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -11,14 +11,14 @@
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_info
-// @grant 		 unsafeWindow
+// @grant        unsafeWindow
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=waze.com
 // @license      GNU GPL(v3)
-// @connect      githubusercontent.com
-// @require      https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
-// @require      https://update.greasyfork.org/scripts/509664/WME%20Utils%20-%20Bootstrap.js
-// @downloadURL https://raw.githubusercontent.com/kid4rm90s/WME-EZRoad-Mod/main/WME%20EZRoad%20Mod%20beta.user.js
-// @updateURL https://raw.githubusercontent.com/kid4rm90s/WME-EZRoad-Mod/main/WME%20EZRoad%20Mod%20beta.user.js
+// @connect      greasyfork.org
+// @require      https://cdn.jsdelivr.net/npm/@turf/turf@7/turf.min.js
+// @require      https://greasyfork.org/scripts/560385/code/WazeToastr.js
+// @downloadURL https://update.greasyfork.org/scripts/528552/WME%20EZRoad%20Mod%20Beta.user.js
+// @updateURL https://update.greasyfork.org/scripts/528552/WME%20EZRoad%20Mod%20Beta.meta.js
 
 // ==/UserScript==
 
@@ -26,13 +26,11 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `
-<b>2.5.9.6 - 2025-08-05</b><br>
-- Bug fix: Enhanced "Copy Connected Segment Attribute" logic.<br>`;
+  const updateMessage = `<strong>Bug Fix:</strong><br> - Fixed auto city detection when "Set city as none" is unchecked. The script now properly checks connected segments for valid cities instead of defaulting to "None" when the displayed city is empty or unavailable.`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
-  const downloadUrl = 'https://raw.githubusercontent.com/kid4rm90s/WME-EZRoad-Mod/main/WME%20EZRoad%20Mod%20beta.user.js';
-  const forumURL = 'https://greasyfork.org/scripts/528552-wme-ezroad-Mod-Beta/feedback';
+  const downloadUrl = 'https://greasyfork.org/scripts/528552-wme-ezroad-mod/code/wme-ezroad-mod.user.js';
+  const forumURL = 'https://greasyfork.org/scripts/528552-wme-ezroad-mod/feedback';
   let wmeSDK;
 
   const roadTypes = [
@@ -67,6 +65,7 @@
     locks: roadTypes.map((roadType) => ({ id: roadType.id, lock: String(1) })),
     speeds: roadTypes.map((roadType) => ({ id: roadType.id, speed: 40 })),
     copySegmentAttributes: false,
+    showSegmentLength: false,
     shortcutKey: 'g',
   };
 
@@ -82,9 +81,9 @@
 
   const log = (message) => {
     if (typeof message === 'string') {
-      console.log('WME_EZRoads_Mod_Beta: ' + message);
+      console.log('WME_EZRoads_Mod: ' + message);
     } else {
-      console.log('WME_EZRoads_Mod_Beta: ', message);
+      console.log('WME_EZRoads_Mod: ', message);
     }
   };
 
@@ -92,10 +91,10 @@
 
   function initScript() {
     wmeSDK = getWmeSdk({
-      scriptId: 'wme-ez-roads-Mod-Beta',
-      scriptName: 'EZ Roads Mod Beta',
+      scriptId: 'wme-ez-roads-mod',
+      scriptName: 'EZ Roads Mod',
     });
-    WME_EZRoads_Mod_Beta_bootstrap();
+    WME_EZRoads_Mod_bootstrap();
   }
 
   const getCurrentCountry = () => {
@@ -123,16 +122,25 @@
   function getFirstConnectedSegmentAddress(segmentId) {
     const nonMatches = [];
     const segmentIDsToSearch = [segmentId];
-    const hasAddress = (id) => {
+    const hasValidCity = (id) => {
       const addr = wmeSDK.DataModel.Segments.getAddress({ segmentId: id });
-      return addr && !addr.isEmpty;
+      // Check if address has a city and the city is not empty
+      if (addr && addr.city && addr.city.id) {
+        const city = wmeSDK.DataModel.Cities.getById({ cityId: addr.city.id });
+        return city && !city.isEmpty;
+      }
+      return false;
     };
     while (segmentIDsToSearch.length > 0) {
       const startSegmentID = segmentIDsToSearch.pop();
       const connectedSegmentIDs = getConnectedSegmentIDs(startSegmentID);
-      const hasAddrSegmentId = connectedSegmentIDs.find(hasAddress);
-      if (hasAddrSegmentId) {
-        return wmeSDK.DataModel.Segments.getAddress({ segmentId: hasAddrSegmentId });
+      log(`Checking connected segments for segment ${startSegmentID}: ${connectedSegmentIDs.join(', ')}`);
+
+      const hasValidCitySegmentId = connectedSegmentIDs.find(hasValidCity);
+      if (hasValidCitySegmentId) {
+        const addr = wmeSDK.DataModel.Segments.getAddress({ segmentId: hasValidCitySegmentId });
+        log(`Found valid city in connected segment ${hasValidCitySegmentId}`);
+        return addr;
       }
       nonMatches.push(startSegmentID);
       connectedSegmentIDs.forEach((segmentID) => {
@@ -141,15 +149,103 @@
         }
       });
     }
+    log('No valid city found in any connected segments');
     return null;
   }
 
+  // --- Helper to get the direction value from a segment for copying ---
+  function getDirectionFromSegment(segment) {
+    if (!segment) return null;
+    if (segment.isTwoWay) return 'TWO_WAY';
+    if (segment.isAtoB) return 'A_TO_B';
+    if (segment.isBtoA) return 'B_TO_A';
+    return null;
+  }
+
+  // --- Helper to copy all flag attributes from one segment to another ---
+  function copyFlagAttributes(fromSegmentId, toSegmentId) {
+    const fromSeg = wmeSDK.DataModel.Segments.getById({ segmentId: fromSegmentId });
+    const toSeg = wmeSDK.DataModel.Segments.getById({ segmentId: toSegmentId });
+
+    if (!fromSeg || !toSeg || !fromSeg.flagAttributes) {
+      return;
+    }
+
+    const segPanel = openPanel;
+    if (!segPanel) {
+      log('Segment panel not available for flag attribute updates');
+      return;
+    }
+
+    // Flag attribute mappings: { flagName: { selectorType, selector, checkedValue } }
+    const flagMappings = {
+      unpaved: { selectorType: 'checkbox', name: 'unpaved' },
+    };
+
+    for (let flagName in flagMappings) {
+      const mapping = flagMappings[flagName];
+      const fromValue = fromSeg.flagAttributes[flagName] === true;
+      const toValue = toSeg.flagAttributes && toSeg.flagAttributes[flagName] === true;
+
+      // Only update if values differ
+      if (fromValue === toValue) {
+        continue;
+      }
+
+      try {
+        // Try to find and click the checkbox
+        let checkboxFound = false;
+
+        // Try method 1: wz-checkable-chip with icon
+        const iconClass = flagName === 'unpaved' ? '.w-icon-unpaved-fill' : `.w-icon-${flagName.toLowerCase()}-fill`;
+        const unpavedIcon = segPanel.querySelector(iconClass);
+        if (unpavedIcon) {
+          const chip = unpavedIcon.closest('wz-checkable-chip');
+          if (chip) {
+            chip.click();
+            checkboxFound = true;
+            log(`Updated flag attribute ${flagName} via chip`);
+            continue;
+          }
+        }
+
+        // Try method 2: wz-checkbox with name attribute
+        const wzCheckbox = segPanel.querySelector(`wz-checkbox[name="${mapping.name}"]`);
+        if (wzCheckbox) {
+          const hiddenInput = wzCheckbox.querySelector(`input[type="checkbox"][name="${mapping.name}"]`);
+          if (hiddenInput && hiddenInput.checked !== fromValue) {
+            hiddenInput.click();
+            checkboxFound = true;
+            log(`Updated flag attribute ${flagName} via wz-checkbox`);
+            continue;
+          }
+        }
+
+        // Try method 3: regular checkbox
+        const regularCheckbox = segPanel.querySelector(`input[type="checkbox"][name="${mapping.name}"]`);
+        if (regularCheckbox && regularCheckbox.checked !== fromValue) {
+          regularCheckbox.click();
+          checkboxFound = true;
+          log(`Updated flag attribute ${flagName} via regular checkbox`);
+          continue;
+        }
+
+        if (!checkboxFound) {
+          log(`Could not find UI element for flag attribute ${flagName}`);
+        }
+      } catch (e) {
+        log(`Error updating flag attribute ${flagName}: ${e}`);
+      }
+    }
+  }
+
   const saveOptions = (options) => {
-    window.localStorage.setItem('WME_EZRoads_Mod_Beta_Options', JSON.stringify(options));
+    window.localStorage.setItem('WME_EZRoads_Mod_Options', JSON.stringify(options));
+    // Note: We don't clear current preset here, we check for modifications instead
   };
 
   const getOptions = () => {
-    const savedOptions = JSON.parse(window.localStorage.getItem('WME_EZRoads_Mod_Beta_Options')) || {};
+    const savedOptions = JSON.parse(window.localStorage.getItem('WME_EZRoads_Mod_Options')) || {};
     // Deep merge for locks and speeds arrays
     const mergeById = (defaults, saved, key) => {
       if (!Array.isArray(defaults)) return defaults;
@@ -173,22 +269,98 @@
     };
   };
 
-  const WME_EZRoads_Mod_Beta_bootstrap = () => {
+  const saveCustomPreset = (presetName) => {
+    const options = getOptions();
+    const presets = getCustomPresets();
+    presets[presetName] = {
+      locks: options.locks,
+      speeds: options.speeds,
+      savedAt: new Date().toISOString(),
+    };
+    window.localStorage.setItem('WME_EZRoads_Mod_CustomPresets', JSON.stringify(presets));
+    // If we're saving the current preset, it's now in sync
+    const currentPreset = getCurrentPresetName();
+    if (currentPreset === presetName) {
+      setCurrentPresetName(presetName); // Refresh to confirm it's current
+    }
+    return true;
+  };
+
+  const loadCustomPreset = (presetName) => {
+    const presets = getCustomPresets();
+    if (!presets[presetName]) return false;
+    const options = getOptions();
+    options.locks = presets[presetName].locks;
+    options.speeds = presets[presetName].speeds;
+    saveOptions(options);
+    setCurrentPresetName(presetName);
+    return true;
+  };
+
+  const deleteCustomPreset = (presetName) => {
+    const presets = getCustomPresets();
+    if (!presets[presetName]) return false;
+    delete presets[presetName];
+    window.localStorage.setItem('WME_EZRoads_Mod_CustomPresets', JSON.stringify(presets));
+    // Clear current preset if we're deleting it
+    if (getCurrentPresetName() === presetName) {
+      setCurrentPresetName(null);
+    }
+    return true;
+  };
+
+  const getCustomPresets = () => {
+    const presets = JSON.parse(window.localStorage.getItem('WME_EZRoads_Mod_CustomPresets')) || {};
+    return presets;
+  };
+
+  const getCurrentPresetName = () => {
+    return window.localStorage.getItem('WME_EZRoads_Mod_CurrentPreset') || null;
+  };
+
+  const setCurrentPresetName = (presetName) => {
+    if (presetName) {
+      window.localStorage.setItem('WME_EZRoads_Mod_CurrentPreset', presetName);
+    } else {
+      window.localStorage.removeItem('WME_EZRoads_Mod_CurrentPreset');
+    }
+  };
+
+  const isCurrentPresetModified = () => {
+    const currentPresetName = getCurrentPresetName();
+    if (!currentPresetName) return false;
+
+    const presets = getCustomPresets();
+    const preset = presets[currentPresetName];
+    if (!preset) {
+      setCurrentPresetName(null);
+      return false;
+    }
+
+    const currentOptions = getOptions();
+    // Compare locks and speeds
+    const locksMatch = JSON.stringify(currentOptions.locks) === JSON.stringify(preset.locks);
+    const speedsMatch = JSON.stringify(currentOptions.speeds) === JSON.stringify(preset.speeds);
+
+    return !(locksMatch && speedsMatch);
+  };
+
+  const WME_EZRoads_Mod_bootstrap = () => {
     if (!document.getElementById('edit-panel') || !wmeSDK.DataModel.Countries.getTopCountry()) {
-      setTimeout(WME_EZRoads_Mod_Beta_bootstrap, 250);
+      setTimeout(WME_EZRoads_Mod_bootstrap, 250);
       return;
     }
 
     if (wmeSDK.State.isReady) {
-      WME_EZRoads_Mod_Beta_init();
+      WME_EZRoads_Mod_init();
     } else {
-      wmeSDK.Events.once({ eventName: 'wme-ready' }).then(WME_EZRoads_Mod_Beta_init());
+      wmeSDK.Events.once({ eventName: 'wme-ready' }).then(WME_EZRoads_Mod_init());
     }
   };
 
   let openPanel;
 
-  const WME_EZRoads_Mod_Beta_init = () => {
+  const WME_EZRoads_Mod_init = () => {
     log('Initing');
 
     const options = getOptions();
@@ -306,8 +478,8 @@
               options.roadType = rt.value;
               saveOptions(options);
               updateRoadTypeRadios(rt.value);
-              if (WazeWrap?.Alerts) {
-                WazeWrap.Alerts.success('EZRoads Mod Beta', `Selected road type: <b>${rt.name}</b>`, false, false, 1500);
+              if (WazeToastr?.Alerts) {
+                WazeToastr.Alerts.success('EZRoads Mod', `Selected road type: <b>${rt.name}</b>`, false, false, 1500);
               }
             },
             description: `Select road type: ${rt.name}`,
@@ -320,8 +492,351 @@
       }
     });
 
+    // Initialize segment length display layer
+    initSegmentLengthLayer();
+
     log('Completed Init');
   };
+
+  // ===== Segment Length Display Functionality =====
+  let segmentLengthContainer = null;
+  let segmentLabelCache = []; // Cache segment data and label elements
+  
+  // Define helper functions first
+  function clearSegmentLengthDisplay() {
+    if (segmentLengthContainer) {
+      segmentLengthContainer.innerHTML = '';
+    }
+    segmentLabelCache = [];
+  }
+  
+  // Rebuild segment data and create new labels (expensive - only on zoom/data changes)
+  function rebuildSegmentLengthDisplay() {
+    const options = getOptions();
+    if (!options.showSegmentLength || !segmentLengthContainer) {
+      return;
+    }
+    
+    clearSegmentLengthDisplay();
+    
+    if (typeof turf === 'undefined') {
+      log('ERROR: Turf.js is not loaded!');
+      return;
+    }
+    
+    try {
+      const currentZoom = wmeSDK.Map.getZoomLevel();
+      if (currentZoom < 18) {
+        return;
+      }
+
+      const allSegments = wmeSDK.DataModel.Segments.getAll();
+      let extent = wmeSDK.Map.getMapExtent();
+      
+      if (!extent || !allSegments || allSegments.length === 0) {
+        return;
+      }
+
+      const mapBounds = {
+        west: extent[0],
+        south: extent[1],
+        east: extent[2],
+        north: extent[3]
+      };
+      
+      allSegments.forEach(segment => {
+        try {
+          const geometry = segment.geometry;
+          if (!geometry || !geometry.coordinates || geometry.coordinates.length < 2) {
+            return;
+          }
+          
+          const line = turf.lineString(geometry.coordinates);
+          const lengthMeters = turf.length(line, { units: 'meters' });
+          
+          if (lengthMeters > 20) {
+            return;
+          }
+          
+          const midPointFeature = turf.along(line, lengthMeters / 2, { units: 'meters' });
+          const midCoords = midPointFeature.geometry.coordinates;
+          
+          if (midCoords[0] < mapBounds.west || midCoords[0] > mapBounds.east ||
+              midCoords[1] < mapBounds.south || midCoords[1] > mapBounds.north) {
+            return;
+          }
+          
+          // Create label element
+          const labelDiv = document.createElement('div');
+          labelDiv.style.position = 'absolute';
+          labelDiv.style.width = '30px';
+          labelDiv.style.height = '30px';
+          labelDiv.style.borderRadius = '50%';
+          labelDiv.style.backgroundColor = '#ff6600a1';
+          labelDiv.style.display = 'flex';
+          labelDiv.style.alignItems = 'center';
+          labelDiv.style.justifyContent = 'center';
+          labelDiv.style.color = 'white';
+          labelDiv.style.fontSize = '12px';
+          labelDiv.style.fontWeight = 'bold';
+          labelDiv.style.pointerEvents = 'none';
+          labelDiv.textContent = Math.round(lengthMeters);
+          
+          segmentLengthContainer.appendChild(labelDiv);
+          
+          // Cache the segment data and label element
+          segmentLabelCache.push({
+            lon: midCoords[0],
+            lat: midCoords[1],
+            labelDiv: labelDiv
+          });
+          
+        } catch (err) {
+          // Silent error handling
+        }
+      });
+      
+      // Update positions after creating labels
+      updateSegmentLabelPositions();
+      
+    } catch (error) {
+      log('Error rebuilding segment length display: ' + error.message);
+    }
+  }
+  
+  // Fast position update - only updates pixel positions of existing labels
+  function updateSegmentLabelPositions() {
+    if (!segmentLengthContainer || segmentLabelCache.length === 0) {
+      return;
+    }
+    
+    try {
+      segmentLabelCache.forEach(cached => {
+        const pixel = wmeSDK.Map.getMapPixelFromLonLat({ 
+          lonLat: { lon: cached.lon, lat: cached.lat } 
+        });
+        
+        if (pixel && typeof pixel.x === 'number' && typeof pixel.y === 'number') {
+          cached.labelDiv.style.left = (pixel.x - 15) + 'px';
+          cached.labelDiv.style.top = (pixel.y - 35) + 'px';
+        }
+      });
+    } catch (err) {
+      // Silent error handling
+    }
+  }
+  
+  function handleSegmentLengthToggle() {
+    const options = getOptions();
+    if (options.showSegmentLength) {
+      if (segmentLengthContainer) segmentLengthContainer.style.display = 'block';
+      rebuildSegmentLengthDisplay();
+    } else {
+      if (segmentLengthContainer) segmentLengthContainer.style.display = 'none';
+      clearSegmentLengthDisplay();
+    }
+  }
+  
+  function initSegmentLengthLayer() {
+    log('Initializing segment length display layer');
+    
+    // Find viewport div - prefer standard class or ID
+    // Try SDK method first if possible, though getMapViewportElement might not be exposed on all versions? 
+    // Docs say getMapViewportElement() returns HTMLElement.
+    let viewportDiv;
+    try {
+        viewportDiv = wmeSDK.Map.getMapViewportElement();
+    } catch (e) {
+        log('SDK getMapViewportElement failed, trying fallbacks');
+    }
+    
+    if (!viewportDiv) {
+        viewportDiv = document.querySelector('.ol-viewport') || document.querySelector('#WazeMap') || document.querySelector('#map');
+    }
+   
+    if (!viewportDiv) {
+      log('Map viewport not found');
+      return;
+    }
+    
+    // Create div container for length labels
+    segmentLengthContainer = document.createElement('div');
+    segmentLengthContainer.id = 'ezroad-segment-length-container';
+    segmentLengthContainer.style.position = 'absolute';
+    segmentLengthContainer.style.top = '0';
+    segmentLengthContainer.style.left = '0';
+    segmentLengthContainer.style.width = '100%';
+    segmentLengthContainer.style.height = '100%';
+    segmentLengthContainer.style.pointerEvents = 'none';
+    segmentLengthContainer.style.zIndex = '1000';
+    segmentLengthContainer.style.display = 'none'; // Hidden by default
+    
+    viewportDiv.appendChild(segmentLengthContainer);
+    log('Container appended to map viewport');
+    
+    // Store last map bounds to detect changes
+    let lastBounds = null;
+    let lastZoom = null;
+    let updateInterval = null;
+    let isMapMoving = false;
+    let updateFrameRequest = null;
+
+    // Event handlers for map movement using SDK events
+    const onMapMove = function() {
+        isMapMoving = true;
+        // Use requestAnimationFrame to throttle position updates during map movement
+        if (updateFrameRequest) {
+            return; // Already scheduled
+        }
+        
+        updateFrameRequest = requestAnimationFrame(() => {
+            updateFrameRequest = null;
+            const options = getOptions();
+            if (options.showSegmentLength && segmentLengthContainer && segmentLengthContainer.style.display !== 'none') {
+                updateSegmentLabelPositions(); // Fast position update only
+            }
+        });
+    };
+
+    const onMoveEnd = function() {
+        isMapMoving = false;
+        // Rebuild labels after movement ends (checks if segments entered/left viewport)
+        const options = getOptions();
+        if (options.showSegmentLength && segmentLengthContainer) {
+            segmentLengthContainer.style.display = 'block';
+            rebuildSegmentLengthDisplay();
+
+             // Update lastBounds/Zoom to prevent redundant update from interval
+             try {
+                let extent = wmeSDK.Map.getMapExtent();
+                lastBounds = {
+                  west: extent[0],
+                  south: extent[1],
+                  east: extent[2],
+                  north: extent[3]
+                };
+                lastZoom = wmeSDK.Map.getZoomLevel();
+            } catch(e) {}
+        }
+    };
+
+    const onZoomChanged = function() {
+        const options = getOptions();
+        if (options.showSegmentLength && segmentLengthContainer) {
+            rebuildSegmentLengthDisplay(); // Full rebuild on zoom
+            try {
+                let extent = wmeSDK.Map.getMapExtent();
+                lastBounds = {
+                  west: extent[0],
+                  south: extent[1],
+                  east: extent[2],
+                  north: extent[3]
+                };
+                lastZoom = wmeSDK.Map.getZoomLevel();
+            } catch(e) {}
+        }
+    };
+
+    // Register SDK event listeners
+    wmeSDK.Events.on({
+        eventName: 'wme-map-move',
+        eventHandler: onMapMove
+    });
+    
+    wmeSDK.Events.on({
+        eventName: 'wme-map-move-end',
+        eventHandler: onMoveEnd
+    });
+    
+    wmeSDK.Events.on({
+        eventName: 'wme-map-zoom-changed',
+        eventHandler: onZoomChanged
+    });
+    
+    // Poll for map changes and update display
+    const checkAndUpdate = function() {
+      // Do not update if map is currently moving
+      if (isMapMoving) return;
+
+      const options = getOptions();
+      if (!options.showSegmentLength) {
+        if (segmentLengthContainer) segmentLengthContainer.style.display = 'none';
+        return;
+      } else {
+        if (segmentLengthContainer) segmentLengthContainer.style.display = 'block';
+      }
+      
+      try {
+        let extent;
+        let currentZoom;
+        
+        try {
+           extent = wmeSDK.Map.getMapExtent(); // Updated method name
+           currentZoom = wmeSDK.Map.getZoomLevel(); // Updated method name
+        } catch(e) {
+           return;
+        }
+
+        // BBox is [left, bottom, right, top]
+        const currentBounds = {
+          west: extent[0],
+          south: extent[1],
+          east: extent[2],
+          north: extent[3]
+        };
+        
+        // Check if map has moved or zoomed
+        if (!lastBounds || 
+            lastBounds.north !== currentBounds.north ||
+            lastBounds.south !== currentBounds.south ||
+            lastBounds.east !== currentBounds.east ||
+            lastBounds.west !== currentBounds.west ||
+            lastZoom !== currentZoom) {
+          
+          lastBounds = currentBounds;
+          lastZoom = currentZoom;
+          rebuildSegmentLengthDisplay();
+        }
+      } catch (e) {
+        // log('Error checking map changes: ' + e.message);
+      }
+    };
+    
+    // Listen for option changes
+    const checkInterval = setInterval(() => {
+      const showLengthCheckbox = document.getElementById('showSegmentLength');
+      if (showLengthCheckbox) {
+        showLengthCheckbox.addEventListener('change', function() {
+          handleSegmentLengthToggle();
+          
+          // Start/stop polling based on checkbox state
+          const options = getOptions();
+          if (options.showSegmentLength) {
+            if (!updateInterval) {
+              updateInterval = setInterval(checkAndUpdate, 500); // Check every 500ms
+            }
+            updateSegmentLengthDisplay(); // Initial update
+          } else {
+            if (updateInterval) {
+            rebuildrInterval(updateInterval);
+              updateInterval = null;
+            }
+          }
+        });
+        clearInterval(checkInterval);
+        
+        // Initialize polling if already enabled
+        const options = getOptions();
+        if (options.showSegmentLength) {
+            updateSegmentLengthDisplay();
+            updateInterval = setInterval(checkAndUpdate, 500);
+        }
+      }rebuild
+    }, 500);
+    
+    log('Segment length layer initialized');
+  }
+  // ===== End Segment Length Display Functionality =====
 
   // Helper to register the shortcut, avoids duplicate code
   function registerShortcut(shortcutKey) {
@@ -338,10 +853,10 @@
         shortcutId,
         shortcutKeys: shortcutKey,
       });
-      console.log(`[EZRoads Mod Beta] Shortcut '${shortcutKey}' for Quick Update Segments enabled.`);
+      console.log(`[EZRoads Mod] Shortcut '${shortcutKey}' for Quick Update Segments enabled.`);
     } catch (e) {
       // If shortcut registration fails (e.g., conflict), register with no key so it appears in WME UI
-      console.warn('[EZRoads Mod Beta] Shortcut registration failed:', e);
+      console.warn('[EZRoads Mod] Shortcut registration failed:', e);
       try {
         wmeSDK.Shortcuts.createShortcut({
           callback: handleUpdate,
@@ -349,9 +864,9 @@
           shortcutId,
           shortcutKeys: null, // Register with no key so it appears in WME UI
         });
-        console.log('[EZRoads Mod Beta] Registered shortcut with no key due to conflict.');
+        console.log('[EZRoads Mod] Registered shortcut with no key due to conflict.');
       } catch (e2) {
-        console.error('[EZRoads Mod Beta] Failed to register shortcut with no key:', e2);
+        console.error('[EZRoads Mod] Failed to register shortcut with no key:', e2);
       }
       const options = getOptions();
       options.shortcutKey = null;
@@ -497,8 +1012,8 @@
         wmeSDK.DataModel.Segments.deleteSegment({ segmentId });
       } catch (ex) {
         if (ex instanceof wmeSDK.Errors.InvalidStateError) {
-          if (WazeWrap?.Alerts) {
-            WazeWrap.Alerts.error('EZRoads Mod Beta', 'Segment could not be deleted. Please check for restrictions or junctions.');
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.error('EZRoads Mod Beta', 'Segment could not be deleted. Please check for restrictions or junctions.');
           }
           return null;
         }
@@ -600,48 +1115,50 @@
                 if (!connectedSeg) continue;
                 const street = wmeSDK.DataModel.Streets.getById({ streetId: connectedSeg.primaryStreetId });
                 if (street && street.name) {
-                  wmeSDK.DataModel.Segments.updateSegment({
-                    segmentId: id,
-                    fwdSpeedLimit: connectedSeg.fwdSpeedLimit,
-                    revSpeedLimit: connectedSeg.revSpeedLimit,
-                    roadType: connectedSeg.roadType,
-                    lockRank: connectedSeg.lockRank,
-                  });
-                  wmeSDK.DataModel.Segments.updateAddress({
-                    segmentId: id,
-                    primaryStreetId: connectedSeg.primaryStreetId,
-                    alternateStreetIds: connectedSeg.alternateStreetIds || [],
-                  });
-                  // Copy paved/unpaved
-                  const isUnpaved = connectedSeg.flagAttributes && connectedSeg.flagAttributes.unpaved === true;
-                  let toggled = false;
-                  const segPanel = openPanel;
-                  if (segPanel) {
-                    const unpavedIcon = segPanel.querySelector('.w-icon-unpaved-fill');
-                    if (unpavedIcon) {
-                      const unpavedChip = unpavedIcon.closest('wz-checkable-chip');
-                      if (unpavedChip) {
-                        if (isUnpaved !== (seg.flagAttributes && seg.flagAttributes.unpaved === true)) {
-                          unpavedChip.click();
-                          toggled = true;
-                        }
-                      }
-                    }
-                    if (!toggled) {
+                  try {
+                    wmeSDK.DataModel.Segments.updateSegment({
+                      segmentId: id,
+                      fwdSpeedLimit: connectedSeg.fwdSpeedLimit,
+                      revSpeedLimit: connectedSeg.revSpeedLimit,
+                      roadType: connectedSeg.roadType,
+                      lockRank: connectedSeg.lockRank,
+                      elevationLevel: connectedSeg.elevationLevel,
+                      direction: getDirectionFromSegment(connectedSeg),
+                    });
+                  } catch (updateError) {
+                    log('updateSegment error (will retry with individual properties): ' + updateError);
+                    // Fallback: try updating properties individually
+                    const propsToTry = [
+                      { name: 'fwdSpeedLimit', value: connectedSeg.fwdSpeedLimit },
+                      { name: 'revSpeedLimit', value: connectedSeg.revSpeedLimit },
+                      { name: 'roadType', value: connectedSeg.roadType },
+                      { name: 'lockRank', value: connectedSeg.lockRank },
+                      { name: 'elevationLevel', value: connectedSeg.elevationLevel },
+                      { name: 'direction', value: getDirectionFromSegment(connectedSeg) },
+                    ];
+                    for (let prop of propsToTry) {
                       try {
-                        const wzCheckbox = segPanel.querySelector('wz-checkbox[name="unpaved"]');
-                        if (wzCheckbox) {
-                          const hiddenInput = wzCheckbox.querySelector('input[type="checkbox"][name="unpaved"]');
-                          if (hiddenInput && hiddenInput.checked !== isUnpaved) {
-                            hiddenInput.click();
-                            toggled = true;
-                          }
+                        if (prop.value !== undefined && prop.value !== null) {
+                          const updateObj = { segmentId: id };
+                          updateObj[prop.name] = prop.value;
+                          wmeSDK.DataModel.Segments.updateSegment(updateObj);
                         }
                       } catch (e) {
-                        log('Fallback to non-compact mode unpaved toggle method failed: ' + e);
+                        log(`Failed to update ${prop.name}: ` + e);
                       }
                     }
                   }
+                  try {
+                    wmeSDK.DataModel.Segments.updateAddress({
+                      segmentId: id,
+                      primaryStreetId: connectedSeg.primaryStreetId,
+                      alternateStreetIds: connectedSeg.alternateStreetIds || [],
+                    });
+                  } catch (addrError) {
+                    log('updateAddress error: ' + addrError);
+                  }
+                  // Copy all flag attributes
+                  copyFlagAttributes(connectedSeg.id, id);
                   alertMessageParts.push(`Copied all attributes from connected segment.`);
                   found = true;
                   break;
@@ -662,48 +1179,50 @@
                 }
                 if (fallbackSegId) {
                   const connectedSeg = wmeSDK.DataModel.Segments.getById({ segmentId: fallbackSegId });
-                  wmeSDK.DataModel.Segments.updateSegment({
-                    segmentId: id,
-                    fwdSpeedLimit: connectedSeg.fwdSpeedLimit,
-                    revSpeedLimit: connectedSeg.revSpeedLimit,
-                    roadType: connectedSeg.roadType,
-                    lockRank: connectedSeg.lockRank,
-                  });
-                  wmeSDK.DataModel.Segments.updateAddress({
-                    segmentId: id,
-                    primaryStreetId: connectedSeg.primaryStreetId,
-                    alternateStreetIds: connectedSeg.alternateStreetIds || [],
-                  });
-                  // Copy paved/unpaved
-                  const isUnpaved = connectedSeg.flagAttributes && connectedSeg.flagAttributes.unpaved === true;
-                  let toggled = false;
-                  const segPanel = openPanel;
-                  if (segPanel) {
-                    const unpavedIcon = segPanel.querySelector('.w-icon-unpaved-fill');
-                    if (unpavedIcon) {
-                      const unpavedChip = unpavedIcon.closest('wz-checkable-chip');
-                      if (unpavedChip) {
-                        if (isUnpaved !== (seg.flagAttributes && seg.flagAttributes.unpaved === true)) {
-                          unpavedChip.click();
-                          toggled = true;
-                        }
-                      }
-                    }
-                    if (!toggled) {
+                  try {
+                    wmeSDK.DataModel.Segments.updateSegment({
+                      segmentId: id,
+                      fwdSpeedLimit: connectedSeg.fwdSpeedLimit,
+                      revSpeedLimit: connectedSeg.revSpeedLimit,
+                      roadType: connectedSeg.roadType,
+                      lockRank: connectedSeg.lockRank,
+                      elevationLevel: connectedSeg.elevationLevel,
+                      direction: getDirectionFromSegment(connectedSeg),
+                    });
+                  } catch (updateError) {
+                    log('updateSegment error in fallback (will retry with individual properties): ' + updateError);
+                    // Fallback: try updating properties individually
+                    const propsToTry = [
+                      { name: 'fwdSpeedLimit', value: connectedSeg.fwdSpeedLimit },
+                      { name: 'revSpeedLimit', value: connectedSeg.revSpeedLimit },
+                      { name: 'roadType', value: connectedSeg.roadType },
+                      { name: 'lockRank', value: connectedSeg.lockRank },
+                      { name: 'elevationLevel', value: connectedSeg.elevationLevel },
+                      { name: 'direction', value: getDirectionFromSegment(connectedSeg) },
+                    ];
+                    for (let prop of propsToTry) {
                       try {
-                        const wzCheckbox = segPanel.querySelector('wz-checkbox[name="unpaved"]');
-                        if (wzCheckbox) {
-                          const hiddenInput = wzCheckbox.querySelector('input[type="checkbox"][name="unpaved"]');
-                          if (hiddenInput && hiddenInput.checked !== isUnpaved) {
-                            hiddenInput.click();
-                            toggled = true;
-                          }
+                        if (prop.value !== undefined && prop.value !== null) {
+                          const updateObj = { segmentId: id };
+                          updateObj[prop.name] = prop.value;
+                          wmeSDK.DataModel.Segments.updateSegment(updateObj);
                         }
                       } catch (e) {
-                        log('Fallback to non-compact mode unpaved toggle method failed: ' + e);
+                        log(`Failed to update ${prop.name}: ` + e);
                       }
                     }
                   }
+                  try {
+                    wmeSDK.DataModel.Segments.updateAddress({
+                      segmentId: id,
+                      primaryStreetId: connectedSeg.primaryStreetId,
+                      alternateStreetIds: connectedSeg.alternateStreetIds || [],
+                    });
+                  } catch (addrError) {
+                    log('updateAddress error in fallback: ' + addrError);
+                  }
+                  // Copy all flag attributes
+                  copyFlagAttributes(connectedSeg.id, id);
                   alertMessageParts.push(`Copied all attributes from connected segment.`);
                   log(`Copied all attributes from connected segment (fallback, no valid street name).`);
                 } else {
@@ -718,10 +1237,10 @@
       });
       Promise.all(updatePromises).then(() => {
         if (alertMessageParts.length) {
-          if (WazeWrap?.Alerts) {
-            WazeWrap.Alerts.info('EZRoads Mod Beta', alertMessageParts.join('<br>'), false, false, 5000);
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.info('EZRoads Mod', alertMessageParts.join('<br>'), false, false, 5000);
           } else {
-            alert('EZRoads Mod Beta: ' + alertMessageParts.join('\n'));
+            alert('EZRoads Mod: ' + alertMessageParts.join('\n'));
           }
         }
         // --- AUTOSAVE LOGIC HERE ---
@@ -872,22 +1391,28 @@
                 const speedValue = parseInt(speedSetting.speed, 10);
                 log('Speed value to set: ' + speedValue);
 
-                // If speedValue is 0 or less, treat as unset (undefined)
-                const speedToSet = !isNaN(speedValue) && speedValue > 0 ? speedValue : undefined;
+                // If speedValue is 0 or less, treat as unset (null for removal)
+                // Use null instead of undefined to properly remove speed limits
+                const speedToSet = !isNaN(speedValue) && speedValue > 0 ? speedValue : null;
                 const seg = wmeSDK.DataModel.Segments.getById({
                   segmentId: id,
                 });
-                if (seg.fwdSpeedLimit !== speedToSet || seg.revSpeedLimit !== speedToSet) {
+                // Compare using loose equality (==) to treat null and undefined as equivalent
+                // This ensures we don't try to update when segment already has no speed limit
+                const needsUpdate = seg.fwdSpeedLimit != speedToSet || seg.revSpeedLimit != speedToSet;
+                log(`Current fwd speed: ${seg.fwdSpeedLimit}, rev speed: ${seg.revSpeedLimit}, target speed: ${speedToSet}, needs update: ${needsUpdate}`);
+
+                if (needsUpdate) {
                   wmeSDK.DataModel.Segments.updateSegment({
                     segmentId: id,
                     fwdSpeedLimit: speedToSet,
                     revSpeedLimit: speedToSet,
                   });
-                  alertMessageParts.push(`Speed Limit: <b>${speedToSet !== undefined ? speedToSet : 'unset'}</b>`);
+                  alertMessageParts.push(`Speed Limit: <b>${speedToSet !== null ? speedToSet : 'unset'}</b>`);
                   updatedSpeedLimit = true;
                 } else {
                   log(`Segment ID: ${id} already has the target speed limit: ${speedToSet}. Skipping update.`);
-                  alertMessageParts.push(`Speed Limit: <b>${speedToSet !== undefined ? speedToSet : 'unset'} exists. Skipping update.</b>`);
+                  alertMessageParts.push(`Speed Limit: <b>${speedToSet !== null ? speedToSet : 'unset'} exists. Skipping update.</b>`);
                   updatedSpeedLimit = true;
                 }
               }
@@ -912,15 +1437,27 @@
           city = null;
           // 1. Try top city
           city = getTopCity();
-          // 2. If not found, try connected segment's city
-          if (!city) {
+          log(`Top city: ${city ? `name="${city.name}", isEmpty=${city.isEmpty}, id=${city.id}` : 'null'}`);
+
+          // 2. If not found or empty, try connected segment's city
+          if (!city || city.isEmpty) {
+            log('Top city not found or empty, checking connected segments...');
             const connectedAddress = getFirstConnectedSegmentAddress(id);
             if (connectedAddress && connectedAddress.city && connectedAddress.city.id) {
-              city = wmeSDK.DataModel.Cities.getById({ cityId: connectedAddress.city.id });
+              const connectedCity = wmeSDK.DataModel.Cities.getById({ cityId: connectedAddress.city.id });
+              log(`Connected segment city: ${connectedCity ? `name="${connectedCity.name}", isEmpty=${connectedCity.isEmpty}, id=${connectedCity.id}` : 'null'}`);
+              // Only use connected city if it's not empty
+              if (connectedCity && !connectedCity.isEmpty) {
+                city = connectedCity;
+              }
+            } else {
+              log('No connected address found');
             }
           }
-          // 3. If still not found, fallback to none
-          if (!city) {
+
+          // 3. If still not found or empty, fallback to none
+          if (!city || city.isEmpty) {
+            log('No valid city found, using empty city');
             city = wmeSDK.DataModel.Cities.getAll().find((city) => city.isEmpty) || wmeSDK.DataModel.Cities.addCity({ cityName: '' });
           }
         }
@@ -1311,10 +1848,10 @@
         if (updatedPaved) updatedFeatures.push(alertMessageParts.find((part) => part.startsWith('Paved')));
         const message = updatedFeatures.filter(Boolean).join(', ');
         if (message) {
-          if (WazeWrap?.Alerts) {
-            WazeWrap.Alerts.info('EZRoads Mod Beta', `Segment updated with: ${message}`, false, false, 7000);
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.info('EZRoads Mod', `Segment updated with: ${message}`, false, false, 3000);
           } else {
-            alert('EZRoads Mod Beta: Segment updated (WazeWrap Alerts not available)');
+            alert('EZRoads Mod: Segment updated (WazeToastr Alerts not available)');
           }
         }
       };
@@ -1352,10 +1889,14 @@
         options.locks[lockIndex].lock = lockLevel; // Keep as string to handle 'HRCS'
         localOptions.locks = options.locks;
         saveOptions(options);
-        if (WazeWrap?.Alerts) {
-          WazeWrap.Alerts.success('EZRoads Mod Beta', 'Lock Levels saved!', false, false, 1500);
+        // Trigger preset list refresh if settings panel is open
+        if ($('#ezroadsmod-presets-list').length) {
+          $('#ezroadsmod-presets-list').trigger('refresh-presets');
+        }
+        if (WazeToastr?.Alerts) {
+          WazeToastr.Alerts.success('EZRoads Mod', 'Lock Levels saved!', false, false, 1500);
         } else {
-          alert('EZRoads Mod Beta: Lock Levels saved!');
+          alert('EZRoads Mod: Lock Levels saved!');
         }
       }
     };
@@ -1373,10 +1914,14 @@
         options.speeds[speedIndex].speed = speedValue;
         localOptions.speeds = options.speeds;
         saveOptions(options);
-        if (WazeWrap?.Alerts) {
-          WazeWrap.Alerts.success('EZRoads Mod Beta', 'Speed Values saved!', false, false, 1500);
+        // Trigger preset list refresh if settings panel is open
+        if ($('#ezroadsmod-presets-list').length) {
+          $('#ezroadsmod-presets-list').trigger('refresh-presets');
+        }
+        if (WazeToastr?.Alerts) {
+          WazeToastr.Alerts.success('EZRoads Mod', 'Speed Values saved!', false, false, 1500);
         } else {
-          alert('EZRoads Mod Beta: Speed Values saved!');
+          alert('EZRoads Mod: Speed Values saved!');
         }
       }
     };
@@ -1439,6 +1984,12 @@
         tooltip:
           'Copies all major attributes (road type, lock level, speed limits, paved/unpaved status, primary and alternate street names, and city) from a connected segment. When enabled, it overrides all other options except Autosave. Use shortcut key or (Quick Update Segment) to apply.',
       },
+      {
+        id: 'showSegmentLength',
+        text: 'Show Segment Length <=20m',
+        key: 'showSegmentLength',
+        tooltip: 'Displays segment length in an orange circle with white font for segments 20 meters or shorter in the visible map area.',
+      },
     ];
 
     // Helper function to create radio buttons
@@ -1448,8 +1999,8 @@
       const lockSetting = localOptions.locks.find((l) => l.id === roadType.id) || { id: roadType.id, lock: 1 };
       const speedSetting = localOptions.speeds.find((s) => s.id === roadType.id) || { id: roadType.id, speed: 40 };
 
-      const div = $(`<div class="ezroadsmodbeta-option">
-            <div class="ezroadsmodbeta-radio-container">
+      const div = $(`<div class="ezroadsmod-option">
+            <div class="ezroadsmod-radio-container">
                 <input type="radio" id="${id}" name="defaultRoad" data-road-value="${roadType.value}" ${isChecked ? 'checked' : ''}>
                 <label for="${id}">${roadType.name}</label>
                 <select id="lock-level-${roadType.id}" class="road-lock-level" data-road-id="${roadType.id}" ${!localOptions.setLock ? 'disabled' : ''}>
@@ -1487,10 +2038,10 @@
     // Helper function to create checkboxes
     const createCheckbox = (option) => {
       const isChecked = localOptions[option.key];
-      const otherClass = option.key !== 'autosave' && option.key !== 'copySegmentAttributes' ? 'ezroadsmodbeta-other-checkbox' : '';
-      const attrClass = option.key === 'copySegmentAttributes' ? 'ezroadsmodbeta-attr-checkbox' : '';
-      // State support check removed; always enabled
-      const div = $(`<div class="ezroadsmodbeta-option">
+      const otherClass = option.key !== 'autosave' && option.key !== 'copySegmentAttributes' ? 'ezroadsmod-other-checkbox' : '';
+      const attrClass = option.key === 'copySegmentAttributes' ? 'ezroadsmod-attr-checkbox' : '';
+
+      const div = $(`<div class="ezroadsmod-option">
     <input type="checkbox" id="${option.id}" name="${option.id}" class="${otherClass} ${attrClass}" ${isChecked ? 'checked' : ''} title="${option.tooltip || ''}">
     <label for="${option.id}" title="${option.tooltip || ''}">${option.text}</label>
   </div>`);
@@ -1503,14 +2054,13 @@
         if (option.key === 'copySegmentName' && $(`#${option.id}`).prop('checked')) {
           $('#setStreet').prop('checked', false);
           update('setStreet', false);
-          // Do not uncheck setStreetCity here
         }
 
         // Mutual exclusion logic for copySegmentAttributes and other checkboxes
         if (option.key === 'copySegmentAttributes') {
           if ($(`#${option.id}`).prop('checked')) {
             // Uncheck all other checkboxes except autosave
-            $('.ezroadsmodbeta-other-checkbox').each(function () {
+            $('.ezroadsmod-other-checkbox').each(function () {
               $(this).prop('checked', false);
               const key = $(this).attr('id');
               update(key, false);
@@ -1536,42 +2086,42 @@
 
     // -- Set up the tab for the script
     wmeSDK.Sidebar.registerScriptTab().then(({ tabLabel, tabPane }) => {
-      tabLabel.innerText = 'EZRoads Mod Beta';
+      tabLabel.innerText = 'EZRoads Mod';
       tabLabel.title = 'Easily Update Roads';
 
       // Setup base styles
       const styles = $(`<style>
-            #ezroadsmodbeta-settings h2, #ezroadsmodbeta-settings h5 {
+            #ezroadsmod-settings h2, #ezroadsmod-settings h5 {
                 margin-top: 0;
                 margin-bottom: 10px;
             }
-            .ezroadsmodbeta-section {
+            .ezroadsmod-section {
                 margin-bottom: 15px;
             }
-            .ezroadsmodbeta-option {
+            .ezroadsmod-option {
                 margin-bottom: 8px;
             }
-            .ezroadsmodbeta-radio-container {
+            .ezroadsmod-radio-container {
                 display: flex;
                 align-items: center;
             }
-            .ezroadsmodbeta-radio-container input[type="radio"] {
+            .ezroadsmod-radio-container input[type="radio"] {
                 margin-right: 5px;
             }
-            .ezroadsmodbeta-radio-container label {
+            .ezroadsmod-radio-container label {
                 flex: 1;
                 margin-right: 10px;
                 text-align: left;
             }
-            .ezroadsmodbeta-radio-container select {
+            .ezroadsmod-radio-container select {
                 width: 80px;
                 margin-left: auto;
                 margin-right: 5px;
             }
-            .ezroadsmodbeta-radio-container input.road-speed {
+            .ezroadsmod-radio-container input.road-speed {
                 width: 60px;
             }
-            .ezroadsmodbeta-reset-button {
+            .ezroadsmod-reset-button {
                 margin-top: 20px;
                 padding: 8px 12px;
                 background-color: #f44336;
@@ -1581,22 +2131,22 @@
                 cursor: pointer;
                 font-weight: bold;
             }
-            .ezroadsmodbeta-reset-button:hover {
+            .ezroadsmod-reset-button:hover {
                 background-color: #d32f2f;
             }
         </style>`);
 
-      tabPane.innerHTML = '<div id="ezroadsmodbeta-settings"></div>';
-      const scriptContentPane = $('#ezroadsmodbeta-settings');
+      tabPane.innerHTML = '<div id="ezroadsmod-settings"></div>';
+      const scriptContentPane = $('#ezroadsmod-settings');
       scriptContentPane.append(styles);
 
       // Header section
-      const header = $(`<div class="ezroadsmodbeta-section">
-    <h2>EZRoads Mod Beta</h2>
-    <div>Current Version: <b>${scriptVersion}</b></div>
-    <div>Update Keybind: <kbd>G</kbd></div>
-    <div style="font-size: 0.8em;">You can change it in WME keyboard setting!</div>
-    </div>`);
+      const header = $(`<div class="ezroadsmod-section">
+		<h2>EZRoads Mod</h2>
+		<div>Current Version: <b>${scriptVersion}</b></div>
+		<div>Update Keybind: <kbd>G</kbd></div>
+		<div style="font-size: 0.8em;">You can change it in WME keyboard setting!</div>
+		</div>`);
       scriptContentPane.append(header);
 
       // Road type and options header
@@ -1620,7 +2170,7 @@
         roadTypeOptions.append(createRadioButton(roadType));
       });
       // Additional options section
-      const additionalSection = $(`<div class="ezroadsmodbeta-section">
+      const additionalSection = $(`<div class="ezroadsmod-section">
             <h5>Additional Options</h5>
             <div id="additional-options"></div>
         </div>`);
@@ -1645,7 +2195,7 @@
       });
 
       // Reset button section
-      const resetButton = $(`<button class="ezroadsmodbeta-reset-button">Reset All Options</button>`);
+      const resetButton = $(`<button class="ezroadsmod-reset-button">Reset All Options</button>`);
       resetButton.on('click', function () {
         if (confirm('Are you sure you want to reset all options to default values? It will reload the webpage!')) {
           resetOptions();
@@ -1655,29 +2205,33 @@
 
       // --- Export/Import Config UI ---
       const exportImportSection = $(
-        `<div class="ezroadsmodbeta-section" style="margin-top:10px;">
-          <button id="ezroadsmodbeta-export-btn" style="margin-right:8px;">Export Lock/Speed Config</button>
-          <button id="ezroadsmodbeta-import-btn">Import Lock/Speed Config</button>
-          <input id="ezroadsmodbeta-import-input" type="text" placeholder="Paste config here" style="width:60%;margin-left:8px;">
+        `<div class="ezroadsmod-section" style="margin-top:10px;">
+          <div style="display:flex; align-items:center; gap:5px; margin-bottom:5px;">
+            <button id="ezroadsmod-export-btn" style="font-size:0.9em;padding:4px 8px;white-space:nowrap;">Export Lock/Speed Config</button>
+            <button id="ezroadsmod-import-btn" style="font-size:0.9em;padding:4px 8px;white-space:nowrap;">Import Lock/Speed Config</button>
+          </div>
+          <input id="ezroadsmod-import-input" type="text" placeholder="Paste config here" style="width:95%;font-size:0.9em;padding:3px;">
         </div>`
       );
       scriptContentPane.append(exportImportSection);
 
       // Export logic
-      $(document).on('click', '#ezroadsmodbeta-export-btn', function () {
+      $(document).on('click', '#ezroadsmod-export-btn', function () {
         const options = getOptions();
+        const presets = getCustomPresets();
         const exportData = {
           locks: options.locks,
           speeds: options.speeds,
+          customPresets: presets,
         };
         const exportStr = JSON.stringify(exportData, null, 2);
         // Copy to clipboard
         navigator.clipboard.writeText(exportStr).then(
           () => {
-            if (WazeWrap?.Alerts) {
-              WazeWrap.Alerts.success('EZRoads Mod Beta', 'Lock/Speed config copied to clipboard!', false, false, 2000);
+            if (WazeToastr?.Alerts) {
+              WazeToastr.Alerts.success('EZRoads Mod', 'Lock/Speed config with all presets copied to clipboard!', false, false, 2000);
             } else {
-              alert('Lock/Speed config copied to clipboard!');
+              alert('Lock/Speed config with all presets copied to clipboard!');
             }
           },
           () => {
@@ -1687,8 +2241,8 @@
       });
 
       // Import logic
-      $(document).on('click', '#ezroadsmodbeta-import-btn', function () {
-        const importStr = $('#ezroadsmodbeta-import-input').val();
+      $(document).on('click', '#ezroadsmod-import-btn', function () {
+        const importStr = $('#ezroadsmod-import-input').val();
         if (!importStr) {
           alert('Please paste a config string to import.');
           return;
@@ -1708,6 +2262,13 @@
           // Update in-memory localOptions and UI
           localOptions.locks = importData.locks;
           localOptions.speeds = importData.speeds;
+
+          // Import custom presets if they exist
+          if (importData.customPresets) {
+            window.localStorage.setItem('WME_EZRoads_Mod_CustomPresets', JSON.stringify(importData.customPresets));
+            refreshPresetsList();
+          }
+
           // Update lock dropdowns
           $('.road-lock-level').each(function () {
             const roadId = $(this).data('road-id');
@@ -1720,8 +2281,10 @@
             const speedSetting = localOptions.speeds.find((s) => s.id == roadId);
             if (speedSetting) $(this).val(speedSetting.speed);
           });
-          if (WazeWrap?.Alerts) {
-            WazeWrap.Alerts.success('EZRoads Mod Beta', 'Config imported and applied!', false, false, 2000);
+          if (WazeToastr?.Alerts) {
+            const presetsCount = importData.customPresets ? Object.keys(importData.customPresets).length : 0;
+            const message = presetsCount > 0 ? `Config imported with ${presetsCount} preset(s)!` : 'Config imported and applied!';
+            WazeToastr.Alerts.success('EZRoads Mod', message, false, false, 2000);
           } else {
             alert('Config imported and applied!');
           }
@@ -1729,31 +2292,199 @@
           alert('Config missing lock/speed data!');
         }
       });
+
+      // --- Custom Presets UI ---
+      const customPresetsSection = $(
+        `<div class="ezroadsmod-section" style="margin-top:15px; padding-top:12px; border-top: 1px solid #ccc;">
+          <div style="font-weight:bold; margin-bottom:6px; font-size:0.95em;">Custom Lock/Speed Presets</div>
+          <div style="margin-bottom:6px;">
+            <input id="ezroadsmod-preset-name" type="text" placeholder="Preset name" style="width:45%;margin-right:5px;font-size:0.9em;padding:3px;">
+            <button id="ezroadsmod-save-preset-btn" style="font-size:0.9em;padding:3px 8px;">Save</button>
+          </div>
+          <div id="ezroadsmod-presets-list" style="margin-top:6px;"></div>
+        </div>`
+      );
+      scriptContentPane.append(customPresetsSection);
+
+      // Function to refresh the presets list UI
+      const refreshPresetsList = () => {
+        const presets = getCustomPresets();
+        const presetsListDiv = $('#ezroadsmod-presets-list');
+        presetsListDiv.empty();
+
+        const presetNames = Object.keys(presets);
+        const currentPresetName = getCurrentPresetName();
+        const isModified = isCurrentPresetModified();
+
+        if (presetNames.length === 0) {
+          presetsListDiv.append('<div style="color:#888;font-style:italic;font-size:0.85em;">No presets saved.</div>');
+          return;
+        }
+
+        presetNames.forEach((presetName) => {
+          const presetData = presets[presetName];
+          const savedDate = presetData.savedAt ? new Date(presetData.savedAt).toLocaleDateString() : 'Unknown';
+          const isCurrent = currentPresetName === presetName && !isModified;
+          const currentIndicator = isCurrent ? '<span style="color:#4CAF50; font-weight:bold; margin-right:5px;">Current</span>' : '';
+
+          const presetDiv = $(
+            `<div class="ezroadsmod-preset-item" style="margin-bottom:5px; padding:5px 5px 5px 5px; background-color:rgba(128, 128, 128, 0.12); border-radius:3px;">
+              <div style="display:flex; align-items:center; justify-content:space-between; padding-right:15px;">
+                <div style="font-size:1.0em;">
+                  <strong>${presetName}</strong>
+                  <span style="font-size:0.85em; color: #949494ff; margin-left:5px;">(${savedDate})</span>
+                </div>
+                <div style="white-space:nowrap;">
+                  ${currentIndicator}
+                  <button class="ezroadsmod-load-preset-btn" data-preset-name="${presetName}" style="margin-right:2px;font-size:0.9em;padding:2px 5px;">Load</button>
+                  <button class="ezroadsmod-delete-preset-btn" data-preset-name="${presetName}" style="background-color:#f44336; color:white;font-size:0.9em;padding:3px 8px;">Delete</button>
+                </div>
+              </div>
+            </div>`
+          );
+          presetsListDiv.append(presetDiv);
+        });
+      };
+
+      // Initial load of presets list
+      refreshPresetsList();
+
+      // Add event listener for refreshing presets list when settings change
+      $('#ezroadsmod-presets-list').on('refresh-presets', refreshPresetsList);
+
+      // Save preset
+      $(document).on('click', '#ezroadsmod-save-preset-btn', function () {
+        const presetName = $('#ezroadsmod-preset-name').val().trim();
+        if (!presetName) {
+          alert('Please enter a preset name.');
+          return;
+        }
+
+        const presets = getCustomPresets();
+        if (presets[presetName]) {
+          if (!confirm(`Preset "${presetName}" already exists. Overwrite it?`)) {
+            return;
+          }
+        }
+
+        if (saveCustomPreset(presetName)) {
+          $('#ezroadsmod-preset-name').val('');
+          refreshPresetsList();
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.success('EZRoads Mod', `Preset "${presetName}" saved!`, false, false, 2000);
+          } else {
+            alert(`Preset "${presetName}" saved!`);
+          }
+        }
+      });
+
+      // Load preset
+      $(document).on('click', '.ezroadsmod-load-preset-btn', function () {
+        const presetName = $(this).data('preset-name');
+        if (loadCustomPreset(presetName)) {
+          // Update in-memory localOptions
+          const options = getOptions();
+          localOptions.locks = options.locks;
+          localOptions.speeds = options.speeds;
+
+          // Update lock dropdowns
+          $('.road-lock-level').each(function () {
+            const roadId = $(this).data('road-id');
+            const lockSetting = localOptions.locks.find((l) => l.id == roadId);
+            if (lockSetting) $(this).val(lockSetting.lock);
+          });
+
+          // Update speed inputs
+          $('.road-speed').each(function () {
+            const roadId = $(this).data('road-id');
+            const speedSetting = localOptions.speeds.find((s) => s.id == roadId);
+            if (speedSetting) $(this).val(speedSetting.speed);
+          });
+
+          // Refresh the presets list to show the current indicator
+          refreshPresetsList();
+
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.success('EZRoads Mod', `Preset "${presetName}" loaded!`, false, false, 2000);
+          } else {
+            alert(`Preset "${presetName}" loaded!`);
+          }
+        } else {
+          alert(`Failed to load preset "${presetName}".`);
+        }
+      });
+
+      // Delete preset
+      $(document).on('click', '.ezroadsmod-delete-preset-btn', function () {
+        const presetName = $(this).data('preset-name');
+        if (!confirm(`Are you sure you want to delete preset "${presetName}"?`)) {
+          return;
+        }
+
+        if (deleteCustomPreset(presetName)) {
+          refreshPresetsList();
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.success('EZRoads Mod', `Preset "${presetName}" deleted!`, false, false, 2000);
+          } else {
+            alert(`Preset "${presetName}" deleted!`);
+          }
+        } else {
+          alert(`Failed to delete preset "${presetName}".`);
+        }
+      });
     });
   };
   function scriptupdatemonitor() {
-    if (WazeWrap?.Ready) {
-      bootstrap({ scriptUpdateMonitor: { downloadUrl } });
-      WazeWrap.Interface.ShowScriptUpdate(scriptName, scriptVersion, updateMessage, downloadUrl, forumURL);
+    if (WazeToastr?.Ready) {
+      // Create and start the ScriptUpdateMonitor
+      const updateMonitor = new WazeToastr.Alerts.ScriptUpdateMonitor(scriptName, scriptVersion, downloadUrl, GM_xmlhttpRequest);
+      updateMonitor.start(2, true); // Check every 2 hours, check immediately
+
+      // Show the update dialog for the current version
+      WazeToastr.Interface.ShowScriptUpdate(scriptName, scriptVersion, updateMessage, downloadUrl, forumURL);
     } else {
       setTimeout(scriptupdatemonitor, 250);
     }
   }
-  // Start the "scriptupdatemonitor"
   scriptupdatemonitor();
   console.log(`${scriptName} initialized.`);
 
   /*
-Change Log
+Changelog
 
 Version
+2.6.2 - 2026-01-05
+- Fixed auto city detection when "Set city as none" is unchecked. The script now properly checks connected segments for valid cities instead of defaulting to "None" when the displayed city is empty or unavailable.
+2.6.1 - 2025-12-29
+- Enhanced "Copy Connected Segment Attribute" feature:
+  - Now copies all segment attributes including:
+    - Direction (one-way A→B, B→A, or two-way)
+    - Forward and reverse speed limits
+    - Road type
+    - Lock rank
+    - Elevation level
+    - Primary and alternate street names
+    - Unpaved status
+2.6.0.0 - 2025-12-28
+- Added "Current" preset indicator: Shows which preset is currently loaded with a green badge.
+- Current indicator disappears when settings are modified, reappears when saved back to the same preset.
+- Fixed speed limit removal: Setting speed to 0 or -1 now properly removes speed limits (uses null instead of undefined).
+- Improved speed limit update logic with better comparison handling.
+- Preset list automatically refreshes when lock levels or speed values are modified.
+2.5.9.8 - 2025-12-27
+- Temporarily fix for alerts infos not showing issue.
+2.5.9.7 - 2025-12-24
+- Added custom preset system for saving and loading lock/speed configurations with custom names.
+- Users can now save unlimited presets (e.g., "Custom 1", "Highway Settings", "City Streets").
+- Load any saved preset with one click to quickly apply lock/speed settings.
+- Delete unwanted presets with confirmation.
+- Improved UI: Compact design with better spacing and dark mode support.
+- Export/Import buttons reorganized into a cleaner layout.
+- Preset items use semi-transparent backgrounds for better theme compatibility.
 2.5.9.6 - 2025-08-05
 - Bug fix: Enhanced "Copy Connected Segment Attribute" logic.
-2.5.9.5 - 2025-07-15
+2.5.9.5 - 2025-07-31
 - Minor bug fixes.
-2.5.9.4 - 2025-07-15
-- Enhanced "Copy Connected Segment Attribute" logic: reliably copies from segments with valid street names, falls back to any connected segment if needed.
-- Added more robust paved/unpaved attribute copying.
 2.5.9.3 - 2025-07-04
 - Updated logic for speed limit. Now it will not update speed limit set to 0 or -1.
 2.5.9.2 - 2025-07-03-01
@@ -1767,13 +2498,19 @@ Version
 - When "Copy connected Segment Name" is on, the script copies the name from the connected segment before conversion and applies it after.<br>
 - Improved reliability for segment recreation and name copying.<br>
 - Includes all previous improvements and bug fixes.<br>
-2.5.7.5-beta - 2025-06-17
-        - When "Set Street Name to None" is checked, the primary street is set to none and all alternate street names are removed.
-        - When "Set city as none" is checked, all primary and alternate city names are set to none (empty city).
-        - Other behaviors remain unchanged.
-2.5.7.4-beta - 2025-06-15
+2.5.8 - 2025-06-21</b><br>
+- When "Set Street Name to None" is checked, the primary street is set to none and all alternate street names are removed.<br>
+- When "Set city as none" is checked, all primary and alternate city names are set to none (empty city).<br>
+- "Set street to none" now only handles the street name.<br>
+- Added option for setting city to none.<br>
+- Lock and speed settings can be exported or imported.<br>
+- In case of shortcut key conflict, the shortcut key becomes null.<br>
+- Default shortcut key is now "G".<br>
+- Minor code cleanup.<br>
+- Other behaviors remain unchanged.<br>
+2.5.7.4 - 2025-06-15
         - Set street to none only handles street name now.
-       
+	   
         - Added option for setting up city to none.
         - The lock and speed setting can be exported or imported.
         - Incase of the shortcutkey conflict, the shortcut key becomes null.
@@ -1795,7 +2532,7 @@ Version
 2.5.5 - 2025-06-08.01
         - Minor bugfixes
 2.5.4 - 2025-06-07.01
-        - Road Types can be selected using keyboard shortcuts.
+		    - Road Types can be selected using keyboard shortcuts.
         - Fully migrated to WME SDK.
 
 2.5.3 - 2025-05-31
@@ -1837,6 +2574,6 @@ Version
        Added Support for HRCS
        Fixed -
         - Various other bugs        
-    
+		
 */
 })();
