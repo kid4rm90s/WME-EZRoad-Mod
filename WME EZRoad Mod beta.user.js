@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.4
+// @version      2.6.5
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -495,6 +495,9 @@
 
     // Initialize segment length display layer
     initSegmentLengthLayer();
+    
+    // Inject Geometry Fix Button
+    setInterval(addGeometryFixButton, 2000);
 
     log('Completed Init');
   };
@@ -587,8 +590,13 @@
   // Rebuild segment data and create new labels (expensive - only on zoom/data changes)
   function rebuildSegmentLengthDisplay() {
     const options = getOptions();
+    
+    // Update dashboard count if exists (even if hidden)
+    const countBadge = document.getElementById('ezroad-geometry-error-count');
+    
     if ((!options.showSegmentLength && !options.checkGeometryIssues) || !segmentLengthContainer) {
-      return;
+       if (countBadge) countBadge.style.display = 'none';
+       return;
     }
     
     clearSegmentLengthDisplay();
@@ -598,16 +606,20 @@
       return;
     }
     
+    let issueCount = 0;
+
     try {
       const currentZoom = wmeSDK.Map.getZoomLevel();
       if (currentZoom < 18) {
-        return;
+         if (countBadge) countBadge.style.display = 'none';
+         return;
       }
 
       const allSegments = wmeSDK.DataModel.Segments.getAll();
       let extent = wmeSDK.Map.getMapExtent();
       
       if (!extent || !allSegments || allSegments.length === 0) {
+        if (countBadge) countBadge.style.display = 'none';
         return;
       }
 
@@ -638,6 +650,8 @@
                          issue.coordinates[1] < mapBounds.south || issue.coordinates[1] > mapBounds.north) {
                         return; 
                      }
+                     
+                     issueCount++;
 
                      const pinDiv = document.createElement('div');
                      pinDiv.innerHTML = '📍'; // Pin icon
@@ -715,6 +729,18 @@
       // Update positions after creating labels
       updateSegmentLabelPositions();
       
+      // Update badge count
+      if (countBadge) {
+         if (issueCount > 0 && options.checkGeometryIssues) {
+            countBadge.value = issueCount;
+            countBadge.style.display = 'inline-flex';
+            
+            // Update shadow dom content if needed (WME web components quirks)
+            // But simplest is to just set the value attribute
+         } else {
+            countBadge.style.display = 'none';
+         }
+      }
       
     } catch (error) {
       log('Error rebuilding segment length display: ' + error.message);
@@ -793,6 +819,10 @@
 
   function handleSegmentLengthToggle() {
     const options = getOptions();
+    
+    // Update button visibility immediately on toggle
+    addGeometryFixButton();
+
     if (options.showSegmentLength || options.checkGeometryIssues) {
       if (segmentLengthContainer) segmentLengthContainer.style.display = 'block';
       
@@ -970,6 +1000,130 @@
       options.shortcutKey = null;
       saveOptions(options);
     }
+  }
+
+  // ===== New Feature: One-click Geometry Fix =====
+  
+  async function fixVisibleGeometryIssues() {
+      const options = getOptions();
+      if (!options.checkGeometryIssues) {
+          if (WazeToastr?.Alerts) WazeToastr.Alerts.info('EZRoad Mod', 'Please enable "Check Geometry issues" in settings first.');
+          else alert('Please enable "Check Geometry issues" in EZRoad Mod settings first.');
+          return;
+      }
+      
+      const allSegments = wmeSDK.DataModel.Segments.getAll();
+      let extent = wmeSDK.Map.getMapExtent();
+      if (!extent) return;
+      const mapBounds = { west: extent[0], south: extent[1], east: extent[2], north: extent[3] };
+      
+      let fixedCount = 0;
+      let errors = 0;
+
+      // Filter for segments with issues in view
+      const segmentsToFix = allSegments.filter(segment => {
+          if (!segment.geometry) return false;
+          
+          // Check functionality
+          const result = checkGeometryNodePlacement(segment, 1);
+          if (!result.hasIssue) return false;
+          
+          // Initial visibility check of issues
+          const visibleIssues = result.details.filter(issue => 
+              issue.coordinates[0] >= mapBounds.west && issue.coordinates[0] <= mapBounds.east &&
+              issue.coordinates[1] >= mapBounds.south && issue.coordinates[1] <= mapBounds.north
+          );
+          
+          return visibleIssues.length > 0;
+      });
+
+      if (segmentsToFix.length === 0) {
+          if (WazeToastr?.Alerts) WazeToastr.Alerts.info('EZRoad Mod', 'No visible geometry issues to fix.');
+          else alert('No visible geometry issues to fix.');
+          return;
+      }
+
+      const performFix = async () => {
+          for (const segment of segmentsToFix) {
+              try {
+                  const result = checkGeometryNodePlacement(segment, 1); // Recalculate to be safe
+                  if (!result.hasIssue) continue;
+
+                  const idxToRemove = new Set(result.details.map(d => d.nodeIndex));
+                  const oldCoords = segment.geometry.coordinates;
+                  const newCoords = oldCoords.filter((_, i) => !idxToRemove.has(i));
+                  
+                  if (newCoords.length < 2) continue; // Should not happen for geometry nodes, but safety
+
+                  await wmeSDK.DataModel.Segments.updateSegment({
+                      segmentId: segment.id,
+                      geometry: {
+                          type: 'LineString',
+                          coordinates: newCoords
+                      }
+                  });
+                  fixedCount++;
+              } catch (e) {
+                  console.error('Failed to fix segment', segment.id, e);
+                  errors++;
+              }
+          }
+          
+          const msg = `Fixed ${fixedCount} segments.${errors > 0 ? ` (${errors} errors)` : ''}`;
+          if (WazeToastr?.Alerts) WazeToastr.Alerts.success('EZRoad Mod', msg);
+          else alert(msg);
+          
+          // Refresh display
+          rebuildSegmentLengthDisplay();
+      };
+
+      if (WazeToastr?.Alerts?.confirm) {
+          WazeToastr.Alerts.confirm(
+              'EZRoad Mod',
+              `Found ${segmentsToFix.length} segments with geometry issues. Fix them now?`,
+              performFix,
+              null,
+              'Fix',
+              'Cancel'
+          );
+      } else if (confirm(`Found ${segmentsToFix.length} segments with geometry issues. Fix them now?`)) {
+          performFix();
+      }
+  }
+
+  function addGeometryFixButton() {
+     const options = getOptions();
+     const prefsItem = document.querySelector('wz-navigation-item[data-for="prefs"]');
+     let btn = document.getElementById('ezroad-fix-geometry-btn');
+     
+     if (btn) {
+         // Update visibility
+         btn.style.display = options.checkGeometryIssues ? 'block' : 'none';
+         return;
+     }
+     
+     if (!prefsItem) return;
+
+     btn = document.createElement('wz-button');
+     btn.color = 'text';
+     btn.size = 'sm';
+     btn.style.margin = '20px auto 0 auto';
+     btn.id = 'ezroad-fix-geometry-btn';
+     btn.type = 'button';
+     
+     // Initial visibility based on option
+     btn.style.display = options.checkGeometryIssues ? 'block' : 'none';
+     
+     // HTML content matching user request style
+     btn.innerHTML = `
+        <i class="w-icon w-icon-bug-fill" style="color: #33CCFF"></i>
+        <wz-notification-indicator value="0" id="ezroad-geometry-error-count" class="counter" style="display: none;"></wz-notification-indicator>
+     `;
+     
+     btn.addEventListener('click', fixVisibleGeometryIssues);
+     
+     // Insert after prefs
+     prefsItem.insertAdjacentElement('afterend', btn);
   }
 
   const getEmptyCity = () => {
