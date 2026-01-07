@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.7
+// @version      2.6.5
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -27,7 +27,10 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Bug Fix:</strong><br> - Fixed auto city detection when "Set city as none" is unchecked. The script now properly checks connected segments for valid cities instead of defaulting to "None" when the displayed city is empty or unavailable.`;
+  const updateMessage = `<strong>Version 2.6.5 - 2026-01-07:</strong><br>
+    - Enhanced geometry fix icon: Bug icon changes color to red when geometry issues are detected, blue when no issues found.<br>
+    - Improved geometry fix confirmation messages to show total count of geometry node issues.<br>
+    - Fixed geometry fix success message to accurately report both segment count and geometry node count.`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = GM_info.script.downloadURL;
@@ -728,16 +731,21 @@
       // Update positions after creating labels
       updateSegmentLabelPositions();
 
-      // Update badge count
+      // Update badge count and icon color
       if (countBadge) {
         if (issueCount > 0 && options.checkGeometryIssues) {
           countBadge.value = issueCount;
           countBadge.style.display = 'inline-flex';
 
-          // Update shadow dom content if needed (WME web components quirks)
-          // But simplest is to just set the value attribute
+          // Update bug icon color to red when issues found
+          const bugIcon = document.getElementById('ezroad-bug-icon');
+          if (bugIcon) bugIcon.style.color = '#ff3333ff';
         } else {
           countBadge.style.display = 'none';
+
+          // Update bug icon color to default blue when no issues
+          const bugIcon = document.getElementById('ezroad-bug-icon');
+          if (bugIcon) bugIcon.style.color = '#33CCFF';
         }
       }
     } catch (error) {
@@ -1010,6 +1018,7 @@
 
     let fixedCount = 0;
     let errors = 0;
+    let totalIssueCount = 0;
 
     // Filter for segments with issues in view
     const segmentsToFix = allSegments.filter((segment) => {
@@ -1022,7 +1031,11 @@
       // Initial visibility check of issues
       const visibleIssues = result.details.filter((issue) => issue.coordinates[0] >= mapBounds.west && issue.coordinates[0] <= mapBounds.east && issue.coordinates[1] >= mapBounds.south && issue.coordinates[1] <= mapBounds.north);
 
-      return visibleIssues.length > 0;
+      if (visibleIssues.length > 0) {
+        totalIssueCount += visibleIssues.length;
+        return true;
+      }
+      return false;
     });
 
     if (segmentsToFix.length === 0) {
@@ -1032,6 +1045,7 @@
     }
 
     const performFix = async () => {
+      let fixedIssueCount = 0;
       for (const segment of segmentsToFix) {
         try {
           const result = checkGeometryNodePlacement(segment, GeometryIssueLengthThresholdMeters); // Recalculate to be safe
@@ -1051,13 +1065,14 @@
             },
           });
           fixedCount++;
+          fixedIssueCount += result.details.length;
         } catch (e) {
           console.error('Failed to fix segment', segment.id, e);
           errors++;
         }
       }
 
-      const msg = `Fixed ${fixedCount} segments.${errors > 0 ? ` (${errors} errors)` : ''}`;
+      const msg = fixedIssueCount === fixedCount ? `Fixed ${fixedCount} segments.${errors > 0 ? ` (${errors} errors)` : ''}` : `Fixed ${fixedCount} segments with ${fixedIssueCount} geometry node issues.${errors > 0 ? ` (${errors} errors)` : ''}`;
       if (WazeToastr?.Alerts) WazeToastr.Alerts.success('EZRoad Mod', msg);
       else alert(msg);
 
@@ -1065,9 +1080,11 @@
       rebuildSegmentLengthDisplay();
     };
 
+    const confirmMsg = totalIssueCount === segmentsToFix.length ? `Found ${segmentsToFix.length} segments with geometry issues. Fix them now?` : `Found ${segmentsToFix.length} segments with ${totalIssueCount} geometry node issues. Fix them now?`;
+
     if (WazeToastr?.Alerts?.confirm) {
-      WazeToastr.Alerts.confirm('EZRoad Mod', `Found ${segmentsToFix.length} segments with geometry issues. Fix them now?`, performFix, null, 'Fix', 'Cancel');
-    } else if (confirm(`Found ${segmentsToFix.length} segments with geometry issues. Fix them now?`)) {
+      WazeToastr.Alerts.confirm('EZRoad Mod', confirmMsg, performFix, null, 'Fix', 'Cancel');
+    } else if (confirm(confirmMsg)) {
       performFix();
     }
   }
@@ -1107,7 +1124,7 @@
 
     // HTML content matching user request style
     btn.innerHTML = `
-        <i class="w-icon w-icon-bug-fill" style="color: #33CCFF"></i>
+        <i class="w-icon w-icon-bug-fill" id="ezroad-bug-icon" style="color: #33CCFF"></i>
         <wz-notification-indicator value="0" id="ezroad-geometry-error-count" class="counter" style="display: none;"></wz-notification-indicator>
      `;
 
@@ -2693,10 +2710,10 @@
       // Create and start the ScriptUpdateMonitor
       // For GitHub raw URLs, we need to specify metaUrl explicitly (same as downloadUrl for GitHub)
       const updateMonitor = new WazeToastr.Alerts.ScriptUpdateMonitor(
-        scriptName, 
-        scriptVersion, 
-        downloadUrl, 
-        GM_xmlhttpRequest, 
+        scriptName,
+        scriptVersion,
+        downloadUrl,
+        GM_xmlhttpRequest,
         downloadUrl, // metaUrl - for GitHub, use the same URL as it contains the @version tag
         /@version\s+(.+)/i // metaRegExp - extracts version from @version tag
       );
@@ -2715,6 +2732,26 @@
 Changelog
 
 Version
+2.6.5 - 2026-01-07
+- Enhanced geometry fix icon: Bug icon changes color to red when geometry issues are detected, blue when no issues found.
+- Improved geometry fix confirmation messages to show total count of geometry node issues.
+- Fixed geometry fix success message to accurately report both segment count and geometry node count.
+- Better visual feedback for geometry quality checking status.
+2.6.4 - 2026-01-07
+- Fixed checkbox mutual exclusion logic for display features.
+- "Show Segment Length ≤20m" and "Check Geometry issues near node" checkboxes now work independently from the "Copy Connected Segment Attribute" option.
+- These display options can now be enabled/disabled without affecting or being affected by the Copy Connected Segment Attribute feature.
+- Improved user interface behavior and option interactions.
+2.6.3 - 2026-01-07
+- Added "Show Segment Length ≤20m" feature: Displays segment length in an orange circle overlay for segments 20 meters or shorter.
+- Added "Check Geometry issues near node" feature: Detects intermediate geometry nodes that are too close (within 2m) to segment start/end nodes.
+- Geometry issues are marked with pin (📍) icons on the map.
+- Added one-click geometry fix button (bug icon) in the navigation bar to automatically fix all visible geometry issues (requires L3+ rank).
+- Added notification badge showing count of geometry issues in the current view.
+- Integrated Turf.js library for accurate geometry calculations and distance measurements.
+- New settings toggles for both segment length display and geometry quality checking.
+- Optimized performance with efficient map viewport tracking and label caching.
+- Fixed various minor bugs and improved code stability.
 2.6.2 - 2026-01-05
 - Fixed auto city detection when "Set city as none" is unchecked. The script now properly checks connected segments for valid cities instead of defaulting to "None" when the displayed city is empty or unavailable.
 2.6.1 - 2025-12-29
