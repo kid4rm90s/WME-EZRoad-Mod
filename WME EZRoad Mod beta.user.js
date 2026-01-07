@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.6
+// @version      2.6.7
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -15,10 +15,11 @@
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=waze.com
 // @license      GNU GPL(v3)
 // @connect      greasyfork.org
+// @connect      githubusercontent.com
 // @require      https://cdn.jsdelivr.net/npm/@turf/turf@7/turf.min.js
 // @require      https://greasyfork.org/scripts/560385/code/WazeToastr.js
-// @downloadURL https://github.com/kid4rm90s/WME-EZRoad-Mod/raw/refs/heads/main/WME%20EZRoad%20Mod%20beta.user.js
-// @updateURL https://github.com/kid4rm90s/WME-EZRoad-Mod/raw/refs/heads/main/WME%20EZRoad%20Mod%20beta.user.js
+// @downloadURL https://raw.githubusercontent.com/kid4rm90s/WME-EZRoad-Mod/main/WME%20EZRoad%20Mod%20beta.user.js
+// @updateURL https://raw.githubusercontent.com/kid4rm90s/WME-EZRoad-Mod/main/WME%20EZRoad%20Mod%20beta.user.js
 
 // ==/UserScript==
 
@@ -29,7 +30,7 @@
   const updateMessage = `<strong>Bug Fix:</strong><br> - Fixed auto city detection when "Set city as none" is unchecked. The script now properly checks connected segments for valid cities instead of defaulting to "None" when the displayed city is empty or unavailable.`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
-  const downloadUrl = 'https://greasyfork.org/scripts/528552-wme-ezroad-mod/code/wme-ezroad-mod.user.js';
+  const downloadUrl = GM_info.script.updateURL;
   const forumURL = 'https://greasyfork.org/scripts/528552-wme-ezroad-mod/feedback';
   let wmeSDK;
 
@@ -2690,7 +2691,15 @@
   function scriptupdatemonitor() {
     if (WazeToastr?.Ready) {
       // Create and start the ScriptUpdateMonitor
-      const updateMonitor = new WazeToastr.Alerts.ScriptUpdateMonitor(scriptName, scriptVersion, downloadUrl, GM_xmlhttpRequest);
+      // For GitHub raw URLs, we need to specify metaUrl explicitly (same as downloadUrl for GitHub)
+      const updateMonitor = new WazeToastr.Alerts.ScriptUpdateMonitor(
+        scriptName, 
+        scriptVersion, 
+        downloadUrl, 
+        GM_xmlhttpRequest, 
+        downloadUrl, // metaUrl - for GitHub, use the same URL as it contains the @version tag
+        /@version\s+(.+)/i // metaRegExp - extracts version from @version tag
+      );
       updateMonitor.start(2, true); // Check every 2 hours, check immediately
 
       // Show the update dialog for the current version
