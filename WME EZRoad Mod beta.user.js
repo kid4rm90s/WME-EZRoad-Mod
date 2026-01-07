@@ -30,7 +30,7 @@
   const updateMessage = `<strong>Bug Fix:</strong><br> - Fixed auto city detection when "Set city as none" is unchecked. The script now properly checks connected segments for valid cities instead of defaulting to "None" when the displayed city is empty or unavailable.`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
-  const downloadUrl = GM_info.script.updateURL;
+  const downloadUrl = GM_info.script.downloadURL;
   const forumURL = 'https://greasyfork.org/scripts/528552-wme-ezroad-mod/feedback';
   let wmeSDK;
 
@@ -2287,7 +2287,7 @@
     // Helper function to create checkboxes
     const createCheckbox = (option) => {
       const isChecked = localOptions[option.key];
-      const otherClass = option.key !== 'autosave' && option.key !== 'copySegmentAttributes' ? 'ezroadsmod-other-checkbox' : '';
+      const otherClass = option.key !== 'autosave' && option.key !== 'copySegmentAttributes' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' ? 'ezroadsmod-other-checkbox' : '';
       const attrClass = option.key === 'copySegmentAttributes' ? 'ezroadsmod-attr-checkbox' : '';
 
       const div = $(`<div class="ezroadsmod-option">
@@ -2318,15 +2318,15 @@
           } else {
             update('copySegmentAttributes', false);
           }
-        } else if (option.key !== 'autosave') {
-          // If any other checkbox (except autosave) is checked, uncheck copySegmentAttributes
+        } else if (option.key !== 'autosave' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues') {
+          // If any other checkbox (except autosave, showSegmentLength, checkGeometryIssues) is checked, uncheck copySegmentAttributes
           if ($(`#${option.id}`).prop('checked')) {
             $('#copySegmentAttributes').prop('checked', false);
             update('copySegmentAttributes', false);
           }
           update(option.key, $(`#${option.id}`).prop('checked'));
         } else {
-          // Autosave
+          // Autosave, showSegmentLength, or checkGeometryIssues
           update(option.key, $(`#${option.id}`).prop('checked'));
         }
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.3
+// @version      2.6.4
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -26,15 +26,11 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.3 - 2026-01-07:</strong><br>
-  - Added <strong>Segment Length Display</strong>: Shows segments ≤20m with length in an orange circle overlay.<br>
-  - Added <strong>Geometry Quality Check</strong>: Detects geometry nodes too close (≤2m) to segment endpoints with pin icons.<br>
-  - Added <strong>One-click Geometry Fix</strong>: New bug button to automatically fix all visible geometry issues (requires L3+).<br>
-  - Added Turf.js library for geometry calculations.<br>
-  - Minor bug fixes and performance improvements.`;
+  const updateMessage = `<strong>Version 2.6.4 - 2026-01-07:</strong><br>
+    - Minor bug fixes and improvements.`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
-  const downloadUrl = GM_info.script.updateURL;
+  const downloadUrl = GM_info.script.downloadURL;
   const forumURL = 'https://greasyfork.org/scripts/528552-wme-ezroad-mod/feedback';
   let wmeSDK;
 
@@ -2291,7 +2287,7 @@
     // Helper function to create checkboxes
     const createCheckbox = (option) => {
       const isChecked = localOptions[option.key];
-      const otherClass = option.key !== 'autosave' && option.key !== 'copySegmentAttributes' ? 'ezroadsmod-other-checkbox' : '';
+      const otherClass = option.key !== 'autosave' && option.key !== 'copySegmentAttributes' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' ? 'ezroadsmod-other-checkbox' : '';
       const attrClass = option.key === 'copySegmentAttributes' ? 'ezroadsmod-attr-checkbox' : '';
 
       const div = $(`<div class="ezroadsmod-option">
@@ -2322,15 +2318,15 @@
           } else {
             update('copySegmentAttributes', false);
           }
-        } else if (option.key !== 'autosave') {
-          // If any other checkbox (except autosave) is checked, uncheck copySegmentAttributes
+        } else if (option.key !== 'autosave' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues') {
+          // If any other checkbox (except autosave, showSegmentLength, checkGeometryIssues) is checked, uncheck copySegmentAttributes
           if ($(`#${option.id}`).prop('checked')) {
             $('#copySegmentAttributes').prop('checked', false);
             update('copySegmentAttributes', false);
           }
           update(option.key, $(`#${option.id}`).prop('checked'));
         } else {
-          // Autosave
+          // Autosave, showSegmentLength, or checkGeometryIssues
           update(option.key, $(`#${option.id}`).prop('checked'));
         }
 
@@ -2711,6 +2707,11 @@
 Changelog
 
 Version
+2.6.4 - 2026-01-07
+- Fixed checkbox mutual exclusion logic for display features.
+- "Show Segment Length ≤20m" and "Check Geometry issues near node" checkboxes now work independently from the "Copy Connected Segment Attribute" option.
+- These display options can now be enabled/disabled without affecting or being affected by the Copy Connected Segment Attribute feature.
+- Improved user interface behavior and option interactions.
 2.6.3 - 2026-01-07
 - Added "Show Segment Length ≤20m" feature: Displays segment length in an orange circle overlay for segments 20 meters or shorter.
 - Added "Check Geometry issues near node" feature: Detects intermediate geometry nodes that are too close (within 2m) to segment start/end nodes.
