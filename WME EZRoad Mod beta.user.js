@@ -31,7 +31,8 @@
     - Roundabouts are now excluded from geometry issue checks.<br>
     - Added configurable threshold distance input (0.1-10 meters, step: 0.1m, default: 2m).<br>
     - Threshold distance can be customized per user preference in settings.<br>
-    - Fixed geometry issue marker positioning to prevent cropping at higher threshold values.<br>`;
+    - Fixed geometry issue marker positioning to prevent cropping at higher threshold values.<br>
+    - Fixed issue where auto setting up segment city from connected segments could fail in some cases.<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = GM_info.script.downloadURL;
@@ -653,7 +654,7 @@
             if (segment.junctionId !== null) {
               return;
             }
-            
+
             const geoResult = checkGeometryNodePlacement(segment, options.geometryIssueThreshold);
             if (geoResult.hasIssue) {
               geoResult.details.forEach((issue) => {
@@ -1048,7 +1049,7 @@
     });
 
     if (segmentsToFix.length === 0) {
-      if (WazeToastr?.Alerts) WazeToastr.Alerts.info('EZRoad Mod', 'No visible geometry issues to fix.');
+      if (WazeToastr?.Alerts) WazeToastr.Alerts.error('EZRoad Mod', 'No visible geometry issues to fix.');
       else alert('No visible geometry issues to fix.');
       return;
     }
@@ -1801,10 +1802,13 @@
             // Update primary street to new city
             let currentStreet = segment.primaryStreetId ? wmeSDK.DataModel.Streets.getById({ streetId: segment.primaryStreetId }) : null;
             let streetName = currentStreet ? currentStreet.name || '' : '';
+            log(`Before getStreet/addStreet: cityId=${city.id}, streetName="${streetName}"`);
             street = wmeSDK.DataModel.Streets.getStreet({ cityId: city.id, streetName });
             if (!street) {
+              log(`Street not found, creating new street with cityId=${city.id}, streetName="${streetName}"`);
               street = wmeSDK.DataModel.Streets.addStreet({ streetName, cityId: city.id });
             }
+            log(`After getStreet/addStreet: street.id=${street?.id}, street.cityId=${street?.cityId}`);
             // Update alt streets to new city
             let newAltStreetIds = [];
             if (segment && segment.alternateStreetIds && city) {
@@ -1825,20 +1829,19 @@
                 }
               });
             }
+            log(`About to updateAddress: cityId=${city.id}, street.id=${street.id}, altStreetIds=${newAltStreetIds.join(',')}`);
             wmeSDK.DataModel.Segments.updateAddress({
               segmentId: id,
               primaryStreetId: street.id,
               alternateStreetIds: newAltStreetIds.length > 0 ? newAltStreetIds : undefined,
             });
           } else {
-            // New/empty street fallback
-            let autoCity = getTopCity() || getEmptyCity();
-            let autoStreet = wmeSDK.DataModel.Streets.getStreet({ cityId: autoCity.id, streetName: '' });
-            if (!autoStreet) {
-              autoStreet = wmeSDK.DataModel.Streets.addStreet({ streetName: '', cityId: autoCity.id });
+            // New/empty street fallback - use the city we already determined above (from top city or connected segments)
+            log(`Segment has no primary street, using determined city: ${city ? `id=${city.id}, name="${city.name}"` : 'null'}`);
+            street = wmeSDK.DataModel.Streets.getStreet({ cityId: city.id, streetName: '' });
+            if (!street) {
+              street = wmeSDK.DataModel.Streets.addStreet({ streetName: '', cityId: city.id });
             }
-            street = autoStreet;
-            city = autoCity;
             wmeSDK.DataModel.Segments.updateAddress({
               segmentId: id,
               primaryStreetId: street.id,
@@ -2464,7 +2467,9 @@
       // Add geometry threshold input field
       const geometryThresholdDiv = $(`<div class="ezroadsmod-option" style="margin-left: 20px; margin-top: -5px;">
         <label for="geometryIssueThreshold" style="font-size: 0.9em;">Threshold distance (meters):</label>
-        <input type="number" id="geometryIssueThreshold" min="0.1" max="10" step="0.1" value="${localOptions.geometryIssueThreshold || 2}" style="width: 60px; margin-left: 5px;" title="Distance in meters to check for geometry nodes near segment endpoints">
+        <input type="number" id="geometryIssueThreshold" min="0.1" max="10" step="0.1" value="${
+          localOptions.geometryIssueThreshold || 2
+        }" style="width: 60px; margin-left: 5px;" title="Distance in meters to check for geometry nodes near segment endpoints">
       </div>`);
       additionalOptions.append(geometryThresholdDiv);
 
@@ -2776,6 +2781,7 @@ Version
 - Consolidated duplicate geometry threshold constants into single configurable option.
 - Improved settings UI with threshold input field directly below the "Check Geometry issues" checkbox.
 - Threshold changes immediately refresh the map display when geometry checking is enabled.
+- Fixed issue where auto setting up segment city from connected segments could fail in some cases.
 2.6.5 - 2026-01-07
 - Enhanced geometry fix icon: Bug icon changes color to red when geometry issues are detected, blue when no issues found.
 - Improved geometry fix confirmation messages to show total count of geometry node issues.
