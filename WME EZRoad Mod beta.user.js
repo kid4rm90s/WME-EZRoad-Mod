@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.7
+// @version      2.6.7.1
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -27,9 +27,9 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.7 - 2026-01-23:</strong><br>
+  const updateMessage = `<strong>Version 2.6.7.1 - 2026-01-23:</strong><br>
     - Added checkbox for enabling U-turns.<br>
-    - When checked, it will add U-turns to the selected road segments' both sides
+    - When checked, it will add U-turns to the selected road segments' both sides<br> and when pressed again, it will remove U-turns from both sides.<br>
     (thanks to Tahshee for the suggestion).
 <br>`;
   const scriptName = GM_info.script.name;
@@ -1352,6 +1352,7 @@
     let updatedPaved = false;
     let updatedCityName = false;
     let updatedSegmentName = false;
+    let updatedUTurn = false;
     const updatePromises = [];
 
     // If copySegmentAttributes is checked, copy all attributes from a connected segment
@@ -2113,7 +2114,8 @@
                   )
                 );
                 log('[EZRoad] U-turn (Legacy) in the point ' + direction + ' switched to ' + (status ? 'ALLOW' : 'DISALLOW'));
-                alertMessageParts.push(`U-Turn at ${direction} (Legacy): <b>${status ? 'Allowed' : 'Disallowed'}</b>`);
+                alertMessageParts.push(`U-Turn: <b>${status ? 'Allowed' : 'Disallowed'}</b>`);
+                updatedUTurn = true;
                 console.log('WME_EZRoads_Mod: Used legacy W model for U-turn at', direction);
                 return true;
               } catch (e) {
@@ -2138,8 +2140,9 @@
                   }
                 }
                 log('[EZRoad] U-turn (SDK) in the point ' + direction + ' switched to ' + (!status ? 'ALLOW' : 'DISALLOW'));
-                alertMessageParts.push(`U-Turn at ${direction} (SDK): <b>${!status ? 'Allowed' : 'Disallowed'}</b>`);
+                alertMessageParts.push(`U-Turn: <b>${status ? 'Allowed' : 'Disallowed'}</b>`);
                 console.log('WME_EZRoads_Mod: Used SDK method for U-turn at', direction);
+                updatedUTurn = true;
                 return true;
               } catch (e) {
                 console.error('WME_EZRoads_Mod: SDK U-turn error:', e);
@@ -2187,6 +2190,7 @@
         if (updatedLockLevel) updatedFeatures.push(alertMessageParts.find((part) => part.startsWith('Lock Level')));
         if (updatedSpeedLimit) updatedFeatures.push(alertMessageParts.find((part) => part.startsWith('Speed Limit')));
         if (updatedPaved) updatedFeatures.push(alertMessageParts.find((part) => part.startsWith('Paved')));
+        if (updatedUTurn) updatedFeatures.push(alertMessageParts.find((part) => part.startsWith('U-Turn')));
         const message = updatedFeatures.filter(Boolean).join(', ');
         if (message) {
           if (WazeToastr?.Alerts) {
@@ -2854,9 +2858,9 @@
 Changelog
 
 Version
-2.6.7 - 2026-01-23:
+2.6.7.1 - 2026-01-23:
     - Added checkbox for enabling U-turns.<br>
-    - When checked, it will add U-turns to the selected road segments' both sides
+When checked, it will add U-turns to the selected road segments' both sides<br> and when pressed again, it will remove U-turns from both sides.
     (thanks to Tahshee for the suggestion).
 2.6.6 - 2026-01-09
 - Roundabouts (segments with junctionId) are now excluded from geometry issue detection and fixing.
