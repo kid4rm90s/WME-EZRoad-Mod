@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.6
+// @version      2.6.7
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -27,12 +27,11 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.6 - 2026-01-09:</strong><br>
-    - Roundabouts are now excluded from geometry issue checks.<br>
-    - Added configurable threshold distance input (0.1-10 meters, step: 0.1m, default: 2m).<br>
-    - Threshold distance can be customized per user preference in settings.<br>
-    - Fixed geometry issue marker positioning to prevent cropping at higher threshold values.<br>
-    - Fixed issue where auto setting up segment city from connected segments could fail in some cases.<br>`;
+  const updateMessage = `<strong>Version 2.6.7 - 2026-01-23:</strong><br>
+    - Added checkbox for enabling U-turns.<br>
+    - When checked, it will add U-turns to the selected road segments' both sides
+    (thanks to Tahshee for the suggestion).
+<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = GM_info.script.downloadURL;
@@ -74,6 +73,7 @@
     showSegmentLength: false,
     checkGeometryIssues: false,
     geometryIssueThreshold: 2,
+    enableUTurn: false,
     shortcutKey: 'g',
   };
 
@@ -268,7 +268,7 @@
     const mergedLocks = mergeById(
       defaultOptions.locks,
       (savedOptions.locks || []).map((l) => ({ ...l, lock: String(l.lock) })),
-      'locks'
+      'locks',
     );
     const mergedSpeeds = mergeById(defaultOptions.speeds, savedOptions.speeds || [], 'speeds');
     return {
@@ -1502,7 +1502,7 @@
             } catch (error) {
               console.error('Error copying all attributes:', error);
             }
-          }, 100)
+          }, 100),
         );
       });
       Promise.all(updatePromises).then(() => {
@@ -1589,7 +1589,7 @@
               }
             }
           }
-        }, 200)
+        }, 200),
       ); // 200ms delay before road type update
 
       // Set lock if enabled
@@ -1644,7 +1644,7 @@
               }
             }
           }
-        }, 300)
+        }, 300),
       ); // 250ms delay before lock rank update
 
       // Speed Limit - use road-specific speed if updateSpeed is enabled
@@ -1690,7 +1690,7 @@
           } else {
             log('Speed updates disabled');
           }
-        }, 400)
+        }, 400),
       ); // 300ms delay before lock rank update
 
       // Handling the street
@@ -1976,7 +1976,7 @@
               updatedPaved = true;
             }
           }
-        }, 500)
+        }, 500),
       ); // 500ms delay for unpaved/paved toggle
 
       // 3a. Copy segment name from connected segment if enabled
@@ -2089,8 +2089,77 @@
               console.error('Error copying segment name:', error);
             }
           }
-        }, 100)
+        }, 100),
       ); // Run early in the update chain
+          // Enable U-Turn if option is checked
+    updatePromises.push(
+      delayedUpdate(() => {
+        if (options.enableUTurn) {
+          // Hybrid method: try SDK, fallback to legacy W model
+          function switchSegmentUturnHybrid(direction = 'A') {
+            // Prefer legacy W model if available
+            if (typeof W !== 'undefined' && W.model && W.model.getTurnGraph && W.model.actionManager) {
+              try {
+                const seg = W.model.segments.getObjectById(id);
+                if (!seg || seg.isOneWay()) return;
+                const node = direction === 'A' ? seg.getFromNode() : seg.getToNode();
+                const status = seg.isTurnAllowed(seg, node) ? 0 : 1; // 0: DISALLOW, 1: ALLOW
+                const turn = W.model.getTurnGraph().getTurnThroughNode(node, seg, seg);
+                if (!turn) return;
+                W.model.actionManager.add(
+                  new WazeActionSetTurn(
+                    W.model.getTurnGraph(),
+                    turn.withTurnData(turn.getTurnData().withState(status))
+                  )
+                );
+                log('[EZRoad] U-turn (Legacy) in the point ' + direction + ' switched to ' + (status ? 'ALLOW' : 'DISALLOW'));
+                alertMessageParts.push(`U-Turn at ${direction} (Legacy): <b>${status ? 'Allowed' : 'Disallowed'}</b>`);
+                console.log('WME_EZRoads_Mod: Used legacy W model for U-turn at', direction);
+                return true;
+              } catch (e) {
+                console.error('WME_EZRoads_Mod: Legacy U-turn error:', e);
+              }
+            }
+            // Fallback to SDK method if legacy is not available
+            if (typeof wmeSDK !== 'undefined' && wmeSDK.DataModel && wmeSDK.DataModel.Turns) {
+              try {
+                const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+                if (!seg.isTwoWay) return;
+                const nodeId = direction === 'A' ? seg.fromNodeId : seg.toNodeId;
+                if (!wmeSDK.DataModel.Turns.canEditTurnsThroughNode({ nodeId })) return;
+                const status = wmeSDK.DataModel.Turns.isTurnAllowed({ fromSegmentId: seg.id, nodeId, toSegmentId: seg.id });
+                let turns = wmeSDK.DataModel.Turns.getTurnsThroughNode({ nodeId });
+                turns = turns.filter(turn => turn.isUTurn && turn.fromSegmentId === seg.id && turn.toSegmentId === seg.id);
+                if (turns.length === 0) return;
+                for (let i = 0; i < turns.length; i++) {
+                  const turn = turns[i];
+                  if (wmeSDK.DataModel.Turns.getById({ turnId: turn.id })) {
+                    wmeSDK.DataModel.Turns.updateTurn({ turnId: turn.id, isAllowed: !status });
+                  }
+                }
+                log('[EZRoad] U-turn (SDK) in the point ' + direction + ' switched to ' + (!status ? 'ALLOW' : 'DISALLOW'));
+                alertMessageParts.push(`U-Turn at ${direction} (SDK): <b>${!status ? 'Allowed' : 'Disallowed'}</b>`);
+                console.log('WME_EZRoads_Mod: Used SDK method for U-turn at', direction);
+                return true;
+              } catch (e) {
+                console.error('WME_EZRoads_Mod: SDK U-turn error:', e);
+              }
+            }
+            // Neither method available
+            console.warn('WME_EZRoads_Mod: No available method for U-turn at', direction);
+            alertMessageParts.push(`U-Turn at ${direction}: <b>Not available</b>`);
+            return false;
+          }
+          try {
+            switchSegmentUturnHybrid('A');
+            switchSegmentUturnHybrid('B');
+          } catch (error) {
+            console.error('Error switching U-turn (hybrid):', error);
+            alertMessageParts.push(`U-Turn: <b>Failed to switch</b>`);
+          }
+        }
+      }, 450), // 450ms delay - between speed (400ms) and unpaved (500ms)
+    );
     });
 
     Promise.all(updatePromises).then(() => {
@@ -2242,6 +2311,12 @@
         text: 'Update speed limits',
         key: 'updateSpeed',
         tooltip: 'Updates the speed limit for the selected road type. it also enables the speed input field.',
+      },
+      {
+        id: 'enableUTurn',
+        text: 'Enable U-Turn',
+        key: 'enableUTurn',
+        tooltip: 'Enables U-turn for the selected segment when Quick Update is triggered.',
       },
       {
         id: 'copySegmentName',
@@ -2520,7 +2595,7 @@
             <button id="ezroadsmod-import-btn" style="font-size:0.9em;padding:4px 8px;white-space:nowrap;">Import Lock/Speed Config</button>
           </div>
           <input id="ezroadsmod-import-input" type="text" placeholder="Paste config here" style="width:95%;font-size:0.9em;padding:3px;">
-        </div>`
+        </div>`,
       );
       scriptContentPane.append(exportImportSection);
 
@@ -2545,7 +2620,7 @@
           },
           () => {
             alert('Failed to copy config to clipboard.');
-          }
+          },
         );
       });
 
@@ -2611,7 +2686,7 @@
             <button id="ezroadsmod-save-preset-btn" style="font-size:0.9em;padding:3px 8px;">Save</button>
           </div>
           <div id="ezroadsmod-presets-list" style="margin-top:6px;"></div>
-        </div>`
+        </div>`,
       );
       scriptContentPane.append(customPresetsSection);
 
@@ -2649,7 +2724,7 @@
                   <button class="ezroadsmod-delete-preset-btn" data-preset-name="${presetName}" style="background-color:#f44336; color:white;font-size:0.9em;padding:3px 8px;">Delete</button>
                 </div>
               </div>
-            </div>`
+            </div>`,
           );
           presetsListDiv.append(presetDiv);
         });
@@ -2753,7 +2828,7 @@
         downloadUrl,
         GM_xmlhttpRequest,
         downloadUrl, // metaUrl - for GitHub, use the same URL as it contains the @version tag
-        /@version\s+(.+)/i // metaRegExp - extracts version from @version tag
+        /@version\s+(.+)/i, // metaRegExp - extracts version from @version tag
       );
       updateMonitor.start(2, true); // Check every 2 hours, check immediately
 
@@ -2766,10 +2841,23 @@
   scriptupdatemonitor();
   console.log(`${scriptName} initialized.`);
 
+  // Custom code to run after WME bootstrap for legacy require calls for UTurn action. without it WazeActionSetTurn is undefined.
+    let WazeActionSetTurn
+
+    $(document)
+      .on('bootstrap.wme', () => {
+        // Require Waze components
+        WazeActionSetTurn = require('Waze/Model/Graph/Actions/SetTurn')
+      })
+
   /*
 Changelog
 
 Version
+2.6.7 - 2026-01-23:
+    - Added checkbox for enabling U-turns.<br>
+    - When checked, it will add U-turns to the selected road segments' both sides
+    (thanks to Tahshee for the suggestion).
 2.6.6 - 2026-01-09
 - Roundabouts (segments with junctionId) are now excluded from geometry issue detection and fixing.
 - Added user-configurable threshold distance input field for geometry checks:
