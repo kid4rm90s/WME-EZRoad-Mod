@@ -268,7 +268,7 @@
     const mergedLocks = mergeById(
       defaultOptions.locks,
       (savedOptions.locks || []).map((l) => ({ ...l, lock: String(l.lock) })),
-      'locks',
+      'locks'
     );
     const mergedSpeeds = mergeById(defaultOptions.speeds, savedOptions.speeds || [], 'speeds');
     return {
@@ -1502,7 +1502,7 @@
             } catch (error) {
               console.error('Error copying all attributes:', error);
             }
-          }, 100),
+          }, 100)
         );
       });
       Promise.all(updatePromises).then(() => {
@@ -1589,7 +1589,7 @@
               }
             }
           }
-        }, 200),
+        }, 200)
       ); // 200ms delay before road type update
 
       // Set lock if enabled
@@ -1644,7 +1644,7 @@
               }
             }
           }
-        }, 300),
+        }, 300)
       ); // 250ms delay before lock rank update
 
       // Speed Limit - use road-specific speed if updateSpeed is enabled
@@ -1690,7 +1690,7 @@
           } else {
             log('Speed updates disabled');
           }
-        }, 400),
+        }, 400)
       ); // 300ms delay before lock rank update
 
       // Handling the street
@@ -1976,7 +1976,7 @@
               updatedPaved = true;
             }
           }
-        }, 500),
+        }, 500)
       ); // 500ms delay for unpaved/paved toggle
 
       // 3a. Copy segment name from connected segment if enabled
@@ -2089,7 +2089,7 @@
               console.error('Error copying segment name:', error);
             }
           }
-        }, 100),
+        }, 100)
       ); // Run early in the update chain
           // Enable U-Turn if option is checked
     updatePromises.push(
@@ -2316,7 +2316,7 @@
         id: 'enableUTurn',
         text: 'Enable U-Turn',
         key: 'enableUTurn',
-        tooltip: 'Enables U-turn for the selected segment when Quick Update is triggered.',
+        tooltip: 'Enables U-turn for the selected segment when Quick Update is triggered. Works for both one-way and two-way segments and add U-turns at both ends.',
       },
       {
         id: 'copySegmentName',
@@ -2595,7 +2595,7 @@
             <button id="ezroadsmod-import-btn" style="font-size:0.9em;padding:4px 8px;white-space:nowrap;">Import Lock/Speed Config</button>
           </div>
           <input id="ezroadsmod-import-input" type="text" placeholder="Paste config here" style="width:95%;font-size:0.9em;padding:3px;">
-        </div>`,
+        </div>`
       );
       scriptContentPane.append(exportImportSection);
 
@@ -2620,7 +2620,7 @@
           },
           () => {
             alert('Failed to copy config to clipboard.');
-          },
+          }
         );
       });
 
@@ -2686,7 +2686,7 @@
             <button id="ezroadsmod-save-preset-btn" style="font-size:0.9em;padding:3px 8px;">Save</button>
           </div>
           <div id="ezroadsmod-presets-list" style="margin-top:6px;"></div>
-        </div>`,
+        </div>`
       );
       scriptContentPane.append(customPresetsSection);
 
@@ -2724,7 +2724,7 @@
                   <button class="ezroadsmod-delete-preset-btn" data-preset-name="${presetName}" style="background-color:#f44336; color:white;font-size:0.9em;padding:3px 8px;">Delete</button>
                 </div>
               </div>
-            </div>`,
+            </div>`
           );
           presetsListDiv.append(presetDiv);
         });
