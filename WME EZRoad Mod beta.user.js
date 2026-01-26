@@ -2090,7 +2090,6 @@
           }
         }, 100)
       ); // Run early in the update chain
-          // Enable U-Turn if option is checked
    // Enable U-Turn logic: Only allow if not already allowed
    // Enable U-Turn if option is checked
     updatePromises.push(
