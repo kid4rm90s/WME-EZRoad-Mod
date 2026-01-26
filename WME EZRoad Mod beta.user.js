@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.7.1
+// @version      2.6.7.2
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -27,10 +27,8 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.7.1 - 2026-01-23:</strong><br>
-    - Added checkbox for enabling U-turns.<br>
-    - When checked, it will add U-turns to the selected road segments' both sides<br> and when pressed again, it will remove U-turns from both sides.<br>
-    (thanks to Tahshee for the suggestion).
+  const updateMessage = `<strong>Version 2.6.7.2 - 2026-01-23:</strong><br>
+    - Fixed an issue where "Enable Uturn" was disabling existing U-turns.<br>
 <br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
@@ -2093,75 +2091,101 @@
         }, 100)
       ); // Run early in the update chain
           // Enable U-Turn if option is checked
+   // Enable U-Turn logic: Only allow if not already allowed
+   // Enable U-Turn if option is checked
     updatePromises.push(
       delayedUpdate(() => {
         if (options.enableUTurn) {
-          // Hybrid method: try SDK, fallback to legacy W model
+          let sideAResult = null;
+          let sideBResult = null;
+
           function switchSegmentUturnHybrid(direction = 'A') {
-            // Prefer legacy W model if available
+            // --- 1. Legacy W Model Method ---
             if (typeof W !== 'undefined' && W.model && W.model.getTurnGraph && W.model.actionManager) {
               try {
+                // Fix: Ensure constructor is loaded correctly
+                if (typeof WazeActionSetTurn !== 'function') {
+                  const SetTurnModule = require('Waze/Model/Graph/Actions/SetTurn');
+                  WazeActionSetTurn = SetTurnModule.default || SetTurnModule;
+                }
+
                 const seg = W.model.segments.getObjectById(id);
-                if (!seg || seg.isOneWay()) return;
+                if (!seg || seg.isOneWay()) return 'skipped';
+                
                 const node = direction === 'A' ? seg.getFromNode() : seg.getToNode();
-                const status = seg.isTurnAllowed(seg, node) ? 0 : 1; // 0: DISALLOW, 1: ALLOW
+                
+                // Check current state
+                if (seg.isTurnAllowed(seg, node)) {
+                  log(`[EZRoad] U-turn at ${direction} already allowed.`);
+                  return 'already';
+                }
+
                 const turn = W.model.getTurnGraph().getTurnThroughNode(node, seg, seg);
-                if (!turn) return;
+                if (!turn) return 'failed';
+
                 W.model.actionManager.add(
                   new WazeActionSetTurn(
                     W.model.getTurnGraph(),
-                    turn.withTurnData(turn.getTurnData().withState(status))
+                    turn.withTurnData(turn.getTurnData().withState(1)) // 1 is ALLOW
                   )
                 );
-                log('[EZRoad] U-turn (Legacy) in the point ' + direction + ' switched to ' + (status ? 'ALLOW' : 'DISALLOW'));
-                alertMessageParts.push(`U-Turn: <b>${status ? 'Allowed' : 'Disallowed'}</b>`);
-                updatedUTurn = true;
-                console.log('WME_EZRoads_Mod: Used legacy W model for U-turn at', direction);
-                return true;
+                return 'enabled';
               } catch (e) {
                 console.error('WME_EZRoads_Mod: Legacy U-turn error:', e);
               }
             }
-            // Fallback to SDK method if legacy is not available
+
+            // --- 2. SDK Method Fallback ---
             if (typeof wmeSDK !== 'undefined' && wmeSDK.DataModel && wmeSDK.DataModel.Turns) {
               try {
                 const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
-                if (!seg.isTwoWay) return;
+                if (!seg || !seg.isTwoWay) return 'skipped';
+                
                 const nodeId = direction === 'A' ? seg.fromNodeId : seg.toNodeId;
-                if (!wmeSDK.DataModel.Turns.canEditTurnsThroughNode({ nodeId })) return;
-                const status = wmeSDK.DataModel.Turns.isTurnAllowed({ fromSegmentId: seg.id, nodeId, toSegmentId: seg.id });
+                if (!wmeSDK.DataModel.Turns.canEditTurnsThroughNode({ nodeId })) return 'failed';
+
+                if (wmeSDK.DataModel.Turns.isTurnAllowed({ fromSegmentId: seg.id, nodeId, toSegmentId: seg.id })) {
+                  return 'already';
+                }
+
                 let turns = wmeSDK.DataModel.Turns.getTurnsThroughNode({ nodeId });
                 turns = turns.filter(turn => turn.isUTurn && turn.fromSegmentId === seg.id && turn.toSegmentId === seg.id);
-                if (turns.length === 0) return;
+                if (turns.length === 0) return 'failed';
+
                 for (let i = 0; i < turns.length; i++) {
-                  const turn = turns[i];
-                  if (wmeSDK.DataModel.Turns.getById({ turnId: turn.id })) {
-                    wmeSDK.DataModel.Turns.updateTurn({ turnId: turn.id, isAllowed: !status });
-                  }
+                  wmeSDK.DataModel.Turns.updateTurn({ turnId: turns[i].id, isAllowed: true });
                 }
-                log('[EZRoad] U-turn (SDK) in the point ' + direction + ' switched to ' + (!status ? 'ALLOW' : 'DISALLOW'));
-                alertMessageParts.push(`U-Turn: <b>${status ? 'Allowed' : 'Disallowed'}</b>`);
-                console.log('WME_EZRoads_Mod: Used SDK method for U-turn at', direction);
-                updatedUTurn = true;
-                return true;
+                return 'enabled';
               } catch (e) {
                 console.error('WME_EZRoads_Mod: SDK U-turn error:', e);
               }
             }
-            // Neither method available
-            console.warn('WME_EZRoads_Mod: No available method for U-turn at', direction);
-            alertMessageParts.push(`U-Turn at ${direction}: <b>Not available</b>`);
-            return false;
+            return 'failed';
           }
+
           try {
-            switchSegmentUturnHybrid('A');
-            switchSegmentUturnHybrid('B');
+            sideAResult = switchSegmentUturnHybrid('A');
+            sideBResult = switchSegmentUturnHybrid('B');
+
+            // Handle alert messaging based on results
+            if (sideAResult === 'enabled' || sideBResult === 'enabled') {
+              // At least one side was newly enabled
+              alertMessageParts.push(`U-Turn: <b>Allowed</b>`);
+              updatedUTurn = true;
+            } else if (sideAResult === 'already' && sideBResult === 'already') {
+              // Both sides were already enabled
+              alertMessageParts.push(`U-Turn: <b>Already Enabled</b>`);
+              updatedUTurn = true; // Mark as updated so it shows in the combined alert
+            } else if (sideAResult === 'already' || sideBResult === 'already') {
+              // One side already enabled, the other failed/skipped
+              alertMessageParts.push(`U-Turn: <b>Already Enabled</b>`);
+              updatedUTurn = true;
+            }
           } catch (error) {
-            console.error('Error switching U-turn (hybrid):', error);
-            alertMessageParts.push(`U-Turn: <b>Failed to switch</b>`);
+            console.error('Error switching U-turn:', error);
           }
         }
-      }, 450), // 450ms delay - between speed (400ms) and unpaved (500ms)
+      }, 450)
     );
     });
 
@@ -2848,16 +2872,28 @@
   // Custom code to run after WME bootstrap for legacy require calls for UTurn action. without it WazeActionSetTurn is undefined.
     let WazeActionSetTurn
 
-    $(document)
-      .on('bootstrap.wme', () => {
-        // Require Waze components
-        WazeActionSetTurn = require('Waze/Model/Graph/Actions/SetTurn')
-      })
+$(document).on('bootstrap.wme', () => {
+    // Require Waze components with a check for .default (ES6 modules)
+    const SetTurnModule = require('Waze/Model/Graph/Actions/SetTurn');
+    WazeActionSetTurn = SetTurnModule.default || SetTurnModule;
+});
+
+// Fallback: If bootstrap already happened, try to require it now
+if (typeof require !== 'undefined') {
+    try {
+        const SetTurnModule = require('Waze/Model/Graph/Actions/SetTurn');
+        WazeActionSetTurn = SetTurnModule.default || SetTurnModule;
+    } catch (e) {
+        console.warn('EZRoads Mod: Could not load WazeActionSetTurn immediately.');
+    }
+}
 
   /*
 Changelog
 
 Version
+2.6.7.2 - 2026-01-23
+    - Fixed an issue where "Enable Uturn" was disabling existing U-turns.
 2.6.7.1 - 2026-01-23:
     - Added checkbox for enabling U-turns.<br>
 When checked, it will add U-turns to the selected road segments' both sides<br> and when pressed again, it will remove U-turns from both sides.
