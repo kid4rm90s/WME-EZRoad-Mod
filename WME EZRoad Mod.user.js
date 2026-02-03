@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.7.2
+// @version      2.6.7.3
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -26,11 +26,8 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.7.2 - 2026-01-26:</strong><br>
-    - Fixed an issue where "Enable Uturn" was disabling existing U-turns.<br>
-  <strong>Version 2.6.7.1 - 2026-01-23:</strong><br>
-    - Added checkbox for enabling U-turns.<br>
-    (thanks to Tahshee for the suggestion).<br>
+  const updateMessage = `<strong>Version 2.6.7.3 - 2026-01-28:</strong><br>
+    - Fixed an issue with copying city names or segment names <br>
 <br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
@@ -73,6 +70,7 @@
     showSegmentLength: false,
     checkGeometryIssues: false,
     geometryIssueThreshold: 2,
+    enableUTurn: false,
     shortcutKey: 'g',
   };
 
@@ -1033,7 +1031,7 @@
       // Skip roundabouts (segments that are part of a junction)
       if (segment.junctionId !== null) return false;
 
-      // Check functionality
+      // Check for nodes too close to endpoints
       const result = checkGeometryNodePlacement(segment, options.geometryIssueThreshold);
       if (!result.hasIssue) return false;
 
@@ -1362,9 +1360,10 @@
             try {
               const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
               const fromNode = seg.fromNodeId;
+              const toNode = seg.toNodeId;
               const connectedSegIds = getConnectedSegmentIDs(id);
               // Gather all segments connected to fromNode (excluding self)
-              const fromNodeSegs = connectedSegIds.map((sid) => wmeSDK.DataModel.Segments.getById({ segmentId: sid })).filter((s) => s && (s.fromNodeId === fromNode || s.toNodeId === fromNode) && s.id !== id);
+              const fromNodeSegs = connectedSegIds.map((sid) => wmeSDK.DataModel.Segments.getById({ segmentId: sid })).filter((s) => s && (s.fromNodeId === fromNode || s.toNodeId === toNode) && s.id !== id);
               // Prefer the first fromNode segment with a valid primary street name (and optionally other attributes)
               let preferredSeg = fromNodeSegs.find((s) => {
                 if (!s) return false;
@@ -1986,9 +1985,10 @@
             try {
               const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
               const fromNode = seg.fromNodeId;
+              const toNode = seg.toNodeId;
               const connectedSegIds = getConnectedSegmentIDs(id);
               // Gather all segments connected to fromNode (excluding self)
-              const fromNodeSegs = connectedSegIds.map((sid) => wmeSDK.DataModel.Segments.getById({ segmentId: sid })).filter((s) => s && (s.fromNodeId === fromNode || s.toNodeId === fromNode) && s.id !== id);
+              const fromNodeSegs = connectedSegIds.map((sid) => wmeSDK.DataModel.Segments.getById({ segmentId: sid })).filter((s) => s && (s.fromNodeId === fromNode || s.toNodeId === toNode) && s.id !== id);
               // Prefer the first fromNode segment with a name/city/alias
               let preferredSeg = fromNodeSegs.find((s) => {
                 if (!s) return false;
@@ -2884,7 +2884,9 @@ if (typeof require !== 'undefined') {
 Changelog
 
 Version
-2.6.7.2 - 2026-01-26
+Version 2.6.7.3 - 2026-01-28
+    - Fixed an issue with copying city names or segment names
+2.6.7.2 - 2026-01-23
     - Fixed an issue where "Enable Uturn" was disabling existing U-turns.
 2.6.7.1 - 2026-01-23:
     - Added checkbox for enabling U-turns.<br>
