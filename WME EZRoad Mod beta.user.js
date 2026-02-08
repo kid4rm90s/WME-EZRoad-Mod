@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.7.4
+// @version      2.6.7.5
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -27,16 +27,8 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.7.4 - 2026-02-02:</strong><br>
-    - Added auto-fix capability for irregular geometry (⚡ lightning icon)<br>
-    - Arrow-curve button now attempts to automatically simplify irregular geometry<br>
-    - Separated geometry detection into two distinct features:<br>
-    - Bug icon: Auto-fix geometry nodes near endpoints (📍 pin icon - can be automatically removed)<br>
-    - Arrow-curve icon: Auto-fix irregular shapes (⚡ lightning icon) by simplifying geometry<br>
-    - Each icon has independent counters and functions in the navigation panel<br>
-    - Enhanced geometry detection to catch WME's "Irregularly shaped segment" issues<br>
-    - Now detects: self-intersections, extreme angle reversals (>160°), complex geometry patterns, and tight loops<br>
-    - Configurable detection thresholds for geometry checks<br>
+  const updateMessage = `<strong>Version 2.6.7.5 - 2026-02-08:</strong><br>
+    - Added checkbox option for adding allowed motorcycle only restriction <br>
 <br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
@@ -79,8 +71,8 @@
     showSegmentLength: false,
     checkGeometryIssues: false,
     geometryIssueThreshold: 2,
-    checkIrregularGeometry: false,
     enableUTurn: false,
+    restrictExceptMotorbike: false,
     shortcutKey: 'g',
   };
 
@@ -259,6 +251,267 @@
         log(`Error updating flag attribute ${flagName}: ${e}`);
       }
     }
+  }
+
+  // --- NEW: Helper to apply motorbike-only restrictions to a segment via UI automation ---
+  function applyMotorbikeOnlyRestriction(segmentId) {
+    /**
+     * Applies vehicle restrictions to allow only motorbikes on a segment.
+     * Uses DOM manipulation to automate the WME UI since the SDK doesn't support this yet.
+     */
+    return new Promise((resolve) => {
+      try {
+        const segment = wmeSDK.DataModel.Segments.getById({ segmentId });
+        if (!segment) {
+          log(`Segment ${segmentId} not found for restriction`);
+          resolve('not_supported');
+          return;
+        }
+
+        log(`Applying motorbike-only restriction to segment ${segmentId} via UI automation`);
+
+        /* ===== WME SDK APPROACH (NOT YET SUPPORTED - COMMENTED OUT FOR FUTURE USE) =====
+        // Get SDK constants - try different possible locations
+        const RESTRICTION_TYPE = wmeSDK.RESTRICTION_TYPE || wmeSDK.Constants?.RESTRICTION_TYPE || {
+          FREE: 'FREE',
+          BLOCKED: 'BLOCKED',
+          DIFFICULT: 'DIFFICULT',
+          TOLL: 'TOLL'
+        };
+
+        const VEHICLE_TYPE = wmeSDK.VEHICLE_TYPE || wmeSDK.Constants?.VEHICLE_TYPE || {
+          MOTORCYCLE: 'MOTORCYCLE',
+          CAR: 'CAR',
+          TAXI: 'TAXI',
+          BUSES: 'BUSES',
+          TRUCKS: 'TRUCKS',
+          SCOOTERS: 'SCOOTERS'
+        };
+
+        // Create motorcycle-only restriction using SDK constants and structure
+        // Only motorcycles are allowed (FREE restriction), all other vehicles are BLOCKED
+        const motorcycleOnlyRestriction = {
+          driveProfiles: {
+            // FREE: Only motorcycles can pass freely
+            [RESTRICTION_TYPE.FREE]: [
+              {
+                vehicleTypes: [VEHICLE_TYPE.MOTORCYCLE],
+                licensePlateNumber: '',
+                numPassengers: 0,
+                subscriptions: [],
+              },
+            ],
+            // BLOCKED: All other vehicle types are blocked
+            [RESTRICTION_TYPE.BLOCKED]: [
+              {
+                vehicleTypes: [
+                  VEHICLE_TYPE.CAR,
+                  VEHICLE_TYPE.TAXI,
+                  VEHICLE_TYPE.BUSES,
+                  VEHICLE_TYPE.TRUCKS,
+                  VEHICLE_TYPE.SCOOTERS,
+                ],
+                licensePlateNumber: '',
+                numPassengers: 0,
+                subscriptions: [],
+              },
+            ],
+            [RESTRICTION_TYPE.DIFFICULT]: [],
+            [RESTRICTION_TYPE.TOLL]: [],
+          },
+          isExpired: false,
+        };
+
+        // Try applying via SDK (currently not working)
+        // Method 1: Try Segments.addRestriction
+        if (wmeSDK.DataModel.Segments.addRestriction) {
+          wmeSDK.DataModel.Segments.addRestriction({
+            segmentId,
+            restriction: motorcycleOnlyRestriction,
+          });
+        }
+        
+        // Method 2: Try Segments.addSegmentRestriction
+        if (wmeSDK.DataModel.Segments.addSegmentRestriction) {
+          wmeSDK.DataModel.Segments.addSegmentRestriction({
+            segmentId,
+            restriction: motorcycleOnlyRestriction,
+          });
+        }
+        
+        // Method 3: Try updateSegment with restrictions array
+        const currentRestrictions = segment.restrictions || [];
+        wmeSDK.DataModel.Segments.updateSegment({
+          segmentId,
+          restrictions: [...currentRestrictions, motorcycleOnlyRestriction],
+        });
+        
+        // Method 4: Try SegmentRestrictions API if it exists
+        if (wmeSDK.DataModel.SegmentRestrictions?.addRestriction) {
+          wmeSDK.DataModel.SegmentRestrictions.addRestriction({
+            segmentId,
+            restriction: motorcycleOnlyRestriction,
+            direction: 'BOTH',
+          });
+        }
+        ===== END WME SDK APPROACH ===== */
+
+        // Helper function to wait for element
+        const waitForElement = (selector, timeout = 5000) => {
+          return new Promise((resolve, reject) => {
+            const startTime = Date.now();
+            const checkInterval = setInterval(() => {
+              const element = document.querySelector(selector);
+              if (element) {
+                clearInterval(checkInterval);
+                resolve(element);
+              } else if (Date.now() - startTime > timeout) {
+                clearInterval(checkInterval);
+                reject(new Error(`Timeout waiting for element: ${selector}`));
+              }
+            }, 100);
+          });
+        };
+
+        // Helper to click element
+        const clickElement = (element) => {
+          if (element) {
+            element.click();
+            log(`Clicked: ${element.tagName} ${element.className}`);
+            return true;
+          }
+          return false;
+        };
+
+        // Step 1: Click "Add restrictions" button
+        setTimeout(() => {
+          const addRestrictionsBtn = document.querySelector('wz-button.edit-restrictions');
+          if (!addRestrictionsBtn) {
+            log('Add restrictions button not found');
+            resolve('not_supported');
+            return;
+          }
+          clickElement(addRestrictionsBtn);
+
+          // Step 2: Wait for modal and click "Add new" for bidirectional (2-way)
+          setTimeout(() => {
+            waitForElement('.bidi-restrictions-summary .do-create')
+              .then((addNewBtn) => {
+                clickElement(addNewBtn);
+
+                // Step 3: Wait for disposition dropdown and select "Entire Segment" (value="1")
+                setTimeout(() => {
+                  waitForElement('select[name="disposition"]')
+                    .then((dispositionSelect) => {
+                      dispositionSelect.value = '1'; // Entire Segment
+                      dispositionSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                      log('Selected: Entire Segment');
+
+                      // Step 4: Click the plus icon to add restriction type
+                      setTimeout(() => {
+                        const plusIcon = document.querySelector('.fa-plus');
+                        if (plusIcon && clickElement(plusIcon)) {
+                          
+                          // Step 5: Wait for and click "Vehicle type" option
+                          setTimeout(() => {
+                            waitForElement('wz-menu-item')
+                              .then(() => {
+                                const menuItems = document.querySelectorAll('wz-menu-item');
+                                let vehicleTypeItem = null;
+                                menuItems.forEach(item => {
+                                  if (item.textContent.includes('Vehicle type')) {
+                                    vehicleTypeItem = item;
+                                  }
+                                });
+                                
+                                if (vehicleTypeItem && clickElement(vehicleTypeItem)) {
+                                  
+                                  // Step 6: Wait for vehicle type dropdown and select Motorcycle
+                                  setTimeout(() => {
+                                    waitForElement('.do-set-vehicle-type')
+                                      .then(() => {
+                                        const vehicleOptions = document.querySelectorAll('.do-set-vehicle-type');
+                                        let motorcycleOption = null;
+                                        vehicleOptions.forEach(option => {
+                                          if (option.textContent.toLowerCase().includes('motorcycle')) {
+                                            motorcycleOption = option;
+                                          }
+                                        });
+
+                                        if (motorcycleOption && clickElement(motorcycleOption)) {
+                                          log('Selected: Motorcycle');
+
+                                          // Step 7: Click the Add button
+                                          setTimeout(() => {
+                                            waitForElement('button.do-create')
+                                              .then((addBtn) => {
+                                                if (clickElement(addBtn)) {
+                                                  log('Clicked Add button');
+
+                                                  // Click Apply button to save
+                                                  setTimeout(() => {
+                                                    const applyBtn = document.querySelector('button.do-apply');
+                                                    if (applyBtn && clickElement(applyBtn)) {
+                                                      log('Successfully applied motorbike-only restriction via UI automation');
+                                                      resolve(true);
+                                                    } else {
+                                                      log('Apply button not found');
+                                                      resolve('not_supported');
+                                                    }
+                                                  }, 100);
+                                                } else {
+                                                  resolve('not_supported');
+                                                }
+                                              })
+                                              .catch(err => {
+                                                log(`Error finding Add button: ${err}`);
+                                                resolve('not_supported');
+                                              });
+                                          }, 100);
+                                        } else {
+                                          log('Motorcycle option not found');
+                                          resolve('not_supported');
+                                        }
+                                      })
+                                      .catch(err => {
+                                        log(`Error finding vehicle options: ${err}`);
+                                        resolve('not_supported');
+                                      });
+                                  }, 100);
+                                } else {
+                                  log('Vehicle type menu item not found');
+                                  resolve('not_supported');
+                                }
+                              })
+                              .catch(err => {
+                                log(`Error finding menu items: ${err}`);
+                                resolve('not_supported');
+                              });
+                          }, 100);
+                        } else {
+                          log('Plus icon not found');
+                          resolve('not_supported');
+                        }
+                      }, 100);
+                    })
+                    .catch(err => {
+                      log(`Error finding disposition dropdown: ${err}`);
+                      resolve('not_supported');
+                    });
+                }, 100);
+              })
+              .catch(err => {
+                log(`Error finding Add new button: ${err}`);
+                resolve('not_supported');
+              });
+          }, 100);
+        }, 50);
+
+      } catch (error) {
+        log(`Error in applyMotorbikeOnlyRestriction: ${error}`);
+        resolve(false);
+      }
+    });
   }
 
   const saveOptions = (options) => {
@@ -588,175 +841,6 @@
     };
   }
 
-  /**
-   * Comprehensive check for irregular geometry that WME detects
-   * Includes self-intersections, extreme angle changes, and complex patterns
-   * @param {Object} segment - WME segment object
-   * @returns {Object} { hasIssue: boolean, details: Array, issueType: string }
-   */
-  function checkIrregularGeometry(segment) {
-    if (!segment || !segment.geometry || !segment.geometry.coordinates) {
-      return { hasIssue: false, details: [] };
-    }
-
-    if (typeof turf === 'undefined') {
-      log('ERROR: Turf.js is not loaded!');
-      return { hasIssue: false, details: [] };
-    }
-
-    const coords = segment.geometry.coordinates;
-
-    // Need at least 3 points for geometry issues
-    if (coords.length < 3) {
-      return { hasIssue: false, details: [] };
-    }
-
-    const issues = [];
-    let issueType = null;
-
-    // Check 1: Self-intersection or near self-intersection
-    try {
-      const line = turf.lineString(coords);
-      const kinks = turf.kinks(line);
-      
-      if (kinks.features.length > 0) {
-        kinks.features.forEach((kink, index) => {
-          issues.push({
-            type: 'self-intersection',
-            coordinates: kink.geometry.coordinates,
-            description: 'Segment crosses itself',
-          });
-        });
-        issueType = 'self-intersection';
-      }
-    } catch (e) {
-      log('Error checking for self-intersection: ' + e);
-    }
-
-    // Check 2: Extreme angle reversals (>170 degrees - nearly doubling back)
-    for (let i = 0; i < coords.length - 2; i++) {
-      const p1 = turf.point(coords[i]);
-      const p2 = turf.point(coords[i + 1]);
-      const p3 = turf.point(coords[i + 2]);
-
-      const bearing1 = turf.bearing(p1, p2);
-      const bearing2 = turf.bearing(p2, p3);
-
-      let angleDiff = Math.abs(bearing2 - bearing1);
-      if (angleDiff > 180) {
-        angleDiff = 360 - angleDiff;
-      }
-
-      // Extreme reversal (>160 degrees) indicates irregular geometry
-      if (angleDiff > 160) {
-        issues.push({
-          type: 'extreme-reversal',
-          nodeIndex: i + 1,
-          coordinates: coords[i + 1],
-          angle: Math.round(angleDiff),
-          description: `Extreme angle reversal: ${Math.round(angleDiff)}°`,
-        });
-        if (!issueType) issueType = 'extreme-reversal';
-      }
-    }
-
-    // Check 3: Multiple consecutive sharp turns in short distance (complex geometry)
-    let consecutiveSharpTurns = 0;
-    let sharpTurnLocations = [];
-    
-    for (let i = 0; i < coords.length - 2; i++) {
-      const p1 = turf.point(coords[i]);
-      const p2 = turf.point(coords[i + 1]);
-      const p3 = turf.point(coords[i + 2]);
-
-      const dist1 = turf.distance(p1, p2, { units: 'meters' });
-      const dist2 = turf.distance(p2, p3, { units: 'meters' });
-
-      const bearing1 = turf.bearing(p1, p2);
-      const bearing2 = turf.bearing(p2, p3);
-
-      let angleDiff = Math.abs(bearing2 - bearing1);
-      if (angleDiff > 180) {
-        angleDiff = 360 - angleDiff;
-      }
-
-      // Sharp turn (>90 degrees) in short distance (<15m)
-      if (angleDiff > 90 && (dist1 < 15 || dist2 < 15)) {
-        consecutiveSharpTurns++;
-        sharpTurnLocations.push({
-          nodeIndex: i + 1,
-          coordinates: coords[i + 1],
-          angle: Math.round(angleDiff),
-          distance: Math.round(Math.min(dist1, dist2) * 10) / 10,
-        });
-      } else {
-        // Reset counter if no sharp turn
-        if (consecutiveSharpTurns >= 2) {
-          // Multiple sharp turns found
-          sharpTurnLocations.forEach(loc => {
-            issues.push({
-              type: 'complex-geometry',
-              nodeIndex: loc.nodeIndex,
-              coordinates: loc.coordinates,
-              angle: loc.angle,
-              distance: loc.distance,
-              description: `Complex geometry: ${loc.angle}° turn in ${loc.distance}m`,
-            });
-          });
-          if (!issueType) issueType = 'complex-geometry';
-        }
-        consecutiveSharpTurns = 0;
-        sharpTurnLocations = [];
-      }
-    }
-
-    // Check remaining accumulated turns
-    if (consecutiveSharpTurns >= 2) {
-      sharpTurnLocations.forEach(loc => {
-        issues.push({
-          type: 'complex-geometry',
-          nodeIndex: loc.nodeIndex,
-          coordinates: loc.coordinates,
-          angle: loc.angle,
-          distance: loc.distance,
-          description: `Complex geometry: ${loc.angle}° turn in ${loc.distance}m`,
-        });
-      });
-      if (!issueType) issueType = 'complex-geometry';
-    }
-
-    // Check 4: Very tight loops (segment comes very close to itself)
-    for (let i = 0; i < coords.length - 3; i++) {
-      const p1 = turf.point(coords[i]);
-      
-      // Check distance to non-adjacent points
-      for (let j = i + 3; j < coords.length; j++) {
-        const p2 = turf.point(coords[j]);
-        const distance = turf.distance(p1, p2, { units: 'meters' });
-        
-        // If non-adjacent points are very close (<2m), it's likely irregular
-        if (distance < 2) {
-          issues.push({
-            type: 'tight-loop',
-            coordinates: coords[i],
-            secondPoint: coords[j],
-            distance: Math.round(distance * 10) / 10,
-            description: `Segment comes within ${Math.round(distance * 10) / 10}m of itself`,
-          });
-          if (!issueType) issueType = 'tight-loop';
-        }
-      }
-    }
-
-    return {
-      hasIssue: issues.length > 0,
-      details: issues,
-      segmentId: segment.id,
-      issueType: issueType,
-      totalIssues: issues.length,
-    };
-  }
-
   // ===== Segment Length Display Functionality =====
   let segmentLengthContainer = null;
   let segmentLabelCache = []; // Cache segment data and label elements
@@ -783,7 +867,7 @@
     // Update dashboard count if exists (even if hidden)
     const countBadge = document.getElementById('ezroad-geometry-error-count');
 
-    if ((!options.showSegmentLength && !options.checkGeometryIssues && !options.checkIrregularGeometry) || !segmentLengthContainer) {
+    if ((!options.showSegmentLength && !options.checkGeometryIssues) || !segmentLengthContainer) {
       if (countBadge) countBadge.style.display = 'none';
       return;
     }
@@ -796,9 +880,7 @@
     }
 
     let issueCount = 0; // Count for geometry nodes near endpoints (📍 pin icon - bug button)
-    let irregularCount = 0; // Count for irregular geometry lightning bolts displayed
     const segmentsWithIssues = new Set(); // Track unique segments with geometry node issues
-    const visibleIrregularCoordinates = new Set(); // Track unique coordinates with lightning bolts displayed
 
     try {
       const currentZoom = wmeSDK.Map.getZoomLevel();
@@ -879,49 +961,6 @@
             }
           }
 
-          // 2. Check for irregular geometry (self-intersections, extreme angles, etc.)
-          if (options.checkIrregularGeometry) {
-            const irregularResult = checkIrregularGeometry(segment);
-            if (irregularResult.hasIssue) {
-              irregularResult.details.forEach((issue) => {
-                // Check visibility
-                if (issue.coordinates[0] < mapBounds.west || issue.coordinates[0] > mapBounds.east || issue.coordinates[1] < mapBounds.south || issue.coordinates[1] > mapBounds.north) {
-                  return;
-                }
-
-                // Create unique key from coordinates to deduplicate overlapping issues at same point
-                const coordKey = `${issue.coordinates[0]},${issue.coordinates[1]}`;
-                
-                // Only create lightning icon if we haven't already created one at this coordinate
-                if (!visibleIrregularCoordinates.has(coordKey)) {
-                  visibleIrregularCoordinates.add(coordKey);
-
-                  const lightningDiv = document.createElement('div');
-                  lightningDiv.innerHTML = '\u26a1'; // Lightning icon for irregular geometry
-                  lightningDiv.style.position = 'absolute';
-                  lightningDiv.style.width = '30px';
-                  lightningDiv.style.height = '30px';
-                  lightningDiv.style.display = 'flex';
-                  lightningDiv.style.alignItems = 'center';
-                  lightningDiv.style.justifyContent = 'center';
-                  lightningDiv.style.fontSize = '30px';
-                  lightningDiv.style.pointerEvents = 'none';
-                  lightningDiv.title = issue.description || 'Irregularly shaped segment';
-
-                  fragment.appendChild(lightningDiv);
-
-                  segmentLabelCache.push({
-                    lon: issue.coordinates[0],
-                    lat: issue.coordinates[1],
-                    labelDiv: lightningDiv,
-                    offsetX: 15,
-                    offsetY: 30,
-                  });
-                }
-              });
-            }
-          }
-
           // 2. Show Segment Length
           if (options.showSegmentLength) {
             const line = turf.lineString(geometry.coordinates);
@@ -973,8 +1012,6 @@
 
       // Get final counts
       issueCount = segmentsWithIssues.size; // Number of segments with geometry node issues
-      irregularCount = visibleIrregularCoordinates.size; // Number of lightning bolts displayed
-
       // Update badge count and icon color for bug icon (geometry nodes near endpoints only - 📍 pin icon)
       if (countBadge) {
         if (issueCount > 0 && options.checkGeometryIssues) {
@@ -990,23 +1027,6 @@
           // Update bug icon color to default blue when no issues
           const bugIcon = document.getElementById('ezroad-bug-icon');
           if (bugIcon) bugIcon.style.color = '#33CCFF';
-        }
-      }
-
-      // Update badge count and icon color for curve icon (irregular geometry only)
-      const curveCountBadge = document.getElementById('ezroad-curve-error-count');
-      if (curveCountBadge) {
-        if (irregularCount > 0 && options.checkIrregularGeometry) {
-          curveCountBadge.value = irregularCount;
-          curveCountBadge.style.display = 'inline-flex';
-          // Update curve icon color to orange when issues found
-          const curveIcon = document.getElementById('ezroad-curve-icon');
-          if (curveIcon) curveIcon.style.color = '#ff9900';
-        } else {
-          curveCountBadge.style.display = 'none';
-          // Update curve icon color to default blue when no issues
-          const curveIcon = document.getElementById('ezroad-curve-icon');
-          if (curveIcon) curveIcon.style.color = '#33CCFF';
         }
       }
     } catch (error) {
@@ -1165,7 +1185,7 @@
       isMapMoving = false;
       // Rebuild labels after movement ends (checks if segments entered/left viewport)
       const options = getOptions();
-      if ((options.showSegmentLength || options.checkGeometryIssues || options.checkIrregularGeometry) && segmentLengthContainer) {
+      if ((options.showSegmentLength || options.checkGeometryIssues) && segmentLengthContainer) {
         segmentLengthContainer.style.display = 'block';
         rebuildSegmentLengthDisplay();
 
@@ -1185,7 +1205,7 @@
 
     const onZoomChanged = function () {
       const options = getOptions();
-      if ((options.showSegmentLength || options.checkGeometryIssues || options.checkIrregularGeometry) && segmentLengthContainer) {
+      if ((options.showSegmentLength || options.checkGeometryIssues) && segmentLengthContainer) {
         rebuildSegmentLengthDisplay(); // Full rebuild on zoom
         try {
           let extent = wmeSDK.Map.getMapExtent();
@@ -1218,7 +1238,7 @@
 
     // Initialize polling if already enabled
     const options = getOptions();
-    if (options.showSegmentLength || options.checkGeometryIssues || options.checkIrregularGeometry) {
+    if (options.showSegmentLength || options.checkGeometryIssues) {
       handleSegmentLengthToggle();
     }
 
@@ -1353,239 +1373,29 @@
     }
   }
 
-  // Arrow-Curve Icon Button - Auto-fix irregular geometry (attempts to simplify)
-  async function fixVisibleIrregularGeometry() {
-    const options = getOptions();
-    if (!options.checkIrregularGeometry) {
-      if (WazeToastr?.Alerts) WazeToastr.Alerts.info('EZRoad Mod', 'Please enable "Check Irregular Geometry" in settings first.');
-      else alert('Please enable "Check Irregular Geometry" in EZRoad Mod settings first.');
-      return;
-    }
-
-    const allSegments = wmeSDK.DataModel.Segments.getAll();
-    let extent = wmeSDK.Map.getMapExtent();
-    if (!extent) return;
-    const mapBounds = { west: extent[0], south: extent[1], east: extent[2], north: extent[3] };
-
-    let fixedCount = 0;
-    let errors = 0;
-    let cannotFixCount = 0;
-
-    // Filter for segments with irregular geometry and count visible issues exactly as displayed
-    const segmentsToFix = [];
-    let totalVisibleIssueCount = 0;
-    
-    allSegments.forEach((segment) => {
-      if (!segment.geometry) return;
-      if (segment.junctionId !== null) return; // Skip roundabouts
-
-      const irregularResult = checkIrregularGeometry(segment);
-      if (!irregularResult.hasIssue) return;
-
-      // Count visible issues exactly as the display does - deduplicate by coordinates
-      const visibleCoordinates = new Set();
-      irregularResult.details.forEach((issue) => {
-        // Same visibility check as display
-        if (issue.coordinates[0] < mapBounds.west || issue.coordinates[0] > mapBounds.east || issue.coordinates[1] < mapBounds.south || issue.coordinates[1] > mapBounds.north) {
-          return;
-        }
-        // Create unique key from coordinates to deduplicate overlapping issues
-        const coordKey = `${issue.coordinates[0]},${issue.coordinates[1]}`;
-        visibleCoordinates.add(coordKey);
-      });
-      
-      if (visibleCoordinates.size > 0) {
-        segmentsToFix.push(segment);
-        totalVisibleIssueCount += visibleCoordinates.size;
-      }
-    });
-
-    if (segmentsToFix.length === 0) {
-      if (WazeToastr?.Alerts) WazeToastr.Alerts.info('EZRoad Mod', 'No visible irregular geometry to fix.');
-      else alert('No visible irregular geometry to fix.');
-      return;
-    }
-
-    const performFix = async () => {
-      let fixedIssueCount = 0;
-      for (const segment of segmentsToFix) {
-        try {
-          const irregularResult = checkIrregularGeometry(segment);
-          if (!irregularResult.hasIssue) continue;
-
-          const oldCoords = segment.geometry.coordinates;
-          
-          // Strategy: Remove one node from each cluster of irregular geometry
-          // Collect node indices that cause issues
-          const problematicNodesRaw = [];
-          
-          irregularResult.details.forEach((issue) => {
-            if (issue.nodeIndex !== undefined) {
-              problematicNodesRaw.push(issue.nodeIndex);
-            }
-          });
-
-          // Deduplicate node indices (same node might be reported multiple times)
-          const problematicNodes = [...new Set(problematicNodesRaw)];
-
-          // If we have specific problematic nodes, group them by proximity
-          if (problematicNodes.length > 0) {
-            // Sort nodes by index
-            problematicNodes.sort((a, b) => a - b);
-            
-            // Group nodes that are close together (within 1 index = same cluster)
-            const clusters = [];
-            let currentCluster = [problematicNodes[0]];
-            
-            for (let i = 1; i < problematicNodes.length; i++) {
-              if (problematicNodes[i] - problematicNodes[i-1] <= 1) {
-                // Same cluster (adjacent nodes)
-                currentCluster.push(problematicNodes[i]);
-              } else {
-                // New cluster
-                clusters.push(currentCluster);
-                currentCluster = [problematicNodes[i]];
-              }
-            }
-            clusters.push(currentCluster); // Add last cluster
-            
-            // Remove nodes from each cluster based on cluster size
-            const nodesToRemove = new Set();
-            clusters.forEach(cluster => {
-              if (cluster.length === 1) {
-                // Single problematic node - remove it
-                nodesToRemove.add(cluster[0]);
-              } else if (cluster.length === 2) {
-                // Two adjacent problematic nodes - remove both
-                nodesToRemove.add(cluster[0]);
-                nodesToRemove.add(cluster[1]);
-              } else {
-                // Three or more adjacent problematic nodes - remove all except first and last
-                // This preserves the general shape while removing the tangled middle section
-                for (let i = 1; i < cluster.length - 1; i++) {
-                  nodesToRemove.add(cluster[i]);
-                }
-                // Also remove first and last if cluster is very large (4+ nodes)
-                if (cluster.length >= 4) {
-                  nodesToRemove.add(cluster[0]);
-                  nodesToRemove.add(cluster[cluster.length - 1]);
-                }
-              }
-            });
-            
-            const newCoords = oldCoords.filter((_, i) => !nodesToRemove.has(i));
-            
-            // Need at least 2 points for a valid segment
-            if (newCoords.length >= 2) {
-              await wmeSDK.DataModel.Segments.updateSegment({
-                segmentId: segment.id,
-                geometry: {
-                  type: 'LineString',
-                  coordinates: newCoords,
-                },
-              });
-              fixedCount++;
-              fixedIssueCount += nodesToRemove.size;
-            } else {
-              cannotFixCount++;
-              log(`Cannot fix segment ${segment.id}: would result in < 2 nodes`);
-            }
-          } else {
-            // No specific nodes identified, try simplifying by keeping only start, end, and midpoint
-            if (oldCoords.length > 3) {
-              const midIndex = Math.floor(oldCoords.length / 2);
-              const newCoords = [oldCoords[0], oldCoords[midIndex], oldCoords[oldCoords.length - 1]];
-              
-              await wmeSDK.DataModel.Segments.updateSegment({
-                segmentId: segment.id,
-                geometry: {
-                  type: 'LineString',
-                  coordinates: newCoords,
-                },
-              });
-              fixedCount++;
-            } else {
-              cannotFixCount++;
-              log(`Cannot simplify segment ${segment.id}: already has minimal nodes`);
-            }
-          }
-        } catch (e) {
-          console.error('Failed to fix irregular geometry for segment', segment.id, e);
-          errors++;
-        }
-      }
-
-      let msg = fixedIssueCount === fixedCount 
-        ? `Fixed ${fixedCount} segments with irregular geometry (⚡).`
-        : `Fixed ${fixedCount} segments with ${fixedIssueCount} irregular points (⚡).`;
-      if (cannotFixCount > 0) {
-        msg += ` ${cannotFixCount} segments could not be auto-fixed (require manual simplification).`;
-      }
-      if (errors > 0) {
-        msg += ` (${errors} errors)`;
-      }
-      
-      if (WazeToastr?.Alerts) {
-        if (fixedCount > 0) {
-          WazeToastr.Alerts.success('EZRoad Mod', msg);
-        } else {
-          WazeToastr.Alerts.warning('EZRoad Mod', msg);
-        }
-      } else {
-        alert(msg);
-      }
-
-      // Wait a bit for the segment data to be fully updated
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-      // Clear existing labels before rebuilding
-      if (segmentLengthContainer) {
-        segmentLengthContainer.innerHTML = '';
-      }
-      segmentLabelCache = [];
-      
-      // Refresh display
-      rebuildSegmentLengthDisplay();
-    };
-
-    let confirmMsg = totalVisibleIssueCount === segmentsToFix.length
-      ? `Found ${segmentsToFix.length} segments with irregular geometry (⚡ lightning icon).\n\n`
-      : `Found ${segmentsToFix.length} segments with ${totalVisibleIssueCount} irregular points (⚡ lightning icon).\n\n`;
-    confirmMsg += `The script will attempt to auto-fix by simplifying the geometry.\n`;
-    confirmMsg += `Some complex cases may still require manual simplification.\n\n`;
-    confirmMsg += `Continue with auto-fix?`;
-
-    if (WazeToastr?.Alerts?.confirm) {
-      WazeToastr.Alerts.confirm('EZRoad Mod', confirmMsg, performFix, null, 'Fix', 'Cancel');
-    } else if (confirm(confirmMsg)) {
-      performFix();
-    }
-  }
-
   function addGeometryFixButton() {
     const options = getOptions();
 
     // Check user rank - only show for L3 and above (rank >= 2 in SDK)
     const userInfo = wmeSDK.State.getUserInfo();
     if (!userInfo || userInfo.rank < UserRankRequiredForGeometryFix - 1) {
-      // Remove buttons if they exist and user doesn't have permission
+      // Remove button if it exists and user doesn't have permission
       const existingBugBtn = document.getElementById('ezroad-fix-geometry-btn');
-      const existingCurveBtn = document.getElementById('ezroad-curve-geometry-btn');
       if (existingBugBtn) existingBugBtn.remove();
-      if (existingCurveBtn) existingCurveBtn.remove();
       return;
     }
 
     const prefsItem = document.querySelector('wz-navigation-item[data-for="prefs"]');
-    if (!prefsItem) return;
-
-    // === Bug Icon Button (Geometry Issues - Auto-fixable) ===
     let bugBtn = document.getElementById('ezroad-fix-geometry-btn');
 
     if (bugBtn) {
       // Update visibility based on option and rank
       bugBtn.style.display = options.checkGeometryIssues ? 'block' : 'none';
-    } else {
+      return;
+    }
+
+    if (!prefsItem) return;
+
       bugBtn = document.createElement('wz-button');
       bugBtn.color = 'text';
       bugBtn.size = 'sm';
@@ -1603,36 +1413,10 @@
       `;
 
       bugBtn.addEventListener('click', fixVisibleGeometryIssues);
+
+    // Insert after prefs
       prefsItem.insertAdjacentElement('afterend', bugBtn);
     }
-
-    // === Arrow-Curve Icon Button (Irregular Geometry - Manual fix required) ===
-    let curveBtn = document.getElementById('ezroad-curve-geometry-btn');
-
-    if (curveBtn) {
-      // Update visibility based on options
-      curveBtn.style.display = options.checkIrregularGeometry ? 'block' : 'none';
-    } else {
-      curveBtn = document.createElement('wz-button');
-      curveBtn.color = 'text';
-      curveBtn.size = 'sm';
-      curveBtn.style.margin = '5px auto 0 auto';
-      curveBtn.id = 'ezroad-curve-geometry-btn';
-      curveBtn.type = 'button';
-      curveBtn.style.display = options.checkIrregularGeometry ? 'block' : 'none';
-
-      curveBtn.innerHTML = `
-        <i class="w-icon w-icon-arrow-curve" id="ezroad-curve-icon" style="color: #33CCFF" title="Auto-fix irregular geometry issues"></i>
-        <wz-notification-indicator value="0" id="ezroad-curve-error-count" class="counter" style="display: none;"></wz-notification-indicator>
-      `;
-
-      curveBtn.addEventListener('click', fixVisibleIrregularGeometry);
-      
-      // Insert after bug button if it exists, otherwise after prefs
-      const insertAfter = bugBtn || prefsItem;
-      insertAfter.insertAdjacentElement('afterend', curveBtn);
-    }
-  }  // Closing addGeometryFixButton function
 
   const getEmptyCity = () => {
     return (
@@ -1878,8 +1662,8 @@
               const fromNode = seg.fromNodeId;
               const toNode = seg.toNodeId;
               const connectedSegIds = getConnectedSegmentIDs(id);
-              // Gather all segments connected to fromNode (excluding self)
-              const fromNodeSegs = connectedSegIds.map((sid) => wmeSDK.DataModel.Segments.getById({ segmentId: sid })).filter((s) => s && (s.fromNodeId === fromNode || s.toNodeId === toNode) && s.id !== id);
+              // Gather all segments connected to both nodes (excluding self)
+              const fromNodeSegs = connectedSegIds.map((sid) => wmeSDK.DataModel.Segments.getById({ segmentId: sid })).filter((s) => s && (s.fromNodeId === fromNode || s.fromNodeId === toNode || s.toNodeId === fromNode || s.toNodeId === toNode) && s.id !== id);
               // Prefer the first fromNode segment with a valid primary street name (and optionally other attributes)
               let preferredSeg = fromNodeSegs.find((s) => {
                 if (!s) return false;
@@ -2039,6 +1823,45 @@
         }
       });
       return;
+    }
+
+    // Apply motorbike restriction ONCE for all selected segments (before individual updates)
+    let motorcycleRestrictionApplied = false;
+    if (options.restrictExceptMotorbike) {
+      log('Applying motorbike restriction to all selected segments via UI automation...');
+      applyMotorbikeOnlyRestriction(selection.ids[0]).then((result) => {
+        if (result === true) {
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.success(
+              'EZRoads Mod',
+              `Motorbike-only restriction applied to ${selection.ids.length} segment(s) ✓`,
+              false,
+              false,
+              3000
+            );
+          }
+        } else if (result === 'not_supported') {
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.warning(
+              'Motorbike Restriction - Automation Failed',
+              `The UI automation could not complete. Please add manually:<br><br>` +
+              `<b>Steps:</b><br>` +
+              `1. Keep segment(s) selected<br>` +
+              `2. Click "Restrictions" in left panel<br>` +
+              `3. Click "Add new" under "2 way"<br>` +
+              `4. Select "Entire Segment"<br>` +
+              `5. Add "Vehicle type" → "Motorcycle"<br>` +
+              `6. Click "Add" then "Apply"`,
+              false,
+              false,
+              10000
+            );
+          }
+        }
+      }).catch((error) => {
+        console.error('Error applying motorbike restriction:', error);
+      });
+      motorcycleRestrictionApplied = true;
     }
 
     selection.ids.forEach((origId, idx) => {
@@ -2518,7 +2341,7 @@
               const toNode = seg.toNodeId;
               const connectedSegIds = getConnectedSegmentIDs(id);
               // Gather all segments connected to fromNode (excluding self)
-              const fromNodeSegs = connectedSegIds.map((sid) => wmeSDK.DataModel.Segments.getById({ segmentId: sid })).filter((s) => s && (s.fromNodeId === fromNode || s.toNodeId === toNode) && s.id !== id);
+              const fromNodeSegs = connectedSegIds.map((sid) => wmeSDK.DataModel.Segments.getById({ segmentId: sid })).filter((s) => s && (s.fromNodeId === fromNode || s.fromNodeId === toNode || s.toNodeId === fromNode || s.toNodeId === toNode) && s.id !== id);
               // Prefer the first fromNode segment with a name/city/alias
               let preferredSeg = fromNodeSegs.find((s) => {
                 if (!s) return false;
@@ -2917,10 +2740,10 @@
         tooltip: 'Checks if any intermediate geometry nodes are too close to the start or end nodes. Configure threshold distance below. Displays a pin icon if an issue is found.',
       },
       {
-        id: 'checkIrregularGeometry',
-        text: 'Check Irregular Geometry',
-        key: 'checkIrregularGeometry',
-        tooltip: 'Detects irregular geometry patterns including self-intersections, extreme angle reversals (>160°), complex geometry, and tight loops. Displays a lightning bolt (⚡) icon where issues are detected. Arrow-curve button will attempt to auto-fix by simplifying geometry.',
+        id: 'restrictExceptMotorbike',
+        text: 'Restrict except Motorbike (Auto)',
+        key: 'restrictExceptMotorbike',
+        tooltip: 'Automatically adds motorbike-only vehicle restrictions via UI automation. Applies to entire segment in both directions, all day. Blocks all vehicles except motorcycles.',
       },
     ];
 
@@ -2970,7 +2793,7 @@
     // Helper function to create checkboxes
     const createCheckbox = (option) => {
       const isChecked = localOptions[option.key];
-      const otherClass = option.key !== 'autosave' && option.key !== 'copySegmentAttributes' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' && option.key !== 'checkIrregularGeometry' ? 'ezroadsmod-other-checkbox' : '';
+      const otherClass = option.key !== 'autosave' && option.key !== 'copySegmentAttributes' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' && option.key !== 'restrictExceptMotorbike' ? 'ezroadsmod-other-checkbox' : '';
       const attrClass = option.key === 'copySegmentAttributes' ? 'ezroadsmod-attr-checkbox' : '';
 
       const div = $(`<div class="ezroadsmod-option">
@@ -3001,20 +2824,20 @@
           } else {
             update('copySegmentAttributes', false);
           }
-        } else if (option.key !== 'autosave' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' && option.key !== 'checkIrregularGeometry') {
-          // If any other checkbox (except autosave, showSegmentLength, checkGeometryIssues, checkIrregularGeometry) is checked, uncheck copySegmentAttributes
+        } else if (option.key !== 'autosave' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' && option.key !== 'restrictExceptMotorbike') {
+          // If any other checkbox (except autosave, showSegmentLength, checkGeometryIssues, restrictExceptMotorbike) is checked, uncheck copySegmentAttributes
           if ($(`#${option.id}`).prop('checked')) {
             $('#copySegmentAttributes').prop('checked', false);
             update('copySegmentAttributes', false);
           }
           update(option.key, $(`#${option.id}`).prop('checked'));
         } else {
-          // Autosave, showSegmentLength, or checkGeometryIssues
+          // Autosave, showSegmentLength, checkGeometryIssues, or restrictExceptMotorbike
           update(option.key, $(`#${option.id}`).prop('checked'));
         }
 
-        // Handle Segment Length / Geometry Check / Irregular Geometry toggle
-        if (option.key === 'showSegmentLength' || option.key === 'checkGeometryIssues' || option.key === 'checkIrregularGeometry' || option.key === 'copySegmentAttributes') {
+        // Handle Segment Length / Geometry Check toggle
+        if (option.key === 'showSegmentLength' || option.key === 'checkGeometryIssues' || option.key === 'copySegmentAttributes') {
           handleSegmentLengthToggle();
         }
       });
