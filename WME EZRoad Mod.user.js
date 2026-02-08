@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.7.3
+// @version      2.6.7.4
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -26,7 +26,7 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.7.3 - 2026-01-28:</strong><br>
+  const updateMessage = `<strong>Version 2.6.7.4 - 2026-02-08:</strong><br>
     - Fixed an issue with copying city names or segment names <br>
 <br>`;
   const scriptName = GM_info.script.name;
@@ -130,11 +130,16 @@
     const nonMatches = [];
     const segmentIDsToSearch = [segmentId];
     const hasValidCity = (id) => {
+      try {
       const addr = wmeSDK.DataModel.Segments.getAddress({ segmentId: id });
       // Check if address has a city and the city is not empty
       if (addr && addr.city && addr.city.id) {
         const city = wmeSDK.DataModel.Cities.getById({ cityId: addr.city.id });
-        return city && !city.isEmpty;
+          // Ensure city object is fully loaded with name property
+          return city && !city.isEmpty && city.name !== undefined;
+        }
+      } catch (e) {
+        log(`Error checking city for segment ${id}: ${e}`);
       }
       return false;
     };
@@ -611,7 +616,8 @@
       return;
     }
 
-    let issueCount = 0;
+    let issueCount = 0; // Count for geometry nodes near endpoints (📍 pin icon - bug button)
+    const segmentsWithIssues = new Set(); // Track unique segments with geometry node issues
 
     try {
       const currentZoom = wmeSDK.Map.getZoomLevel();
@@ -645,22 +651,23 @@
             return;
           }
 
-          // 1. Check for geometry issues (Priority)
-          if (options.checkGeometryIssues) {
             // Skip roundabouts (segments that are part of a junction)
             if (segment.junctionId !== null) {
               return;
             }
 
+          // 1. Check for geometry nodes near endpoints
+          if (options.checkGeometryIssues) {
             const geoResult = checkGeometryNodePlacement(segment, options.geometryIssueThreshold);
             if (geoResult.hasIssue) {
+              let hasVisibleIssue = false;
               geoResult.details.forEach((issue) => {
                 // Check visibility
                 if (issue.coordinates[0] < mapBounds.west || issue.coordinates[0] > mapBounds.east || issue.coordinates[1] < mapBounds.south || issue.coordinates[1] > mapBounds.north) {
                   return;
                 }
 
-                issueCount++;
+                hasVisibleIssue = true;
 
                 const pinDiv = document.createElement('div');
                 pinDiv.innerHTML = '📍'; // Pin icon
@@ -672,6 +679,7 @@
                 pinDiv.style.justifyContent = 'center';
                 pinDiv.style.fontSize = '30px';
                 pinDiv.style.pointerEvents = 'none';
+                pinDiv.title = `Node too close to ${issue.closeTo === 'A' ? 'start' : 'end'}: ${Math.round(issue.distanceToA || issue.distanceToB * 10) / 10}m`;
 
                 fragment.appendChild(pinDiv);
 
@@ -683,6 +691,10 @@
                   offsetY: 30, // Shift up (full height)
                 });
               });
+                            // Count unique segments with visible issues
+              if (hasVisibleIssue) {
+                segmentsWithIssues.add(segment.id);
+              }
             }
           }
 
@@ -735,7 +747,9 @@
       // Update positions after creating labels
       updateSegmentLabelPositions();
 
-      // Update badge count and icon color
+        // Get final counts
+      issueCount = segmentsWithIssues.size; // Number of segments with geometry node issues
+      // Update badge count and icon color for bug icon (geometry nodes near endpoints only - 📍 pin icon)
       if (countBadge) {
         if (issueCount > 0 && options.checkGeometryIssues) {
           countBadge.value = issueCount;
@@ -1103,42 +1117,42 @@
     const userInfo = wmeSDK.State.getUserInfo();
     if (!userInfo || userInfo.rank < UserRankRequiredForGeometryFix - 1) {
       // Remove button if it exists and user doesn't have permission
-      const existingBtn = document.getElementById('ezroad-fix-geometry-btn');
-      if (existingBtn) existingBtn.remove();
+      const existingBugBtn = document.getElementById('ezroad-fix-geometry-btn');
+      if (existingBugBtn) existingBugBtn.remove();
       return;
     }
 
     const prefsItem = document.querySelector('wz-navigation-item[data-for="prefs"]');
-    let btn = document.getElementById('ezroad-fix-geometry-btn');
+    let bugBtn = document.getElementById('ezroad-fix-geometry-btn');
 
-    if (btn) {
+    if (bugBtn) {
       // Update visibility based on option and rank
-      btn.style.display = options.checkGeometryIssues ? 'block' : 'none';
+      bugBtn.style.display = options.checkGeometryIssues ? 'block' : 'none';
       return;
     }
 
     if (!prefsItem) return;
 
-    btn = document.createElement('wz-button');
-    btn.color = 'text';
-    btn.size = 'sm';
-    btn.style.margin = '20px auto 0 auto';
-    btn.id = 'ezroad-fix-geometry-btn';
-    btn.type = 'button';
+    bugBtn = document.createElement('wz-button');
+    bugBtn.color = 'text';
+    bugBtn.size = 'sm';
+    bugBtn.style.margin = '20px auto 0 auto';
+    bugBtn.id = 'ezroad-fix-geometry-btn';
+    bugBtn.type = 'button';
 
     // Initial visibility based on option
-    btn.style.display = options.checkGeometryIssues ? 'block' : 'none';
+    bugBtn.style.display = options.checkGeometryIssues ? 'block' : 'none';
 
     // HTML content matching user request style
-    btn.innerHTML = `
-        <i class="w-icon w-icon-bug-fill" id="ezroad-bug-icon" style="color: #33CCFF"></i>
+    bugBtn.innerHTML = `
+        <i class="w-icon w-icon-bug-fill" id="ezroad-bug-icon" style="color: #33CCFF" title="Auto-fix geometry nodes near endpoints"></i>
         <wz-notification-indicator value="0" id="ezroad-geometry-error-count" class="counter" style="display: none;"></wz-notification-indicator>
      `;
 
-    btn.addEventListener('click', fixVisibleGeometryIssues);
+    bugBtn.addEventListener('click', fixVisibleGeometryIssues);
 
     // Insert after prefs
-    prefsItem.insertAdjacentElement('afterend', btn);
+    prefsItem.insertAdjacentElement('afterend', bugBtn);
   }
 
   const getEmptyCity = () => {
@@ -1243,8 +1257,14 @@
   function pushCityNameAlert(cityId, alertMessageParts) {
     let cityName = '';
     if (cityId) {
+      try {
       const city = wmeSDK.DataModel.Cities.getById({ cityId });
-      cityName = city && city.name ? city.name : '';
+        // Ensure city is fully loaded before accessing name
+        cityName = city && city.name !== undefined ? city.name : '';
+      } catch (e) {
+        log(`Error getting city name for cityId ${cityId}: ${e}`);
+        cityName = '';
+      }
     }
     alertMessageParts.push(`City Name: <b>${cityName || 'None'}</b>`);
   }
@@ -1340,6 +1360,23 @@
 
     if (!selection || selection.objectType !== 'segment') return;
 
+    // Ensure segments are loaded before processing
+    try {
+      // Validate that segments exist and are accessible
+      for (let id of selection.ids) {
+        const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+        if (!seg) {
+          log(`Segment ${id} not fully loaded, waiting...`);
+          // Retry after a short delay
+          setTimeout(() => handleUpdate(), 200);
+          return;
+        }
+      }
+    } catch (e) {
+      log(`Error validating segments: ${e}`);
+      return;
+    }
+
     log('Updating RoadType');
     const options = getOptions();
     let alertMessageParts = [];
@@ -1362,8 +1399,8 @@
               const fromNode = seg.fromNodeId;
               const toNode = seg.toNodeId;
               const connectedSegIds = getConnectedSegmentIDs(id);
-              // Gather all segments connected to fromNode (excluding self)
-              const fromNodeSegs = connectedSegIds.map((sid) => wmeSDK.DataModel.Segments.getById({ segmentId: sid })).filter((s) => s && (s.fromNodeId === fromNode || s.toNodeId === toNode) && s.id !== id);
+              // Gather all segments connected to both nodes (excluding self)
+              const fromNodeSegs = connectedSegIds.map((sid) => wmeSDK.DataModel.Segments.getById({ segmentId: sid })).filter((s) => s && (s.fromNodeId === fromNode || s.fromNodeId === toNode || s.toNodeId === fromNode || s.toNodeId === toNode) && s.id !== id);
               // Prefer the first fromNode segment with a valid primary street name (and optionally other attributes)
               let preferredSeg = fromNodeSegs.find((s) => {
                 if (!s) return false;
@@ -1705,22 +1742,36 @@
           // Unchecked: try top city, then connected segment's city, then fallback to none
           city = null;
           // 1. Try top city
+          try {
           city = getTopCity();
+            // Validate city is fully loaded
+            if (city && city.name === undefined) {
+              log('Top city not fully loaded, will check connected segments');
+              city = null;
+            }
+          } catch (e) {
+            log(`Error getting top city: ${e}`);
+            city = null;
+          }
           log(`Top city: ${city ? `name="${city.name}", isEmpty=${city.isEmpty}, id=${city.id}` : 'null'}`);
 
           // 2. If not found or empty, try connected segment's city
           if (!city || city.isEmpty) {
             log('Top city not found or empty, checking connected segments...');
+            try {
             const connectedAddress = getFirstConnectedSegmentAddress(id);
             if (connectedAddress && connectedAddress.city && connectedAddress.city.id) {
               const connectedCity = wmeSDK.DataModel.Cities.getById({ cityId: connectedAddress.city.id });
               log(`Connected segment city: ${connectedCity ? `name="${connectedCity.name}", isEmpty=${connectedCity.isEmpty}, id=${connectedCity.id}` : 'null'}`);
-              // Only use connected city if it's not empty
-              if (connectedCity && !connectedCity.isEmpty) {
+                // Only use connected city if it's not empty and fully loaded
+                if (connectedCity && !connectedCity.isEmpty && connectedCity.name !== undefined) {
                 city = connectedCity;
               }
             } else {
               log('No connected address found');
+              }
+            } catch (e) {
+              log(`Error getting connected segment city: ${e}`);
             }
           }
 
@@ -1988,7 +2039,7 @@
               const toNode = seg.toNodeId;
               const connectedSegIds = getConnectedSegmentIDs(id);
               // Gather all segments connected to fromNode (excluding self)
-              const fromNodeSegs = connectedSegIds.map((sid) => wmeSDK.DataModel.Segments.getById({ segmentId: sid })).filter((s) => s && (s.fromNodeId === fromNode || s.toNodeId === toNode) && s.id !== id);
+              const fromNodeSegs = connectedSegIds.map((sid) => wmeSDK.DataModel.Segments.getById({ segmentId: sid })).filter((s) => s && (s.fromNodeId === fromNode || s.fromNodeId === toNode || s.toNodeId === fromNode || s.toNodeId === toNode) && s.id !== id);
               // Prefer the first fromNode segment with a name/city/alias
               let preferredSeg = fromNodeSegs.find((s) => {
                 if (!s) return false;
@@ -2015,12 +2066,27 @@
                 if (!connectedSeg) continue;
                 const streetId = connectedSeg.primaryStreetId;
                 const altStreetIds = connectedSeg.alternateStreetIds || [];
-                let street = wmeSDK.DataModel.Streets.getById({ streetId });
+                let street = null;
+                try {
+                  street = wmeSDK.DataModel.Streets.getById({ streetId });
+                  // Ensure street is fully loaded
+                  if (street && street.name === undefined && street.cityId === undefined) {
+                    log(`Street ${streetId} not fully loaded, skipping`);
+                    continue;
+                  }
+                } catch (e) {
+                  log(`Error getting street ${streetId}: ${e}`);
+                  continue;
+                }
                 // Get alternate street names
                 let altNames = [];
                 altStreetIds.forEach((altId) => {
+                  try {
                   const altStreet = wmeSDK.DataModel.Streets.getById({ streetId: altId });
                   if (altStreet && altStreet.name) altNames.push(altStreet.name);
+                  } catch (e) {
+                    log(`Error getting alternate street ${altId}: ${e}`);
+                  }
                 });
                 // If any connected segment has a name or alias, use it
                 if (street && (street.name || street.englishName || street.signText || altNames.length > 0)) {
@@ -2565,9 +2631,9 @@
       const additionalOptions = additionalSection.find('#additional-options');
       checkboxOptions.forEach((option) => {
         additionalOptions.append(createCheckbox(option));
-      });
 
-      // Add geometry threshold input field
+        // Add threshold input right after the checkGeometryIssues checkbox
+        if (option.key === 'checkGeometryIssues') {
       const geometryThresholdDiv = $(`<div class="ezroadsmod-option" style="margin-left: 20px; margin-top: -5px;">
         <label for="geometryIssueThreshold" style="font-size: 0.9em;">Threshold distance (meters):</label>
         <input type="number" id="geometryIssueThreshold" min="0.1" max="10" step="0.1" value="${
@@ -2575,6 +2641,8 @@
         }" style="width: 60px; margin-left: 5px;" title="Distance in meters to check for geometry nodes near segment endpoints">
       </div>`);
       additionalOptions.append(geometryThresholdDiv);
+        }
+      });
 
       // Handle geometry threshold input change
       $(document).on('change', '#geometryIssueThreshold', function () {
