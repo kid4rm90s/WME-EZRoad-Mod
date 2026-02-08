@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.7.6
+// @version      2.6.7.7
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -28,8 +28,7 @@
 (function main() {
   ('use strict');
   const updateMessage = `<strong>Version 2.6.7.6 - 2026-02-08:</strong><br>
-    - Fixed undefined attributes error in legacy mode when enabling U-turn on routable segments <br>
-    - Improved non-routable segment detection: now properly skips "enable uturn" for all non-routable segments (Ferry, Railway, Runway, Footpath, Pedestrianised Area, Stairway) by checking routingRoadType from WME SDK <br>
+    - Added direct shortcut key to update motorcycle restriction (Alt+R) <br>
 <br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
@@ -767,6 +766,57 @@
         }
       }
     });
+
+    // Register shortcut for Motorcycle Only restriction
+    const motorcycleShortcutId = `EZRoad_Mod_MotorcycleOnlyRestriction`;
+    // Prevent duplicate shortcut registration
+    if (!wmeSDK.Shortcuts.isShortcutRegistered({ shortcutId: motorcycleShortcutId })) {
+      try {
+        wmeSDK.Shortcuts.createShortcut({
+          callback: () => {
+            const selection = wmeSDK.Editing.getSelection();
+            if (!selection || selection.objectType !== 'segment' || !selection.ids || selection.ids.length === 0) {
+              if (WazeToastr?.Alerts) {
+                WazeToastr.Alerts.warning('EZRoads Mod', 'Please select one or more segments first', false, false, 3000);
+              }
+              return;
+            }
+
+            // Apply the restriction via UI automation
+            applyMotorbikeOnlyRestriction(selection.ids[0]).then((result) => {
+              if (result === true) {
+                if (WazeToastr?.Alerts) {
+                  WazeToastr.Alerts.success(
+                    'EZRoads Mod',
+                    `Motorbike-only restriction applied to ${selection.ids.length} segment(s) ✓`,
+                    false,
+                    false,
+                    3000
+                  );
+                }
+              } else if (result === 'not_supported') {
+                if (WazeToastr?.Alerts) {
+                  WazeToastr.Alerts.warning(
+                    'Motorbike Restriction - Automation Failed',
+                    `The UI automation could not complete. Please add manually.`,
+                    false,
+                    false,
+                    5000
+                  );
+                }
+              }
+            }).catch((error) => {
+              console.error('Error applying motorbike restriction:', error);
+            });
+          },
+          description: `Apply Motorbike-Only Restriction to Selected Segments`,
+          shortcutId: motorcycleShortcutId,
+          shortcutKeys: 'A+R',
+        });
+      } catch (e) {
+        log(`Shortcut registration failed for ${motorcycleShortcutId}: ${e}`);
+      }
+    }
 
     // Initialize segment length display layer
     initSegmentLengthLayer();
@@ -2874,7 +2924,7 @@
         id: 'restrictExceptMotorbike',
         text: 'Restrict except Motorbike (Auto)',
         key: 'restrictExceptMotorbike',
-        tooltip: 'Automatically adds motorbike-only vehicle restrictions via UI automation. Applies to entire segment in both directions, all day. Blocks all vehicles except motorcycles.',
+        tooltip: 'Automatically adds motorbike-only vehicle restrictions via UI automation. Applies to entire segment in both directions, all day. Blocks all vehicles except motorcycles. May use shortcut key (Alt+R) or (Quick Update Segment) to apply.',
       },
     ];
 
@@ -3399,6 +3449,11 @@ if (typeof require !== 'undefined') {
 Changelog
 
 Version
+Version 2.6.7.7 - 2026-02-09
+- Added direct shortcut key to update motorcycle restriction (Alt+R) 
+Version 2.6.7.6 - 2026-02-08
+- Improved non-routable segment detection: now properly skips "enable uturn" for all non-routable segments (Ferry, Railway, Runway, Footpath, Pedestrianised Area, Stairway) by checking routingRoadType from WME SDK
+- Added restriction to allow only Motorbikes via UI automation for both one way and two way segments. SDK does not support vehicle restrictions yet.
 Version 2.6.7.3 - 2026-01-28
     - Fixed an issue with copying city names or segment names
 2.6.7.2 - 2026-01-23
