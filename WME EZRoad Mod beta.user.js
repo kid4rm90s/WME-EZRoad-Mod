@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.7.5
+// @version      2.6.7.6
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -27,8 +27,9 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.7.5 - 2026-02-08:</strong><br>
-    - Added checkbox option for adding allowed motorcycle only restriction <br>
+  const updateMessage = `<strong>Version 2.6.7.6 - 2026-02-08:</strong><br>
+    - Fixed undefined attributes error in legacy mode when enabling U-turn on routable segments <br>
+    - Improved non-routable segment detection: now properly skips "enable uturn" for all non-routable segments (Ferry, Railway, Runway, Footpath, Pedestrianised Area, Stairway) by checking routingRoadType from WME SDK <br>
 <br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
@@ -1532,15 +1533,68 @@
     alertMessageParts.push(`City Name: <b>${cityName || 'None'}</b>`);
   }
 
-  // Helper: Returns true if the roadType is Footpath, Pedestrianised Area, or Stairway
+  // Helper: Returns true if the roadType is non-routable (Footpath, Pedestrianised Area, Stairway, Ferry, Railway, Runway)
+  // According to WME SDK, non-routable segments should have routingRoadType === null
+  // This function provides a fallback check based on roadType values
   function isPedestrianType(roadType) {
-    return [5, 10, 16].includes(roadType);
+    // Footpath (5), Pedestrianised Area (10), Stairway (16), Ferry (15), Railway (18), Runway (19)
+    return [5, 10, 16, 15, 18, 19].includes(roadType);
+  }
+
+  // Helper: Enable all turns at both nodes of a segment for routable road types
+  function enableAllTurnsForSegment(segmentId) {
+    try {
+      const seg = wmeSDK.DataModel.Segments.getById({ segmentId });
+      if (!seg || isPedestrianType(seg.roadType)) {
+        log(`[EZRoad] Skipping turn enablement for non-routable segment ${segmentId}`);
+        return;
+      }
+
+      const nodes = [seg.fromNodeId, seg.toNodeId].filter(nodeId => nodeId !== null);
+      
+      nodes.forEach(nodeId => {
+        try {
+          // Check if we can edit turns at this node
+          if (!wmeSDK.DataModel.Turns.canEditTurnsThroughNode({ nodeId })) {
+            log(`[EZRoad] Cannot edit turns at node ${nodeId}`);
+            return;
+          }
+
+          // Get all turns through the node
+          const turns = wmeSDK.DataModel.Turns.getTurnsThroughNode({ nodeId });
+          
+          // Enable all turns that aren't already allowed
+          turns.forEach(turn => {
+            try {
+              if (!turn.isAllowed) {
+                wmeSDK.DataModel.Turns.updateTurn({ 
+                  turnId: turn.id, 
+                  isAllowed: true 
+                });
+                log(`[EZRoad] Enabled turn ${turn.id} at node ${nodeId}`);
+              }
+            } catch (turnError) {
+              log(`[EZRoad] Could not enable turn ${turn.id}: ${turnError.message}`);
+            }
+          });
+        } catch (nodeError) {
+          log(`[EZRoad] Error processing turns at node ${nodeId}: ${nodeError.message}`);
+        }
+      });
+      
+      log(`[EZRoad] Completed turn enablement for segment ${segmentId}`);
+    } catch (error) {
+      console.error(`[EZRoad] Error enabling turns for segment ${segmentId}:`, error);
+    }
   }
 
   // Helper: If switching between pedestrian and non-pedestrian types, delete and recreate the segment
   function recreateSegmentIfNeeded(segmentId, targetRoadType, copyConnectedNameData) {
     const seg = wmeSDK.DataModel.Segments.getById({ segmentId });
-    if (!seg) return segmentId;
+    if (!seg) {
+      log(`[EZRoad] Segment ${segmentId} not found`);
+      return segmentId;
+    }
 
     const currentIsPed = isPedestrianType(seg.roadType);
     const targetIsPed = isPedestrianType(targetRoadType);
@@ -1550,70 +1604,126 @@
       let swapMsg = currentIsPed
         ? 'You are about to convert a Pedestrian type segment (Footpath, Pedestrianised Area, or Stairway) to a regular street type. This will delete and recreate the segment. Continue?'
         : 'You are about to convert a regular street segment to a Pedestrian type (Footpath, Pedestrianised Area, or Stairway). This will delete and recreate the segment. Continue?';
-      if (!window.confirm(swapMsg)) {
+      if (WazeToastr?.Alerts?.confirm) {
+        WazeToastr.Alerts.confirm(
+          'EZRoad Mod Beta',
+          swapMsg,
+          () => {
+        // Proceed with segment recreation (callback will continue execution)
+          },
+          () => {
+        // User cancelled
+        log(`[EZRoad] Segment recreation cancelled by user`);
+        return null;
+          },
+          'Continue',
+          'Cancel'
+        );
+        return null; // Exit early, callback will handle continuation
+      } else if (!window.confirm(swapMsg)) {
+        log(`[EZRoad] Segment recreation cancelled by user`);
         return null; // Cancel operation
       }
-      // Save geometry and address
-      const geometry = seg.geometry;
-      const oldPrimaryStreetId = seg.primaryStreetId;
-      const oldAltStreetIds = seg.alternateStreetIds;
-
+      
       try {
-        wmeSDK.DataModel.Segments.deleteSegment({ segmentId });
-      } catch (ex) {
-        if (ex instanceof wmeSDK.Errors.InvalidStateError) {
+        // Save geometry and address
+        const geometry = seg.geometry;
+        const oldPrimaryStreetId = seg.primaryStreetId;
+        const oldAltStreetIds = Array.isArray(seg.alternateStreetIds) ? seg.alternateStreetIds : [];
+        
+        log(`[EZRoad] Deleting segment ${segmentId} for road type conversion`);
+        
+        // Delete old segment
+        try {
+          wmeSDK.DataModel.Segments.deleteSegment({ segmentId });
+        } catch (ex) {
+          const errorMsg = 'Segment could not be deleted. Please check for restrictions or junctions.';
+          log(`[EZRoad] Delete failed: ${ex.message}`);
           if (WazeToastr?.Alerts) {
-            WazeToastr.Alerts.error('EZRoads Mod Beta', 'Segment could not be deleted. Please check for restrictions or junctions.');
+            WazeToastr.Alerts.error('EZRoad Mod Beta', errorMsg);
+          } else {
+            alert(errorMsg);
           }
           return null;
         }
-      }
 
-      // Create new segment
-      const newSegmentId = wmeSDK.DataModel.Segments.addSegment({ geometry, roadType: targetRoadType });
-
-      // Ensure primaryStreetId is valid (not null or undefined)
-      let validPrimaryStreetId = oldPrimaryStreetId;
-      if (!validPrimaryStreetId) {
-        // Use a blank street in the current city
-        let segCityId = getTopCity()?.id;
-        if (!segCityId) {
-          // fallback to country if city is not available
-          segCityId = getCurrentCountry()?.id;
+        // Create new segment
+        log(`[EZRoad] Creating new segment with road type ${targetRoadType}`);
+        const newSegmentId = wmeSDK.DataModel.Segments.addSegment({ geometry, roadType: targetRoadType });
+        
+        if (!newSegmentId) {
+          log(`[EZRoad] Failed to create new segment`);
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.error('EZRoad Mod Beta', 'Failed to create new segment');
+          }
+          return null;
         }
-        let blankStreet = wmeSDK.DataModel.Streets.getStreet({
-          cityId: segCityId,
-          streetName: '',
-        });
-        if (!blankStreet) {
-          blankStreet = wmeSDK.DataModel.Streets.addStreet({
-            streetName: '',
+
+        // Ensure primaryStreetId is valid (not null or undefined)
+        let validPrimaryStreetId = oldPrimaryStreetId;
+        if (!validPrimaryStreetId) {
+          // Use a blank street in the current city
+          let segCityId = getTopCity()?.id;
+          if (!segCityId) {
+            // fallback to country if city is not available
+            segCityId = getCurrentCountry()?.id;
+          }
+          let blankStreet = wmeSDK.DataModel.Streets.getStreet({
             cityId: segCityId,
+            streetName: '',
           });
+          if (!blankStreet) {
+            blankStreet = wmeSDK.DataModel.Streets.addStreet({
+              streetName: '',
+              cityId: segCityId,
+            });
+          }
+          validPrimaryStreetId = blankStreet.id;
         }
-        validPrimaryStreetId = blankStreet.id;
-      }
 
-      // Restore address with valid primaryStreetId
-      wmeSDK.DataModel.Segments.updateAddress({
-        segmentId: newSegmentId,
-        primaryStreetId: validPrimaryStreetId,
-        alternateStreetIds: oldAltStreetIds,
-      });
-
-      // If we have connected segment name data to copy, apply it now
-      if (copyConnectedNameData && copyConnectedNameData.primaryStreetId) {
+        // Restore address with valid primaryStreetId
+        log(`[EZRoad] Restoring address for new segment ${newSegmentId}`);
         wmeSDK.DataModel.Segments.updateAddress({
           segmentId: newSegmentId,
-          primaryStreetId: copyConnectedNameData.primaryStreetId,
-          alternateStreetIds: copyConnectedNameData.alternateStreetIds || [],
+          primaryStreetId: validPrimaryStreetId,
+          alternateStreetIds: oldAltStreetIds,
         });
+
+        // If we have connected segment name data to copy, apply it now
+        if (copyConnectedNameData && copyConnectedNameData.primaryStreetId) {
+          log(`[EZRoad] Applying connected segment name data`);
+          wmeSDK.DataModel.Segments.updateAddress({
+            segmentId: newSegmentId,
+            primaryStreetId: copyConnectedNameData.primaryStreetId,
+            alternateStreetIds: Array.isArray(copyConnectedNameData.alternateStreetIds) ? copyConnectedNameData.alternateStreetIds : [],
+          });
+        }
+
+        // Reselect new segment
+        wmeSDK.Editing.setSelection({ selection: { ids: [newSegmentId], objectType: 'segment' } });
+
+        // If converting from pedestrian to routable, enable all turns
+        if (currentIsPed && !targetIsPed) {
+          // Use setTimeout to ensure segment is fully created before enabling turns
+          setTimeout(() => {
+            log(`[EZRoad] Enabling turns after conversion from pedestrian to routable type`);
+            enableAllTurnsForSegment(newSegmentId);
+          }, 300);
+        }
+
+        log(`[EZRoad] Successfully recreated segment: ${segmentId} -> ${newSegmentId}`);
+        return newSegmentId;
+        
+      } catch (error) {
+        log(`[EZRoad] Error during segment recreation: ${error.message}`);
+        console.error('[EZRoad] Segment recreation error:', error);
+        if (WazeToastr?.Alerts) {
+          WazeToastr.Alerts.error('EZRoad Mod Beta', `Error recreating segment: ${error.message}`);
+        } else {
+          alert(`Error recreating segment: ${error.message}`);
+        }
+        return null;
       }
-
-      // Reselect new segment
-      wmeSDK.Editing.setSelection({ selection: { ids: [newSegmentId], objectType: 'segment' } });
-
-      return newSegmentId;
     }
     return segmentId;
   }
@@ -2463,6 +2573,13 @@
    // Enable U-Turn if option is checked
     updatePromises.push(
       delayedUpdate(() => {
+        // Skip U-turn updates for pedestrian type segments (non-routable)
+        const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+        if (seg && isPedestrianType(seg.roadType)) {
+          log(`[EZRoad] Skipping U-turn update for pedestrian type segment (roadType: ${seg.roadType})`);
+          return;
+        }
+        
         if (options.enableUTurn) {
           let sideAResult = null;
           let sideBResult = null;
@@ -2479,6 +2596,13 @@
 
                 const seg = W.model.segments.getObjectById(id);
                 if (!seg || seg.isOneWay()) return 'skipped';
+                
+                // Skip U-turn for non-routable road types (walking trail/footpath, pedestrian boardwalk, stairway)
+                // These road types don't support routing, so U-turns don't apply
+                // if (isPedestrianType(seg.roadType)) {
+                //   log(`[EZRoad] Skipping U-turn for non-routable road type: ${seg.roadType}`);
+                //   return 'skipped';
+                // }
                 
                 const node = direction === 'A' ? seg.getFromNode() : seg.getToNode();
                 
@@ -2508,6 +2632,13 @@
               try {
                 const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
                 if (!seg || !seg.isTwoWay) return 'skipped';
+                
+                // Skip U-turn for non-routable road types (walking trail/footpath, pedestrian boardwalk, stairway)
+                // According to WME SDK: routingRoadType is null if there's no routing road type
+                // if (seg.routingRoadType === null || isPedestrianType(seg.roadType)) {
+                //   log(`[EZRoad] Skipping U-turn for non-routable segment (roadType: ${seg.roadType}, routingRoadType: ${seg.routingRoadType ?? 'N/A'})`);
+                //   return 'skipped';
+                // }
                 
                 const nodeId = direction === 'A' ? seg.fromNodeId : seg.toNodeId;
                 if (!wmeSDK.DataModel.Turns.canEditTurnsThroughNode({ nodeId })) return 'failed';
