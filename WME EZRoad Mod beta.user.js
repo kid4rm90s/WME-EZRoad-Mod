@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.7.7
+// @version      2.6.7.8
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -27,8 +27,9 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.7.6 - 2026-02-08:</strong><br>
+  const updateMessage = `<strong>Version 2.6.7.8 - 2026-02-09:</strong><br>
     - Added direct shortcut key to update motorcycle restriction (Alt+R) <br>
+    - Improved alert message when motorbike restriction cannot be applied due to segment type
 <br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
@@ -262,9 +263,11 @@
     return new Promise((resolve) => {
       try {
         const segment = wmeSDK.DataModel.Segments.getById({ segmentId });
-        if (!segment) {
-          log(`Segment ${segmentId} not found for restriction`);
-          resolve('not_supported');
+        if (!segment || isPedestrianType(segment.roadType)) {
+          const roadTypeName = segment ? roadTypes.find(rt => rt.value === segment.roadType)?.name || 'Unknown' : 'N/A';
+          log(`Segment ${segmentId} not found or pedestrian type ${roadTypeName} (${segment?.roadType || 'N/A'}), cannot apply motorbike restriction`);
+          WazeToastr.Alerts.warning('EZRoads Mod', `Segment not found or "${roadTypeName}" is not supported type, cannot apply motorbike restriction`, false, false, 5000);
+          resolve('not_supported type');
           return;
         }
 
@@ -796,14 +799,10 @@
                 }
               } else if (result === 'not_supported') {
                 if (WazeToastr?.Alerts) {
-                  WazeToastr.Alerts.warning(
-                    'Motorbike Restriction - Automation Failed',
-                    `The UI automation could not complete. Please add manually.`,
-                    false,
-                    false,
-                    5000
-                  );
+                WazeToastr.Alerts.warning('EZRoads Mod', `Segment not found or is pedestrian type, cannot apply motorbike restriction`, false, false, 5000);
                 }
+              } else if (result === 'not_supported type') {
+                log(`Segment not supported type, cannot apply motorbike restriction`); 
               }
             }).catch((error) => {
               console.error('Error applying motorbike restriction:', error);
@@ -3449,6 +3448,9 @@ if (typeof require !== 'undefined') {
 Changelog
 
 Version
+Version 2.6.7.8 - 2026-02-09
+    - Added direct shortcut key to update motorcycle restriction (Alt+R)
+    - Improved alert message when motorbike restriction cannot be applied due to segment type
 Version 2.6.7.7 - 2026-02-09
 - Added direct shortcut key to update motorcycle restriction (Alt+R) 
 Version 2.6.7.6 - 2026-02-08
