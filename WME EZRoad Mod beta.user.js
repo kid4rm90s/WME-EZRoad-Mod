@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.7.8
+// @version      2.6.7.9
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -27,7 +27,8 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.7.8 - 2026-02-09:</strong><br>
+  const updateMessage = `<strong>Version 2.6.7.9 - 2024-06-09:</strong><br>
+    - Fixed issue with converting the segment to pedestrian type and vice versa<br>
     - Added direct shortcut key to update motorcycle restriction (Alt+R) <br>
     - Improved alert message when motorbike restriction cannot be applied due to segment type
 <br>`;
@@ -1653,28 +1654,10 @@
       let swapMsg = currentIsPed
         ? 'You are about to convert a Pedestrian type segment (Footpath, Pedestrianised Area, or Stairway) to a regular street type. This will delete and recreate the segment. Continue?'
         : 'You are about to convert a regular street segment to a Pedestrian type (Footpath, Pedestrianised Area, or Stairway). This will delete and recreate the segment. Continue?';
-      if (WazeToastr?.Alerts?.confirm) {
-        WazeToastr.Alerts.confirm(
-          'EZRoad Mod Beta',
-          swapMsg,
-          () => {
-        // Proceed with segment recreation (callback will continue execution)
-          },
-          () => {
-        // User cancelled
-        log(`[EZRoad] Segment recreation cancelled by user`);
-        return null;
-          },
-          'Continue',
-          'Cancel'
-        );
-        return null; // Exit early, callback will handle continuation
-      } else if (!window.confirm(swapMsg)) {
-        log(`[EZRoad] Segment recreation cancelled by user`);
-        return null; // Cancel operation
-      }
       
-      try {
+      // Define the recreation logic as a function to avoid duplication
+      const performRecreation = () => {
+        try {
         // Save geometry and address
         const geometry = seg.geometry;
         const oldPrimaryStreetId = seg.primaryStreetId;
@@ -1761,6 +1744,17 @@
         }
 
         log(`[EZRoad] Successfully recreated segment: ${segmentId} -> ${newSegmentId}`);
+        
+        // Show success message
+        const successMsg = currentIsPed 
+          ? 'Segment successfully converted from Pedestrian type to regular street type!'
+          : 'Segment successfully converted to Pedestrian type!';
+        if (WazeToastr?.Alerts) {
+          WazeToastr.Alerts.success('EZRoad Mod Beta', successMsg, false, false, 3000);
+        } else {
+          alert(`EZRoad Mod Beta: ${successMsg}`);
+        }
+        
         return newSegmentId;
         
       } catch (error) {
@@ -1773,6 +1767,29 @@
         }
         return null;
       }
+      };
+      
+      // Show confirmation dialog
+      if (WazeToastr?.Alerts?.confirm) {
+        WazeToastr.Alerts.confirm(
+          'EZRoad Mod Beta',
+          swapMsg,
+          performRecreation, // OK callback - perform the recreation
+          () => {
+            // User cancelled
+            log(`[EZRoad] Segment recreation cancelled by user`);
+          },
+          'Continue',
+          'Cancel'
+        );
+        return undefined; // Return undefined to indicate async dialog is pending
+      } else if (!window.confirm(swapMsg)) {
+        log(`[EZRoad] Segment recreation cancelled by user`);
+        return null; // Cancel operation
+      }
+      
+      // For window.confirm (synchronous), perform recreation immediately
+      return performRecreation();
     }
     return segmentId;
   }
@@ -2023,6 +2040,9 @@
       motorcycleRestrictionApplied = true;
     }
 
+    // Flag to track if we need to wait for async confirmation dialog
+    let waitingForConfirmation = false;
+    
     selection.ids.forEach((origId, idx) => {
       let id = origId;
       let copyConnectedNameData = null;
@@ -2053,7 +2073,12 @@
           }
         }
         const newId = recreateSegmentIfNeeded(id, options.roadType, copyConnectedNameData);
-        if (!newId) return; // If failed, skip further updates
+        if (newId === undefined) {
+          // Async confirmation dialog is pending - set flag and exit forEach
+          waitingForConfirmation = true;
+          return;
+        }
+        if (!newId) return; // If failed or cancelled, skip further updates for this segment
         if (newId !== id) {
           id = newId; // Use the new segment ID for further updates
         }
@@ -2736,6 +2761,12 @@
       }, 450)
     );
     });
+
+    // If waiting for async confirmation, exit early - don't process any updates
+    if (waitingForConfirmation) {
+      log('[EZRoad] Waiting for user confirmation, exiting handleUpdate');
+      return;
+    }
 
     Promise.all(updatePromises).then(() => {
       // Always push city name alert if not already set by other actions
@@ -3448,6 +3479,10 @@ if (typeof require !== 'undefined') {
 Changelog
 
 Version
+Version 2.6.7.9 - 2024-06-09
+    - Fixed issue with converting the segment to pedestrian type and vice versa<br>
+    - Added direct shortcut key to update motorcycle restriction (Alt+R) <br>
+    - Improved alert message when motorbike restriction cannot be applied due to segment type
 Version 2.6.7.8 - 2026-02-09
     - Added direct shortcut key to update motorcycle restriction (Alt+R)
     - Improved alert message when motorbike restriction cannot be applied due to segment type
