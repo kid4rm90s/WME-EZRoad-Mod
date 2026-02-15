@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.7.4
+// @version      2.6.7.9
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -26,8 +26,10 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.7.4 - 2026-02-08:</strong><br>
-    - Fixed an issue with copying city names or segment names <br>
+  const updateMessage = `<strong>Version 2.6.7.9 - 2026-02-11:</strong><br>
+    - Fixed issue with converting the segment to pedestrian type and vice versa<br>
+    - Added direct shortcut key to update motorcycle restriction (Alt+R) <br>
+    - Improved alert message when motorbike restriction cannot be applied due to segment type
 <br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
@@ -71,6 +73,7 @@
     checkGeometryIssues: false,
     geometryIssueThreshold: 2,
     enableUTurn: false,
+    restrictExceptMotorbike: false,
     shortcutKey: 'g',
   };
 
@@ -249,6 +252,269 @@
         log(`Error updating flag attribute ${flagName}: ${e}`);
       }
     }
+  }
+
+  // --- NEW: Helper to apply motorbike-only restrictions to a segment via UI automation ---
+  function applyMotorbikeOnlyRestriction(segmentId) {
+    /**
+     * Applies vehicle restrictions to allow only motorbikes on a segment.
+     * Uses DOM manipulation to automate the WME UI since the SDK doesn't support this yet.
+     */
+    return new Promise((resolve) => {
+      try {
+        const segment = wmeSDK.DataModel.Segments.getById({ segmentId });
+        if (!segment || isPedestrianType(segment.roadType)) {
+          const roadTypeName = segment ? roadTypes.find(rt => rt.value === segment.roadType)?.name || 'Unknown' : 'N/A';
+          log(`Segment ${segmentId} not found or pedestrian type ${roadTypeName} (${segment?.roadType || 'N/A'}), cannot apply motorbike restriction`);
+          WazeToastr.Alerts.warning('EZRoads Mod', `Segment not found or "${roadTypeName}" is not supported type, cannot apply motorbike restriction`, false, false, 5000);
+          resolve('not_supported type');
+          return;
+        }
+
+        log(`Applying motorbike-only restriction to segment ${segmentId} via UI automation`);
+
+        /* ===== WME SDK APPROACH (NOT YET SUPPORTED - COMMENTED OUT FOR FUTURE USE) =====
+        // Get SDK constants - try different possible locations
+        const RESTRICTION_TYPE = wmeSDK.RESTRICTION_TYPE || wmeSDK.Constants?.RESTRICTION_TYPE || {
+          FREE: 'FREE',
+          BLOCKED: 'BLOCKED',
+          DIFFICULT: 'DIFFICULT',
+          TOLL: 'TOLL'
+        };
+
+        const VEHICLE_TYPE = wmeSDK.VEHICLE_TYPE || wmeSDK.Constants?.VEHICLE_TYPE || {
+          MOTORCYCLE: 'MOTORCYCLE',
+          CAR: 'CAR',
+          TAXI: 'TAXI',
+          BUSES: 'BUSES',
+          TRUCKS: 'TRUCKS',
+          SCOOTERS: 'SCOOTERS'
+        };
+
+        // Create motorcycle-only restriction using SDK constants and structure
+        // Only motorcycles are allowed (FREE restriction), all other vehicles are BLOCKED
+        const motorcycleOnlyRestriction = {
+          driveProfiles: {
+            // FREE: Only motorcycles can pass freely
+            [RESTRICTION_TYPE.FREE]: [
+              {
+                vehicleTypes: [VEHICLE_TYPE.MOTORCYCLE],
+                licensePlateNumber: '',
+                numPassengers: 0,
+                subscriptions: [],
+              },
+            ],
+            // BLOCKED: All other vehicle types are blocked
+            [RESTRICTION_TYPE.BLOCKED]: [
+              {
+                vehicleTypes: [
+                  VEHICLE_TYPE.CAR,
+                  VEHICLE_TYPE.TAXI,
+                  VEHICLE_TYPE.BUSES,
+                  VEHICLE_TYPE.TRUCKS,
+                  VEHICLE_TYPE.SCOOTERS,
+                ],
+                licensePlateNumber: '',
+                numPassengers: 0,
+                subscriptions: [],
+              },
+            ],
+            [RESTRICTION_TYPE.DIFFICULT]: [],
+            [RESTRICTION_TYPE.TOLL]: [],
+          },
+          isExpired: false,
+        };
+
+        // Try applying via SDK (currently not working)
+        // Method 1: Try Segments.addRestriction
+        if (wmeSDK.DataModel.Segments.addRestriction) {
+          wmeSDK.DataModel.Segments.addRestriction({
+            segmentId,
+            restriction: motorcycleOnlyRestriction,
+          });
+        }
+        
+        // Method 2: Try Segments.addSegmentRestriction
+        if (wmeSDK.DataModel.Segments.addSegmentRestriction) {
+          wmeSDK.DataModel.Segments.addSegmentRestriction({
+            segmentId,
+            restriction: motorcycleOnlyRestriction,
+          });
+        }
+        
+        // Method 3: Try updateSegment with restrictions array
+        const currentRestrictions = segment.restrictions || [];
+        wmeSDK.DataModel.Segments.updateSegment({
+          segmentId,
+          restrictions: [...currentRestrictions, motorcycleOnlyRestriction],
+        });
+        
+        // Method 4: Try SegmentRestrictions API if it exists
+        if (wmeSDK.DataModel.SegmentRestrictions?.addRestriction) {
+          wmeSDK.DataModel.SegmentRestrictions.addRestriction({
+            segmentId,
+            restriction: motorcycleOnlyRestriction,
+            direction: 'BOTH',
+          });
+        }
+        ===== END WME SDK APPROACH ===== */
+
+        // Helper function to wait for element
+        const waitForElement = (selector, timeout = 5000) => {
+          return new Promise((resolve, reject) => {
+            const startTime = Date.now();
+            const checkInterval = setInterval(() => {
+              const element = document.querySelector(selector);
+              if (element) {
+                clearInterval(checkInterval);
+                resolve(element);
+              } else if (Date.now() - startTime > timeout) {
+                clearInterval(checkInterval);
+                reject(new Error(`Timeout waiting for element: ${selector}`));
+              }
+            }, 100);
+          });
+        };
+
+        // Helper to click element
+        const clickElement = (element) => {
+          if (element) {
+            element.click();
+            log(`Clicked: ${element.tagName} ${element.className}`);
+            return true;
+          }
+          return false;
+        };
+
+        // Step 1: Click "Add restrictions" button
+        setTimeout(() => {
+          const addRestrictionsBtn = document.querySelector('wz-button.edit-restrictions');
+          if (!addRestrictionsBtn) {
+            log('Add restrictions button not found');
+            resolve('not_supported');
+            return;
+          }
+          clickElement(addRestrictionsBtn);
+
+          // Step 2: Wait for modal and click "Add new" for bidirectional (2-way)
+          setTimeout(() => {
+            waitForElement('.bidi-restrictions-summary .do-create')
+              .then((addNewBtn) => {
+                clickElement(addNewBtn);
+
+                // Step 3: Wait for disposition dropdown and select "Entire Segment" (value="1")
+                setTimeout(() => {
+                  waitForElement('select[name="disposition"]')
+                    .then((dispositionSelect) => {
+                      dispositionSelect.value = '1'; // Entire Segment
+                      dispositionSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                      log('Selected: Entire Segment');
+
+                      // Step 4: Click the plus icon to add restriction type
+                      setTimeout(() => {
+                        const plusIcon = document.querySelector('.fa-plus');
+                        if (plusIcon && clickElement(plusIcon)) {
+                          
+                          // Step 5: Wait for and click "Vehicle type" option
+                          setTimeout(() => {
+                            waitForElement('wz-menu-item')
+                              .then(() => {
+                                const menuItems = document.querySelectorAll('wz-menu-item');
+                                let vehicleTypeItem = null;
+                                menuItems.forEach(item => {
+                                  if (item.textContent.includes('Vehicle type')) {
+                                    vehicleTypeItem = item;
+                                  }
+                                });
+                                
+                                if (vehicleTypeItem && clickElement(vehicleTypeItem)) {
+                                  
+                                  // Step 6: Wait for vehicle type dropdown and select Motorcycle
+                                  setTimeout(() => {
+                                    waitForElement('.do-set-vehicle-type')
+                                      .then(() => {
+                                        const vehicleOptions = document.querySelectorAll('.do-set-vehicle-type');
+                                        let motorcycleOption = null;
+                                        vehicleOptions.forEach(option => {
+                                          if (option.textContent.toLowerCase().includes('motorcycle')) {
+                                            motorcycleOption = option;
+                                          }
+                                        });
+
+                                        if (motorcycleOption && clickElement(motorcycleOption)) {
+                                          log('Selected: Motorcycle');
+
+                                          // Step 7: Click the Add button
+                                          setTimeout(() => {
+                                            waitForElement('button.do-create')
+                                              .then((addBtn) => {
+                                                if (clickElement(addBtn)) {
+                                                  log('Clicked Add button');
+
+                                                  // Click Apply button to save
+                                                  setTimeout(() => {
+                                                    const applyBtn = document.querySelector('button.do-apply');
+                                                    if (applyBtn && clickElement(applyBtn)) {
+                                                      log('Successfully applied motorbike-only restriction via UI automation');
+                                                      resolve(true);
+                                                    } else {
+                                                      log('Apply button not found');
+                                                      resolve('not_supported');
+                                                    }
+                                                  }, 100);
+                                                } else {
+                                                  resolve('not_supported');
+                                                }
+                                              })
+                                              .catch(err => {
+                                                log(`Error finding Add button: ${err}`);
+                                                resolve('not_supported');
+                                              });
+                                          }, 100);
+                                        } else {
+                                          log('Motorcycle option not found');
+                                          resolve('not_supported');
+                                        }
+                                      })
+                                      .catch(err => {
+                                        log(`Error finding vehicle options: ${err}`);
+                                        resolve('not_supported');
+                                      });
+                                  }, 100);
+                                } else {
+                                  log('Vehicle type menu item not found');
+                                  resolve('not_supported');
+                                }
+                              })
+                              .catch(err => {
+                                log(`Error finding menu items: ${err}`);
+                                resolve('not_supported');
+                              });
+                          }, 100);
+                        } else {
+                          log('Plus icon not found');
+                          resolve('not_supported');
+                        }
+                      }, 100);
+                    })
+                    .catch(err => {
+                      log(`Error finding disposition dropdown: ${err}`);
+                      resolve('not_supported');
+                    });
+                }, 100);
+              })
+              .catch(err => {
+                log(`Error finding Add new button: ${err}`);
+                resolve('not_supported');
+              });
+          }, 100);
+        }, 50);
+
+      } catch (error) {
+        log(`Error in applyMotorbikeOnlyRestriction: ${error}`);
+        resolve(false);
+      }
+    });
   }
 
   const saveOptions = (options) => {
@@ -503,6 +769,53 @@
         }
       }
     });
+
+    // Register shortcut for Motorcycle Only restriction
+    const motorcycleShortcutId = `EZRoad_Mod_MotorcycleOnlyRestriction`;
+    // Prevent duplicate shortcut registration
+    if (!wmeSDK.Shortcuts.isShortcutRegistered({ shortcutId: motorcycleShortcutId })) {
+      try {
+        wmeSDK.Shortcuts.createShortcut({
+          callback: () => {
+            const selection = wmeSDK.Editing.getSelection();
+            if (!selection || selection.objectType !== 'segment' || !selection.ids || selection.ids.length === 0) {
+              if (WazeToastr?.Alerts) {
+                WazeToastr.Alerts.warning('EZRoads Mod', 'Please select one or more segments first', false, false, 3000);
+              }
+              return;
+            }
+
+            // Apply the restriction via UI automation
+            applyMotorbikeOnlyRestriction(selection.ids[0]).then((result) => {
+              if (result === true) {
+                if (WazeToastr?.Alerts) {
+                  WazeToastr.Alerts.success(
+                    'EZRoads Mod',
+                    `Motorbike-only restriction applied to ${selection.ids.length} segment(s) ✓`,
+                    false,
+                    false,
+                    3000
+                  );
+                }
+              } else if (result === 'not_supported') {
+                if (WazeToastr?.Alerts) {
+                WazeToastr.Alerts.warning('EZRoads Mod', `Segment not found or is pedestrian type, cannot apply motorbike restriction`, false, false, 5000);
+                }
+              } else if (result === 'not_supported type') {
+                log(`Segment not supported type, cannot apply motorbike restriction`); 
+              }
+            }).catch((error) => {
+              console.error('Error applying motorbike restriction:', error);
+            });
+          },
+          description: `Apply Motorbike-Only Restriction to Selected Segments`,
+          shortcutId: motorcycleShortcutId,
+          shortcutKeys: 'A+R',
+        });
+      } catch (e) {
+        log(`Shortcut registration failed for ${motorcycleShortcutId}: ${e}`);
+      }
+    }
 
     // Initialize segment length display layer
     initSegmentLengthLayer();
@@ -1269,15 +1582,68 @@
     alertMessageParts.push(`City Name: <b>${cityName || 'None'}</b>`);
   }
 
-  // Helper: Returns true if the roadType is Footpath, Pedestrianised Area, or Stairway
+  // Helper: Returns true if the roadType is non-routable (Footpath, Pedestrianised Area, Stairway, Ferry, Railway, Runway)
+  // According to WME SDK, non-routable segments should have routingRoadType === null
+  // This function provides a fallback check based on roadType values
   function isPedestrianType(roadType) {
-    return [5, 10, 16].includes(roadType);
+    // Footpath (5), Pedestrianised Area (10), Stairway (16), Ferry (15), Railway (18), Runway (19)
+    return [5, 10, 16, 15, 18, 19].includes(roadType);
+  }
+
+  // Helper: Enable all turns at both nodes of a segment for routable road types
+  function enableAllTurnsForSegment(segmentId) {
+    try {
+      const seg = wmeSDK.DataModel.Segments.getById({ segmentId });
+      if (!seg || isPedestrianType(seg.roadType)) {
+        log(`[EZRoad] Skipping turn enablement for non-routable segment ${segmentId}`);
+        return;
+      }
+
+      const nodes = [seg.fromNodeId, seg.toNodeId].filter(nodeId => nodeId !== null);
+      
+      nodes.forEach(nodeId => {
+        try {
+          // Check if we can edit turns at this node
+          if (!wmeSDK.DataModel.Turns.canEditTurnsThroughNode({ nodeId })) {
+            log(`[EZRoad] Cannot edit turns at node ${nodeId}`);
+            return;
+          }
+
+          // Get all turns through the node
+          const turns = wmeSDK.DataModel.Turns.getTurnsThroughNode({ nodeId });
+          
+          // Enable all turns that aren't already allowed
+          turns.forEach(turn => {
+            try {
+              if (!turn.isAllowed) {
+                wmeSDK.DataModel.Turns.updateTurn({ 
+                  turnId: turn.id, 
+                  isAllowed: true 
+                });
+                log(`[EZRoad] Enabled turn ${turn.id} at node ${nodeId}`);
+              }
+            } catch (turnError) {
+              log(`[EZRoad] Could not enable turn ${turn.id}: ${turnError.message}`);
+            }
+          });
+        } catch (nodeError) {
+          log(`[EZRoad] Error processing turns at node ${nodeId}: ${nodeError.message}`);
+        }
+      });
+      
+      log(`[EZRoad] Completed turn enablement for segment ${segmentId}`);
+    } catch (error) {
+      console.error(`[EZRoad] Error enabling turns for segment ${segmentId}:`, error);
+    }
   }
 
   // Helper: If switching between pedestrian and non-pedestrian types, delete and recreate the segment
   function recreateSegmentIfNeeded(segmentId, targetRoadType, copyConnectedNameData) {
     const seg = wmeSDK.DataModel.Segments.getById({ segmentId });
-    if (!seg) return segmentId;
+    if (!seg) {
+      log(`[EZRoad] Segment ${segmentId} not found`);
+      return segmentId;
+    }
 
     const currentIsPed = isPedestrianType(seg.roadType);
     const targetIsPed = isPedestrianType(targetRoadType);
@@ -1287,70 +1653,142 @@
       let swapMsg = currentIsPed
         ? 'You are about to convert a Pedestrian type segment (Footpath, Pedestrianised Area, or Stairway) to a regular street type. This will delete and recreate the segment. Continue?'
         : 'You are about to convert a regular street segment to a Pedestrian type (Footpath, Pedestrianised Area, or Stairway). This will delete and recreate the segment. Continue?';
-      if (!window.confirm(swapMsg)) {
-        return null; // Cancel operation
-      }
-      // Save geometry and address
-      const geometry = seg.geometry;
-      const oldPrimaryStreetId = seg.primaryStreetId;
-      const oldAltStreetIds = seg.alternateStreetIds;
-
+      
+      // Define the recreation logic as a function to avoid duplication
+      const performRecreation = () => {
       try {
-        wmeSDK.DataModel.Segments.deleteSegment({ segmentId });
-      } catch (ex) {
-        if (ex instanceof wmeSDK.Errors.InvalidStateError) {
+        // Save geometry and address
+        const geometry = seg.geometry;
+        const oldPrimaryStreetId = seg.primaryStreetId;
+        const oldAltStreetIds = Array.isArray(seg.alternateStreetIds) ? seg.alternateStreetIds : [];
+        
+        log(`[EZRoad] Deleting segment ${segmentId} for road type conversion`);
+        
+        // Delete old segment
+        try {
+          wmeSDK.DataModel.Segments.deleteSegment({ segmentId });
+        } catch (ex) {
+          const errorMsg = 'Segment could not be deleted. Please check for restrictions or junctions.';
+          log(`[EZRoad] Delete failed: ${ex.message}`);
           if (WazeToastr?.Alerts) {
-            WazeToastr.Alerts.error('EZRoads Mod Beta', 'Segment could not be deleted. Please check for restrictions or junctions.');
+            WazeToastr.Alerts.error('EZRoad Mod', errorMsg);
+          } else {
+            alert(errorMsg);
           }
           return null;
         }
-      }
 
-      // Create new segment
-      const newSegmentId = wmeSDK.DataModel.Segments.addSegment({ geometry, roadType: targetRoadType });
-
-      // Ensure primaryStreetId is valid (not null or undefined)
-      let validPrimaryStreetId = oldPrimaryStreetId;
-      if (!validPrimaryStreetId) {
-        // Use a blank street in the current city
-        let segCityId = getTopCity()?.id;
-        if (!segCityId) {
-          // fallback to country if city is not available
-          segCityId = getCurrentCountry()?.id;
+        // Create new segment
+        log(`[EZRoad] Creating new segment with road type ${targetRoadType}`);
+        const newSegmentId = wmeSDK.DataModel.Segments.addSegment({ geometry, roadType: targetRoadType });
+        
+        if (!newSegmentId) {
+          log(`[EZRoad] Failed to create new segment`);
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.error('EZRoad Mod', 'Failed to create new segment');
+          }
+          return null;
         }
-        let blankStreet = wmeSDK.DataModel.Streets.getStreet({
-          cityId: segCityId,
-          streetName: '',
-        });
-        if (!blankStreet) {
-          blankStreet = wmeSDK.DataModel.Streets.addStreet({
-            streetName: '',
+
+        // Ensure primaryStreetId is valid (not null or undefined)
+        let validPrimaryStreetId = oldPrimaryStreetId;
+        if (!validPrimaryStreetId) {
+          // Use a blank street in the current city
+          let segCityId = getTopCity()?.id;
+          if (!segCityId) {
+            // fallback to country if city is not available
+            segCityId = getCurrentCountry()?.id;
+          }
+          let blankStreet = wmeSDK.DataModel.Streets.getStreet({
             cityId: segCityId,
+            streetName: '',
           });
+          if (!blankStreet) {
+            blankStreet = wmeSDK.DataModel.Streets.addStreet({
+              streetName: '',
+              cityId: segCityId,
+            });
+          }
+          validPrimaryStreetId = blankStreet.id;
         }
-        validPrimaryStreetId = blankStreet.id;
-      }
 
-      // Restore address with valid primaryStreetId
-      wmeSDK.DataModel.Segments.updateAddress({
-        segmentId: newSegmentId,
-        primaryStreetId: validPrimaryStreetId,
-        alternateStreetIds: oldAltStreetIds,
-      });
-
-      // If we have connected segment name data to copy, apply it now
-      if (copyConnectedNameData && copyConnectedNameData.primaryStreetId) {
+        // Restore address with valid primaryStreetId
+        log(`[EZRoad] Restoring address for new segment ${newSegmentId}`);
         wmeSDK.DataModel.Segments.updateAddress({
           segmentId: newSegmentId,
-          primaryStreetId: copyConnectedNameData.primaryStreetId,
-          alternateStreetIds: copyConnectedNameData.alternateStreetIds || [],
+          primaryStreetId: validPrimaryStreetId,
+          alternateStreetIds: oldAltStreetIds,
         });
+
+        // If we have connected segment name data to copy, apply it now
+        if (copyConnectedNameData && copyConnectedNameData.primaryStreetId) {
+          log(`[EZRoad] Applying connected segment name data`);
+          wmeSDK.DataModel.Segments.updateAddress({
+            segmentId: newSegmentId,
+            primaryStreetId: copyConnectedNameData.primaryStreetId,
+            alternateStreetIds: Array.isArray(copyConnectedNameData.alternateStreetIds) ? copyConnectedNameData.alternateStreetIds : [],
+          });
+        }
+
+        // Reselect new segment
+        wmeSDK.Editing.setSelection({ selection: { ids: [newSegmentId], objectType: 'segment' } });
+
+        // If converting from pedestrian to routable, enable all turns
+        if (currentIsPed && !targetIsPed) {
+          // Use setTimeout to ensure segment is fully created before enabling turns
+          setTimeout(() => {
+            log(`[EZRoad] Enabling turns after conversion from pedestrian to routable type`);
+            enableAllTurnsForSegment(newSegmentId);
+          }, 300);
+        }
+
+        log(`[EZRoad] Successfully recreated segment: ${segmentId} -> ${newSegmentId}`);
+        
+        // Show success message
+        const successMsg = currentIsPed 
+          ? 'Segment successfully converted from Pedestrian type to regular street type!'
+          : 'Segment successfully converted to Pedestrian type!';
+        if (WazeToastr?.Alerts) {
+          WazeToastr.Alerts.success('EZRoad Mod', successMsg, false, false, 3000);
+        } else {
+          alert(`EZRoad Mod: ${successMsg}`);
+        }
+        
+        return newSegmentId;
+        
+      } catch (error) {
+        log(`[EZRoad] Error during segment recreation: ${error.message}`);
+        console.error('[EZRoad] Segment recreation error:', error);
+        if (WazeToastr?.Alerts) {
+          WazeToastr.Alerts.error('EZRoad Mod', `Error recreating segment: ${error.message}`);
+        } else {
+          alert(`Error recreating segment: ${error.message}`);
+        }
+        return null;
       }
-
-      // Reselect new segment
-      wmeSDK.Editing.setSelection({ selection: { ids: [newSegmentId], objectType: 'segment' } });
-
-      return newSegmentId;
+      };
+      
+      // Show confirmation dialog
+      if (WazeToastr?.Alerts?.confirm) {
+        WazeToastr.Alerts.confirm(
+          'EZRoad Mod',
+          swapMsg,
+          performRecreation, // OK callback - perform the recreation
+          () => {
+            // User cancelled
+            log(`[EZRoad] Segment recreation cancelled by user`);
+          },
+          'Continue',
+          'Cancel'
+        );
+        return undefined; // Return undefined to indicate async dialog is pending
+      } else if (!window.confirm(swapMsg)) {
+        log(`[EZRoad] Segment recreation cancelled by user`);
+        return null; // Cancel operation
+      }
+      
+      // For window.confirm (synchronous), perform recreation immediately
+      return performRecreation();
     }
     return segmentId;
   }
@@ -1562,6 +2000,48 @@
       return;
     }
 
+    // Apply motorbike restriction ONCE for all selected segments (before individual updates)
+    let motorcycleRestrictionApplied = false;
+    if (options.restrictExceptMotorbike) {
+      log('Applying motorbike restriction to all selected segments via UI automation...');
+      applyMotorbikeOnlyRestriction(selection.ids[0]).then((result) => {
+        if (result === true) {
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.success(
+              'EZRoads Mod',
+              `Motorbike-only restriction applied to ${selection.ids.length} segment(s) ✓`,
+              false,
+              false,
+              3000
+            );
+          }
+        } else if (result === 'not_supported') {
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.warning(
+              'Motorbike Restriction - Automation Failed',
+              `The UI automation could not complete. Please add manually:<br><br>` +
+              `<b>Steps:</b><br>` +
+              `1. Keep segment(s) selected<br>` +
+              `2. Click "Restrictions" in left panel<br>` +
+              `3. Click "Add new" under "2 way"<br>` +
+              `4. Select "Entire Segment"<br>` +
+              `5. Add "Vehicle type" → "Motorcycle"<br>` +
+              `6. Click "Add" then "Apply"`,
+              false,
+              false,
+              10000
+            );
+          }
+        }
+      }).catch((error) => {
+        console.error('Error applying motorbike restriction:', error);
+      });
+      motorcycleRestrictionApplied = true;
+    }
+
+    // Flag to track if we need to wait for async confirmation dialog
+    let waitingForConfirmation = false;
+
     selection.ids.forEach((origId, idx) => {
       let id = origId;
       let copyConnectedNameData = null;
@@ -1592,7 +2072,12 @@
           }
         }
         const newId = recreateSegmentIfNeeded(id, options.roadType, copyConnectedNameData);
-        if (!newId) return; // If failed, skip further updates
+        if (newId === undefined) {
+          // Async confirmation dialog is pending - set flag and exit forEach
+          waitingForConfirmation = true;
+          return;
+        }
+        if (!newId) return; // If failed or cancelled, skip further updates for this segment
         if (newId !== id) {
           id = newId; // Use the new segment ID for further updates
         }
@@ -2161,6 +2646,13 @@
    // Enable U-Turn if option is checked
     updatePromises.push(
       delayedUpdate(() => {
+        // Skip U-turn updates for pedestrian type segments (non-routable)
+        const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+        if (seg && isPedestrianType(seg.roadType)) {
+          log(`[EZRoad] Skipping U-turn update for pedestrian type segment (roadType: ${seg.roadType})`);
+          return;
+        }
+        
         if (options.enableUTurn) {
           let sideAResult = null;
           let sideBResult = null;
@@ -2206,6 +2698,7 @@
               try {
                 const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
                 if (!seg || !seg.isTwoWay) return 'skipped';
+                
                 
                 const nodeId = direction === 'A' ? seg.fromNodeId : seg.toNodeId;
                 if (!wmeSDK.DataModel.Turns.canEditTurnsThroughNode({ nodeId })) return 'failed';
@@ -2254,6 +2747,12 @@
       }, 450)
     );
     });
+
+    // If waiting for async confirmation, exit early - don't process any updates
+    if (waitingForConfirmation) {
+      log('[EZRoad] Waiting for user confirmation, exiting handleUpdate');
+      return;
+    }
 
     Promise.all(updatePromises).then(() => {
       // Always push city name alert if not already set by other actions
@@ -2437,6 +2936,12 @@
         key: 'checkGeometryIssues',
         tooltip: 'Checks if any intermediate geometry nodes are too close to the start or end nodes. Configure threshold distance below. Displays a pin icon if an issue is found.',
       },
+      {
+        id: 'restrictExceptMotorbike',
+        text: 'Restrict except Motorbike (Auto)',
+        key: 'restrictExceptMotorbike',
+        tooltip: 'Automatically adds motorbike-only vehicle restrictions via UI automation. Applies to entire segment in both directions, all day. Blocks all vehicles except motorcycles. May use shortcut key (Alt+R) or (Quick Update Segment) to apply.',
+      },
     ];
 
     // Helper function to create radio buttons
@@ -2485,7 +2990,7 @@
     // Helper function to create checkboxes
     const createCheckbox = (option) => {
       const isChecked = localOptions[option.key];
-      const otherClass = option.key !== 'autosave' && option.key !== 'copySegmentAttributes' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' ? 'ezroadsmod-other-checkbox' : '';
+      const otherClass = option.key !== 'autosave' && option.key !== 'copySegmentAttributes' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' && option.key !== 'restrictExceptMotorbike' ? 'ezroadsmod-other-checkbox' : '';
       const attrClass = option.key === 'copySegmentAttributes' ? 'ezroadsmod-attr-checkbox' : '';
 
       const div = $(`<div class="ezroadsmod-option">
@@ -2516,15 +3021,15 @@
           } else {
             update('copySegmentAttributes', false);
           }
-        } else if (option.key !== 'autosave' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues') {
-          // If any other checkbox (except autosave, showSegmentLength, checkGeometryIssues) is checked, uncheck copySegmentAttributes
+        } else if (option.key !== 'autosave' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' && option.key !== 'restrictExceptMotorbike') {
+          // If any other checkbox (except autosave, showSegmentLength, checkGeometryIssues, restrictExceptMotorbike) is checked, uncheck copySegmentAttributes
           if ($(`#${option.id}`).prop('checked')) {
             $('#copySegmentAttributes').prop('checked', false);
             update('copySegmentAttributes', false);
           }
           update(option.key, $(`#${option.id}`).prop('checked'));
         } else {
-          // Autosave, showSegmentLength, or checkGeometryIssues
+          // Autosave, showSegmentLength, checkGeometryIssues, or restrictExceptMotorbike
           update(option.key, $(`#${option.id}`).prop('checked'));
         }
 
@@ -2952,6 +3457,18 @@ if (typeof require !== 'undefined') {
 Changelog
 
 Version
+Version 2.6.7.9 - 2024-06-09
+    - Fixed issue with converting the segment to pedestrian type and vice versa<br>
+    - Added direct shortcut key to update motorcycle restriction (Alt+R) <br>
+    - Improved alert message when motorbike restriction cannot be applied due to segment type
+Version 2.6.7.8 - 2026-02-09
+    - Added direct shortcut key to update motorcycle restriction (Alt+R)
+    - Improved alert message when motorbike restriction cannot be applied due to segment type
+Version 2.6.7.7 - 2026-02-09
+- Added direct shortcut key to update motorcycle restriction (Alt+R) 
+Version 2.6.7.6 - 2026-02-08
+- Improved non-routable segment detection: now properly skips "enable uturn" for all non-routable segments (Ferry, Railway, Runway, Footpath, Pedestrianised Area, Stairway) by checking routingRoadType from WME SDK
+- Added restriction to allow only Motorbikes via UI automation for both one way and two way segments. SDK does not support vehicle restrictions yet.
 Version 2.6.7.3 - 2026-01-28
     - Fixed an issue with copying city names or segment names
 2.6.7.2 - 2026-01-23
