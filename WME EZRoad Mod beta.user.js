@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.8
+// @version      2.6.8.1
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -28,7 +28,7 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.8 - 2026-02-18:</strong><br>
+  const updateMessage = `<strong>Version 2.6.8.1 - 2026-02-18:</strong><br>
     - Fixed issue with copying the names from connected segment<br>
     Now it will prioritise the first connected segment at Side A with a valid city in its address, and if none have a valid city, it will fallback to the first connected segment with any address<br>
     - Added direct shortcut key to update motorcycle restriction (Alt+R) <br>
@@ -2525,41 +2525,21 @@
           if (options.copySegmentName) {
             try {
               const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
-              const fromNode = seg.fromNodeId;
-              const toNode = seg.toNodeId;
-              const connectedSegIds = getConnectedSegmentIDs(id);
-              // Gather segments connected to A side (fromNode) only
-              const aSideSegs = connectedSegIds.map((sid) => wmeSDK.DataModel.Segments.getById({ segmentId: sid })).filter((s) => s && (s.fromNodeId === fromNode || s.toNodeId === fromNode) && s.id !== id);
-              // Gather segments connected to B side (toNode) only
-              const bSideSegs = connectedSegIds.map((sid) => wmeSDK.DataModel.Segments.getById({ segmentId: sid })).filter((s) => s && (s.fromNodeId === toNode || s.toNodeId === toNode) && s.id !== id);
-              // Helper to check if segment has a name
-              const hasName = (s) => {
-                if (!s) return false;
-                const street = wmeSDK.DataModel.Streets.getById({ streetId: s.primaryStreetId });
-                const altStreetIds = s.alternateStreetIds || [];
-                let altNames = [];
-                altStreetIds.forEach((altId) => {
-                  const altStreet = wmeSDK.DataModel.Streets.getById({ streetId: altId });
-                  if (altStreet && altStreet.name) altNames.push(altStreet.name);
-                });
-                return street && (street.name || street.englishName || street.signText || altNames.length > 0);
-              };
-              // Prefer the first A side segment with a name/city/alias
-              let preferredSeg = aSideSegs.find(hasName);
+              // Per WME SDK docs: reverseDirection=false gets segments at fromNode (A side), reverseDirection=true gets segments at toNode (B side)
+              // This correctly handles both physical nodes and virtual nodes used by pedestrian segments
+              const aSideSegs = wmeSDK.DataModel.Segments.getConnectedSegments({ segmentId: id, reverseDirection: true });
+              const bSideSegs = wmeSDK.DataModel.Segments.getConnectedSegments({ segmentId: id, reverseDirection: false });
+              
+              // Build segsToTry: A side first (ALL A side segments), then B side (only if no A side)
               let segsToTry = [];
-              if (preferredSeg) {
-                segsToTry.push(preferredSeg.id);
-                // Add the rest of A side, excluding preferredSeg.id
-                segsToTry = segsToTry.concat(aSideSegs.filter((s) => s && s.id !== preferredSeg.id).map((s) => s.id));
-              } else {
-                // No A side segment with name found, try B side
-                preferredSeg = bSideSegs.find(hasName);
-                if (preferredSeg) {
-                  segsToTry.push(preferredSeg.id);
-                  // Add the rest of B side, excluding preferredSeg.id
-                  segsToTry = segsToTry.concat(bSideSegs.filter((s) => s && s.id !== preferredSeg.id).map((s) => s.id));
-                }
+              if (aSideSegs.length > 0) {
+                // Prefer A side - add all of them
+                segsToTry = aSideSegs.map((s) => s.id);
+              } else if (bSideSegs.length > 0) {
+                // Only use B side if NO A side segments exist
+                segsToTry = bSideSegs.map((s) => s.id);
               }
+              
               let found = false;
               for (let connectedSegId of segsToTry) {
                 const connectedSeg = wmeSDK.DataModel.Segments.getById({ segmentId: connectedSegId });
@@ -3493,7 +3473,7 @@ if (typeof require !== 'undefined') {
 Changelog
 
 Version
-Version 2.6.8 - 2026-02-18
+Version 2.6.8.1 - 2026-02-18
  - Fixed an issue with copying segment name from connected segment. It will prioritize copying from the connected segment Side A that has a valid city name when "Set city as none" is unchecked.
 Version 2.6.7.9 - 2024-06-09
     - Fixed issue with converting the segment to pedestrian type and vice versa<br>
