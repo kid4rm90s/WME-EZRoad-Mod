@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.8.1
+// @version      2.6.8.2
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -93,9 +93,9 @@
 
   const log = (message) => {
     if (typeof message === 'string') {
-      console.log('WME_EZRoads_Mod: ' + message);
+      console.log(`$${scriptName}: ` + message);
     } else {
-      console.log('WME_EZRoads_Mod: ', message);
+      console.log(`$${scriptName}: `, message);
     }
   };
 
@@ -108,8 +108,21 @@
   });
     const sdkPlus = await initWmeSdkPlus(wmeSdk);
       wmeSDK = sdkPlus || wmeSdk;
-    WME_EZRoads_Mod_bootstrap();
-      console.log('SDK+ initialized successfully');  
+    console.log(`${scriptName} SDK+ initialized successfully`);
+    
+    // Wait for WazeToastr to be available before proceeding
+    const waitForWazeToastr = () => {
+      if (typeof WazeToastr === 'undefined' || !WazeToastr?.Alerts) {
+        console.log(`${scriptName} Waiting for WazeToastr to load...`);
+        setTimeout(waitForWazeToastr, 500);
+        return;
+      }
+      console.log(`${scriptName} WazeToastr available, bootstrapping...`);
+      WME_EZRoads_Mod_bootstrap();
+    };
+    
+    // Start checking after a small delay to allow WazeToastr to initialize
+    setTimeout(waitForWazeToastr, 1000);
   }
 
   const getCurrentCountry = () => {
@@ -271,7 +284,7 @@
         if (!segment || isPedestrianType(segment.roadType)) {
           const roadTypeName = segment ? roadTypes.find(rt => rt.value === segment.roadType)?.name || 'Unknown' : 'N/A';
           log(`Segment ${segmentId} not found or pedestrian type ${roadTypeName} (${segment?.roadType || 'N/A'}), cannot apply motorbike restriction`);
-          WazeToastr.Alerts.warning('EZRoads Mod', `Segment not found or "${roadTypeName}" is not supported type, cannot apply motorbike restriction`, false, false, 5000);
+          WazeToastr.Alerts.warning(`${scriptName}`, `Segment not found or "${roadTypeName}" is not supported type, cannot apply motorbike restriction`, false, false, 5000);
           resolve('not_supported type');
           return;
         }
@@ -628,6 +641,279 @@
     return !(locksMatch && speedsMatch);
   };
 
+  // ***--- Legacy Keyboard Shortcuts System (from WME Street to River PLUS) ---***
+  function WMEKSRegisterKeyboardShortcut(scriptName, shortcutsHeader, newShortcut, shortcutDescription, functionToCall, shortcutKeysObj, arg) {
+    try {
+      I18n.translations[I18n.locale].keyboard_shortcuts.groups[scriptName].members.length;
+    } catch (c) {
+      (W.accelerators.Groups[scriptName] = []),
+        (W.accelerators.Groups[scriptName].members = []),
+        (I18n.translations[I18n.locale].keyboard_shortcuts.groups[scriptName] = []),
+        (I18n.translations[I18n.locale].keyboard_shortcuts.groups[scriptName].description = shortcutsHeader),
+        (I18n.translations[I18n.locale].keyboard_shortcuts.groups[scriptName].members = []);
+    }
+    if (functionToCall && 'function' == typeof functionToCall) {
+      (I18n.translations[I18n.locale].keyboard_shortcuts.groups[scriptName].members[newShortcut] = shortcutDescription),
+        W.accelerators.addAction(newShortcut, {
+          group: scriptName,
+        });
+      var i = '-1',
+        j = {};
+      (j[i] = newShortcut),
+        W.accelerators._registerShortcuts(j),
+        null !== shortcutKeysObj && ((j = {}), (j[shortcutKeysObj] = newShortcut), W.accelerators._registerShortcuts(j)),
+        W.accelerators.events.register(newShortcut, null, function () {
+          functionToCall(arg);
+        });
+    } else alert('The function ' + functionToCall + ' has not been declared');
+  }
+
+  function WMEKSLoadKeyboardShortcuts(scriptName) {
+    console.log(`${scriptName} Loading keyboard shortcuts for ${scriptName}`);
+    if (localStorage[scriptName + 'KBS']) {
+      const shortcuts = JSON.parse(localStorage[scriptName + 'KBS']);
+      for (let i = 0; i < shortcuts.length; i++) {
+        try {
+          W.accelerators._registerShortcuts(shortcuts[i]);
+        } catch (error) {
+          console.error(`${scriptName} Error registering shortcut:`, error);
+        }
+      }
+    }
+  }
+
+  function WMEKSSaveKeyboardShortcuts(scriptName) {
+    console.log(`${scriptName} Saving keyboard shortcuts for ${scriptName}`);
+    try {
+      WazeToastr.Alerts.success(`${scriptName}`, `Saving keyboard shortcuts for ${scriptName}`, false, false, 3000);
+    } catch (e) {
+      console.warn(`${scriptName} WazeToastr.Alerts.success failed:`, e);
+    }
+    const shortcuts = [];
+    for (var actionName in W.accelerators.Actions) {
+      var shortcutString = '';
+      if (W.accelerators.Actions[actionName].group == scriptName) {
+        W.accelerators.Actions[actionName].shortcut
+          ? (W.accelerators.Actions[actionName].shortcut.altKey === !0 && (shortcutString += 'A'),
+            W.accelerators.Actions[actionName].shortcut.shiftKey === !0 && (shortcutString += 'S'),
+            W.accelerators.Actions[actionName].shortcut.ctrlKey === !0 && (shortcutString += 'C'),
+            '' !== shortcutString && (shortcutString += '+'),
+            W.accelerators.Actions[actionName].shortcut.keyCode && (shortcutString += W.accelerators.Actions[actionName].shortcut.keyCode))
+          : (shortcutString = '-1');
+        var shortcutObj = {};
+        (shortcutObj[shortcutString] = W.accelerators.Actions[actionName].id), (shortcuts[shortcuts.length] = shortcutObj);
+      }
+    }
+    localStorage[scriptName + 'KBS'] = JSON.stringify(shortcuts);
+  }
+
+  // Helper function to handle toggle logic
+  function handleToggle(optionKey, featureName) {
+    const options = getOptions();
+    options[optionKey] = !options[optionKey];
+    saveOptions(options);
+    
+    // Update checkbox in DOM
+    const checkboxId = optionKey;
+    const $checkbox = $(`#${checkboxId}`);
+    
+    if ($checkbox.length > 0) {
+      $checkbox.prop('checked', options[optionKey]);
+      
+      // Trigger the same logic that would be triggered by manual checkbox click
+      // Mutually exclusive logic for setStreet and copySegmentName
+      if (optionKey === 'setStreet' && options[optionKey]) {
+        $('#copySegmentName').prop('checked', false);
+        saveOptions({ ...getOptions(), copySegmentName: false });
+      }
+      if (optionKey === 'copySegmentName' && options[optionKey]) {
+        $('#setStreet').prop('checked', false);
+        saveOptions({ ...getOptions(), setStreet: false });
+      }
+      
+      // Mutual exclusion logic for copySegmentAttributes
+      if (optionKey === 'copySegmentAttributes') {
+        if (options[optionKey]) {
+          // Uncheck all other checkboxes except autosave, showSegmentLength, checkGeometryIssues, restrictExceptMotorbike
+          $('.ezroadsmod-other-checkbox').each(function () {
+            $(this).prop('checked', false);
+          });
+          const newOpts = getOptions();
+          newOpts.setStreet = false;
+          newOpts.setStreetCity = false;
+          newOpts.unpaved = false;
+          newOpts.setLock = false;
+          newOpts.updateSpeed = false;
+          newOpts.enableUTurn = false;
+          newOpts.copySegmentName = false;
+          newOpts.copySegmentAttributes = true;
+          saveOptions(newOpts);
+        }
+      } else if (optionKey !== 'autosave' && optionKey !== 'showSegmentLength' && optionKey !== 'checkGeometryIssues' && optionKey !== 'restrictExceptMotorbike') {
+        // If any other checkbox (except autosave, showSegmentLength, checkGeometryIssues, restrictExceptMotorbike) is checked, uncheck copySegmentAttributes
+        if (options[optionKey]) {
+          $('#copySegmentAttributes').prop('checked', false);
+          const newOpts = getOptions();
+          newOpts.copySegmentAttributes = false;
+          saveOptions(newOpts);
+        }
+      }
+      
+      // Handle Segment Length / Geometry Check toggle
+      if (optionKey === 'showSegmentLength' || optionKey === 'checkGeometryIssues' || optionKey === 'copySegmentAttributes') {
+        if (typeof handleSegmentLengthToggle === 'function') {
+          handleSegmentLengthToggle();
+        }
+      }
+    }
+    
+    // Show notification
+    if (WazeToastr?.Alerts) {
+      const status = options[optionKey] ? 'Enabled' : 'Disabled';
+      WazeToastr.Alerts.info(`${scriptName}`, `${featureName}: ${status}`, false, false, 2000);
+    }
+    console.log(`[${scriptName}] [${featureName}] Toggled to: ${options[optionKey]}`);
+  }
+  
+  // Initialize all action shortcuts using legacy mode (following WME POI Shortcuts pattern)
+  const initializeActionShortcuts = () => {
+    try {
+      // Legacy shortcuts configuration - following POI Shortcuts pattern
+      var shortcutsConfig = [
+        {
+          handler: 'WME_EZRoad_Mod_SetStreetNameToNone',
+          title: 'Set Street Name to None',
+          func: function (arg) {
+            handleToggle('setStreet', 'Set Street Name to None');
+          },
+          key: -1,
+          arg: {},
+        },
+        {
+          handler: 'WME_EZRoad_Mod_SetCityAsNone',
+          title: 'Set City as None',
+          func: function (arg) {
+            handleToggle('setStreetCity', 'Set City as None');
+          },
+          key: -1,
+          arg: {},
+        },
+        {
+          handler: 'WME_EZRoad_Mod_AutosaveOnAction',
+          title: 'Autosave on Action',
+          func: function (arg) {
+            handleToggle('autosave', 'Autosave on Action');
+          },
+          key: -1,
+          arg: {},
+        },
+        {
+          handler: 'WME_EZRoad_Mod_SetAsUnpaved',
+          title: 'Set as Unpaved',
+          func: function (arg) {
+            handleToggle('unpaved', 'Set as Unpaved');
+          },
+          key: -1,
+          arg: {},
+        },
+        {
+          handler: 'WME_EZRoad_Mod_SetLockLevel',
+          title: 'Set Lock Level',
+          func: function (arg) {
+            handleToggle('setLock', 'Set Lock Level');
+          },
+          key: -1,
+          arg: {},
+        },
+        {
+          handler: 'WME_EZRoad_Mod_UpdateSpeedLimits',
+          title: 'Update Speed Limits',
+          func: function (arg) {
+            handleToggle('updateSpeed', 'Update Speed Limits');
+          },
+          key: -1,
+          arg: {},
+        },
+        {
+          handler: 'WME_EZRoad_Mod_EnableUTurn',
+          title: 'Enable U-Turn',
+          func: function (arg) {
+            handleToggle('enableUTurn', 'Enable U-Turn');
+          },
+          key: -1,
+          arg: {},
+        },
+        {
+          handler: 'WME_EZRoad_Mod_CopyConnectedSegmentName',
+          title: 'Copy Connected Segment Name',
+          func: function (arg) {
+            handleToggle('copySegmentName', 'Copy Connected Segment Name');
+          },
+          key: -1,
+          arg: {},
+        },
+        {
+          handler: 'WME_EZRoad_Mod_CopyConnectedSegmentAttribute',
+          title: 'Copy Connected Segment Attribute',
+          func: function (arg) {
+            handleToggle('copySegmentAttributes', 'Copy Connected Segment Attribute');
+          },
+          key: -1,
+          arg: {},
+        },
+        {
+          handler: 'WME_EZRoad_Mod_ShowSegmentLength',
+          title: 'Show Segment Length <=20m',
+          func: function (arg) {
+            handleToggle('showSegmentLength', 'Show Segment Length <=20m');
+          },
+          key: -1,
+          arg: {},
+        },
+        {
+          handler: 'WME_EZRoad_Mod_CheckGeometryIssues',
+          title: 'Check Geometry Issues',
+          func: function (arg) {
+            handleToggle('checkGeometryIssues', 'Check Geometry Issues');
+          },
+          key: -1,
+          arg: {},
+        },
+        {
+          handler: 'WME_EZRoad_Mod_RestrictMotorbikesOnly',
+          title: 'Restrict Except Motorbike',
+          func: function (arg) {
+            handleToggle('restrictExceptMotorbike', 'Restrict Except Motorbike');
+          },
+          key: -1,
+          arg: {},
+        },
+      ];
+
+      // Register legacy shortcuts
+      for (var i = 0; i < shortcutsConfig.length; ++i) {
+        WMEKSRegisterKeyboardShortcut(scriptName, 'EZRoad Mod - Feature Toggles', shortcutsConfig[i].handler, shortcutsConfig[i].title, shortcutsConfig[i].func, shortcutsConfig[i].key, shortcutsConfig[i].arg);
+      }
+
+      // Load any previously saved shortcuts
+      WMEKSLoadKeyboardShortcuts(scriptName);
+
+      // Save shortcuts before page unload
+      window.addEventListener(
+        'beforeunload',
+        function () {
+          WMEKSSaveKeyboardShortcuts(scriptName);
+        },
+        false
+      );
+      
+      console.log(`${scriptName} All action shortcuts initialized successfully with legacy mode`);
+    } catch (e) {
+      console.error(`${scriptName} Error initializing action shortcuts:`, e);
+    }
+  };
+  // ***--- End of Legacy Keyboard Shortcuts System but below has initialization ---***
+  
   const WME_EZRoads_Mod_bootstrap = () => {
     if (!document.getElementById('edit-panel') || !wmeSDK.DataModel.Countries.getTopCountry()) {
       setTimeout(WME_EZRoads_Mod_bootstrap, 250);
@@ -653,6 +939,16 @@
       registerShortcut(options.shortcutKey || 'g');
     }
 
+    // Initialize all action shortcuts for the 12 features using the legacy shortcuts system (following WME POI Shortcuts pattern)
+    // WazeToastr is guaranteed to be available at this point (checked during initScript)
+    try {
+      initializeActionShortcuts();
+      console.log(`${scriptName} Action shortcuts initialized`);
+    } catch (e) {
+      console.error(`${scriptName} Error initializing action shortcuts:`, e);
+    }
+    // ***--- End of Legacy Keyboard Shortcuts System initialization ---***
+    
     // --- ENHANCED: Add event listeners to each road-type chip for direct click handling ---
     // Global flag to suppress attribute copy when chip is clicked
     window.suppressCopySegmentAttributes = false;
@@ -665,12 +961,12 @@
           chip._ezroadmod_listener = true;
           chip.addEventListener('click', function () {
             // Log every chip click for debugging
-            log('Chip clicked: value=' + chip.getAttribute('value') + ', checked=' + chip.getAttribute('checked'));
+            log(`${scriptName} Chip clicked: value=` + chip.getAttribute('value') + ', checked=' + chip.getAttribute('checked'));
             setTimeout(() => {
               // Only act if this chip is now the selected one (checked="")
               if (chip.getAttribute('checked') === '') {
                 const rtValue = parseInt(chip.getAttribute('value'), 10);
-                log('Detected chip selection, applying EZRoadMod logic for roadType value: ' + rtValue);
+                log(`${scriptName} Detected chip selection, applying EZRoadMod logic for roadType value: ` + rtValue);
                 if (isNaN(rtValue)) return;
                 const options = getOptions();
                 options.roadType = rtValue;
@@ -683,7 +979,7 @@
                   wmeSDK.Editing.setSelection({ selection });
                 }
                 setTimeout(() => {
-                  log('Calling handleUpdate() after chip click for roadType value: ' + rtValue);
+                  log(`${scriptName} Calling handleUpdate() after chip click for roadType value: ` + rtValue);
                   window.suppressCopySegmentAttributes = true;
                   Promise.resolve(handleUpdate()).finally(() => {
                     window.suppressCopySegmentAttributes = false;
@@ -762,7 +1058,7 @@
               saveOptions(options);
               updateRoadTypeRadios(rt.value);
               if (WazeToastr?.Alerts) {
-                WazeToastr.Alerts.success('EZRoads Mod', `Selected road type: <b>${rt.name}</b>`, false, false, 1500);
+                WazeToastr.Alerts.success(`${scriptName}`, `Selected road type: <b>${rt.name}</b>`, false, false, 1500);
               }
             },
             description: `Select road type: ${rt.name}`,
@@ -785,7 +1081,7 @@
             const selection = wmeSDK.Editing.getSelection();
             if (!selection || selection.objectType !== 'segment' || !selection.ids || selection.ids.length === 0) {
               if (WazeToastr?.Alerts) {
-                WazeToastr.Alerts.warning('EZRoads Mod', 'Please select one or more segments first', false, false, 3000);
+                WazeToastr.Alerts.warning(`${scriptName}`, 'Please select one or more segments first', false, false, 3000);
               }
               return;
             }
@@ -795,7 +1091,7 @@
               if (result === true) {
                 if (WazeToastr?.Alerts) {
                   WazeToastr.Alerts.success(
-                    'EZRoads Mod',
+                    `${scriptName}`,
                     `Motorbike-only restriction applied to ${selection.ids.length} segment(s) ✓`,
                     false,
                     false,
@@ -804,13 +1100,13 @@
                 }
               } else if (result === 'not_supported') {
                 if (WazeToastr?.Alerts) {
-                WazeToastr.Alerts.warning('EZRoads Mod', `Segment not found or is pedestrian type, cannot apply motorbike restriction`, false, false, 5000);
+                WazeToastr.Alerts.warning(`${scriptName}`, `Segment not found or is pedestrian type, cannot apply motorbike restriction`, false, false, 5000);
                 }
               } else if (result === 'not_supported type') {
-                log(`Segment not supported type, cannot apply motorbike restriction`); 
+                log(`${scriptName} Segment not supported type, cannot apply motorbike restriction`); 
               }
             }).catch((error) => {
-              console.error('Error applying motorbike restriction:', error);
+              console.error(`${scriptName} Error applying motorbike restriction:`, error);
             });
           },
           description: `Apply Motorbike-Only Restriction to Selected Segments`,
@@ -1316,10 +1612,10 @@
         shortcutId,
         shortcutKeys: shortcutKey,
       });
-      console.log(`[EZRoads Mod] Shortcut '${shortcutKey}' for Quick Update Segments enabled.`);
+      console.log(`[${scriptName}] Shortcut '${shortcutKey}' for Quick Update Segments enabled.`);
     } catch (e) {
       // If shortcut registration fails (e.g., conflict), register with no key so it appears in WME UI
-      console.warn('[EZRoads Mod] Shortcut registration failed:', e);
+      console.warn(`[${scriptName}] Shortcut registration failed:`, e);
       try {
         wmeSDK.Shortcuts.createShortcut({
           callback: handleUpdate,
@@ -1327,9 +1623,9 @@
           shortcutId,
           shortcutKeys: null, // Register with no key so it appears in WME UI
         });
-        console.log('[EZRoads Mod] Registered shortcut with no key due to conflict.');
+        console.log(`[${scriptName}] Registered shortcut with no key due to conflict.`);
       } catch (e2) {
-        console.error('[EZRoads Mod] Failed to register shortcut with no key:', e2);
+        console.error(`[${scriptName}] Failed to register shortcut with no key:`, e2);
       }
       const options = getOptions();
       options.shortcutKey = null;
@@ -1342,7 +1638,7 @@
   async function fixVisibleGeometryIssues() {
     const options = getOptions();
     if (!options.checkGeometryIssues) {
-      if (WazeToastr?.Alerts) WazeToastr.Alerts.info('EZRoad Mod', 'Please enable "Check Geometry issues" in settings first.');
+      if (WazeToastr?.Alerts) WazeToastr.Alerts.info(`${scriptName}`, 'Please enable "Check Geometry issues" in settings first.');
       else alert('Please enable "Check Geometry issues" in EZRoad Mod settings first.');
       return;
     }
@@ -1378,7 +1674,7 @@
     });
 
     if (segmentsToFix.length === 0) {
-      if (WazeToastr?.Alerts) WazeToastr.Alerts.error('EZRoad Mod', 'No visible geometry issues to fix.');
+      if (WazeToastr?.Alerts) WazeToastr.Alerts.error(`${scriptName}`, 'No visible geometry issues to fix.');
       else alert('No visible geometry issues to fix.');
       return;
     }
@@ -1412,7 +1708,7 @@
       }
 
       const msg = fixedIssueCount === fixedCount ? `Fixed ${fixedCount} segments.${errors > 0 ? ` (${errors} errors)` : ''}` : `Fixed ${fixedCount} segments with ${fixedIssueCount} geometry node issues.${errors > 0 ? ` (${errors} errors)` : ''}`;
-      if (WazeToastr?.Alerts) WazeToastr.Alerts.success('EZRoad Mod', msg);
+      if (WazeToastr?.Alerts) WazeToastr.Alerts.success(`${scriptName}`, msg);
       else alert(msg);
 
       // Refresh display
@@ -1422,7 +1718,7 @@
     const confirmMsg = totalIssueCount === segmentsToFix.length ? `Found ${segmentsToFix.length} segments with geometry issues. Fix them now?` : `Found ${segmentsToFix.length} segments with ${totalIssueCount} geometry node issues. Fix them now?`;
 
     if (WazeToastr?.Alerts?.confirm) {
-      WazeToastr.Alerts.confirm('EZRoad Mod', confirmMsg, performFix, null, 'Fix', 'Cancel');
+      WazeToastr.Alerts.confirm(`${scriptName}`, confirmMsg, performFix, null, 'Fix', 'Cancel');
     } else if (confirm(confirmMsg)) {
       performFix();
     }
@@ -1498,7 +1794,7 @@
   function getHighestSegLock(segID) {
     const segObj = wmeSDK.DataModel.Segments.getById({ segmentId: segID });
     if (!segObj) {
-      console.warn(`Segment object with ID ${segID} not found in DataModel.Segments.`);
+      console.warn(`[${scriptName}] Segment object with ID ${segID} not found in DataModel.Segments.`);
       return 1; // Default lock level if segment not found
     }
     const segType = segObj.roadType;
@@ -1580,7 +1876,7 @@
         // Ensure city is fully loaded before accessing name
         cityName = city && city.name !== undefined ? city.name : '';
       } catch (e) {
-        log(`Error getting city name for cityId ${cityId}: ${e}`);
+        log(`[${scriptName}] Error getting city name for cityId ${cityId}: ${e}`);
         cityName = '';
       }
     }
@@ -1600,7 +1896,7 @@
     try {
       const seg = wmeSDK.DataModel.Segments.getById({ segmentId });
       if (!seg || isPedestrianType(seg.roadType)) {
-        log(`[EZRoad] Skipping turn enablement for non-routable segment ${segmentId}`);
+        log(`[${scriptName}] Skipping turn enablement for non-routable segment ${segmentId}`);
         return;
       }
 
@@ -1610,7 +1906,7 @@
         try {
           // Check if we can edit turns at this node
           if (!wmeSDK.DataModel.Turns.canEditTurnsThroughNode({ nodeId })) {
-            log(`[EZRoad] Cannot edit turns at node ${nodeId}`);
+            log(`[${scriptName}] Cannot edit turns at node ${nodeId}`);
             return;
           }
 
@@ -1625,20 +1921,20 @@
                   turnId: turn.id, 
                   isAllowed: true 
                 });
-                log(`[EZRoad] Enabled turn ${turn.id} at node ${nodeId}`);
+                log(`[${scriptName}] Enabled turn ${turn.id} at node ${nodeId}`);
               }
             } catch (turnError) {
-              log(`[EZRoad] Could not enable turn ${turn.id}: ${turnError.message}`);
+              log(`[${scriptName}] Could not enable turn ${turn.id}: ${turnError.message}`);
             }
           });
         } catch (nodeError) {
-          log(`[EZRoad] Error processing turns at node ${nodeId}: ${nodeError.message}`);
+          log(`[${scriptName}] Error processing turns at node ${nodeId}: ${nodeError.message}`);
         }
       });
       
-      log(`[EZRoad] Completed turn enablement for segment ${segmentId}`);
+      log(`[${scriptName}] Completed turn enablement for segment ${segmentId}`);
     } catch (error) {
-      console.error(`[EZRoad] Error enabling turns for segment ${segmentId}:`, error);
+      console.error(`[${scriptName}] Error enabling turns for segment ${segmentId}:`, error);
     }
   }
 
@@ -1646,7 +1942,7 @@
   function recreateSegmentIfNeeded(segmentId, targetRoadType, copyConnectedNameData) {
     const seg = wmeSDK.DataModel.Segments.getById({ segmentId });
     if (!seg) {
-      log(`[EZRoad] Segment ${segmentId} not found`);
+      log(`[${scriptName}] Segment ${segmentId} not found`);
       return segmentId;
     }
 
@@ -1667,16 +1963,16 @@
         const oldPrimaryStreetId = seg.primaryStreetId;
         const oldAltStreetIds = Array.isArray(seg.alternateStreetIds) ? seg.alternateStreetIds : [];
         
-        log(`[EZRoad] Deleting segment ${segmentId} for road type conversion`);
+        log(`[${scriptName}] Deleting segment ${segmentId} for road type conversion`);
         
         // Delete old segment
         try {
           wmeSDK.DataModel.Segments.deleteSegment({ segmentId });
         } catch (ex) {
           const errorMsg = 'Segment could not be deleted. Please check for restrictions or junctions.';
-          log(`[EZRoad] Delete failed: ${ex.message}`);
+          log(`[${scriptName}] Delete failed: ${ex.message}`);
           if (WazeToastr?.Alerts) {
-            WazeToastr.Alerts.error('EZRoad Mod Beta', errorMsg);
+            WazeToastr.Alerts.error(scriptName, errorMsg);
           } else {
             alert(errorMsg);
           }
@@ -1684,13 +1980,13 @@
         }
 
         // Create new segment
-        log(`[EZRoad] Creating new segment with road type ${targetRoadType}`);
+        log(`[${scriptName}] Creating new segment with road type ${targetRoadType}`);
         const newSegmentId = wmeSDK.DataModel.Segments.addSegment({ geometry, roadType: targetRoadType });
         
         if (!newSegmentId) {
-          log(`[EZRoad] Failed to create new segment`);
+          log(`[${scriptName}] Failed to create new segment`);
           if (WazeToastr?.Alerts) {
-            WazeToastr.Alerts.error('EZRoad Mod Beta', 'Failed to create new segment');
+            WazeToastr.Alerts.error(scriptName, 'Failed to create new segment');
           }
           return null;
         }
@@ -1718,7 +2014,7 @@
         }
 
         // Restore address with valid primaryStreetId
-        log(`[EZRoad] Restoring address for new segment ${newSegmentId}`);
+        log(`[${scriptName}] Restoring address for new segment ${newSegmentId}`);
         wmeSDK.DataModel.Segments.updateAddress({
           segmentId: newSegmentId,
           primaryStreetId: validPrimaryStreetId,
@@ -1727,7 +2023,7 @@
 
         // If we have connected segment name data to copy, apply it now
         if (copyConnectedNameData && copyConnectedNameData.primaryStreetId) {
-          log(`[EZRoad] Applying connected segment name data`);
+          log(`[${scriptName}] Applying connected segment name data`);
           wmeSDK.DataModel.Segments.updateAddress({
             segmentId: newSegmentId,
             primaryStreetId: copyConnectedNameData.primaryStreetId,
@@ -1742,32 +2038,32 @@
         if (currentIsPed && !targetIsPed) {
           // Use setTimeout to ensure segment is fully created before enabling turns
           setTimeout(() => {
-            log(`[EZRoad] Enabling turns after conversion from pedestrian to routable type`);
+            log(`[${scriptName}] Enabling turns after conversion from pedestrian to routable type`);
             enableAllTurnsForSegment(newSegmentId);
           }, 300);
         }
 
-        log(`[EZRoad] Successfully recreated segment: ${segmentId} -> ${newSegmentId}`);
+        log(`[${scriptName}] Successfully recreated segment: ${segmentId} -> ${newSegmentId}`);
         
         // Show success message
         const successMsg = currentIsPed 
           ? 'Segment successfully converted from Pedestrian type to regular street type!'
           : 'Segment successfully converted to Pedestrian type!';
         if (WazeToastr?.Alerts) {
-          WazeToastr.Alerts.success('EZRoad Mod Beta', successMsg, false, false, 3000);
+          WazeToastr.Alerts.success(scriptName, successMsg, false, false, 3000);
         } else {
-          alert(`EZRoad Mod Beta: ${successMsg}`);
+          alert(`${scriptName}: ${successMsg}`);
         }
         
         return newSegmentId;
         
       } catch (error) {
-        log(`[EZRoad] Error during segment recreation: ${error.message}`);
-        console.error('[EZRoad] Segment recreation error:', error);
+        log(`[${scriptName}] Error during segment recreation: ${error.message}`);
+        console.error(`[${scriptName}] Segment recreation error:`, error);
         if (WazeToastr?.Alerts) {
-          WazeToastr.Alerts.error('EZRoad Mod Beta', `Error recreating segment: ${error.message}`);
+          WazeToastr.Alerts.error(scriptName, `Error recreating segment: ${error.message}`);
         } else {
-          alert(`Error recreating segment: ${error.message}`);
+          alert(`${scriptName}: Error recreating segment: ${error.message}`);
         }
         return null;
       }
@@ -1776,19 +2072,19 @@
       // Show confirmation dialog
       if (WazeToastr?.Alerts?.confirm) {
         WazeToastr.Alerts.confirm(
-          'EZRoad Mod Beta',
+          scriptName,
           swapMsg,
           performRecreation, // OK callback - perform the recreation
           () => {
             // User cancelled
-            log(`[EZRoad] Segment recreation cancelled by user`);
+            log(`[${scriptName}] Segment recreation cancelled by user`);
           },
           'Continue',
           'Cancel'
         );
         return undefined; // Return undefined to indicate async dialog is pending
       } else if (!window.confirm(swapMsg)) {
-        log(`[EZRoad] Segment recreation cancelled by user`);
+        log(`[${scriptName}] Segment recreation cancelled by user`);
         return null; // Cancel operation
       }
       
@@ -1816,11 +2112,11 @@
         }
       }
     } catch (e) {
-      log(`Error validating segments: ${e}`);
+      log(`[${scriptName}] Error validating segments: ${e}`);
       return;
     }
 
-    log('Updating RoadType');
+    log(`[${scriptName}] Updating RoadType`);
     const options = getOptions();
     let alertMessageParts = [];
     let updatedRoadType = false;
@@ -1875,7 +2171,7 @@
                       direction: getDirectionFromSegment(connectedSeg),
                     });
                   } catch (updateError) {
-                    log('updateSegment error (will retry with individual properties): ' + updateError);
+                    log(`[${scriptName}] updateSegment error (will retry with individual properties): ` + updateError);
                     // Fallback: try updating properties individually
                     const propsToTry = [
                       { name: 'fwdSpeedLimit', value: connectedSeg.fwdSpeedLimit },
@@ -1893,7 +2189,7 @@
                           wmeSDK.DataModel.Segments.updateSegment(updateObj);
                         }
                       } catch (e) {
-                        log(`Failed to update ${prop.name}: ` + e);
+                        log(`[${scriptName}] Failed to update ${prop.name}: ` + e);
                       }
                     }
                   }
@@ -1904,11 +2200,11 @@
                       alternateStreetIds: connectedSeg.alternateStreetIds || [],
                     });
                   } catch (addrError) {
-                    log('updateAddress error: ' + addrError);
+                    log(`[${scriptName}] updateAddress error: ` + addrError);
                   }
                   // Copy all flag attributes
                   copyFlagAttributes(connectedSeg.id, id);
-                  alertMessageParts.push(`Copied all attributes from connected segment.`);
+                  alertMessageParts.push(`[${scriptName}] Copied all attributes from connected segment.`);
                   found = true;
                   break;
                 }
@@ -1939,7 +2235,7 @@
                       direction: getDirectionFromSegment(connectedSeg),
                     });
                   } catch (updateError) {
-                    log('updateSegment error in fallback (will retry with individual properties): ' + updateError);
+                    log(`[${scriptName}] updateSegment error in fallback (will retry with individual properties): ` + updateError);
                     // Fallback: try updating properties individually
                     const propsToTry = [
                       { name: 'fwdSpeedLimit', value: connectedSeg.fwdSpeedLimit },
@@ -1957,7 +2253,7 @@
                           wmeSDK.DataModel.Segments.updateSegment(updateObj);
                         }
                       } catch (e) {
-                        log(`Failed to update ${prop.name}: ` + e);
+                        log(`[${scriptName}] Failed to update ${prop.name}: ` + e);
                       }
                     }
                   }
@@ -1968,18 +2264,18 @@
                       alternateStreetIds: connectedSeg.alternateStreetIds || [],
                     });
                   } catch (addrError) {
-                    log('updateAddress error in fallback: ' + addrError);
+                    log(`[${scriptName}] updateAddress error in fallback: ` + addrError);
                   }
                   // Copy all flag attributes
                   copyFlagAttributes(connectedSeg.id, id);
-                  alertMessageParts.push(`Copied all attributes from connected segment.`);
-                  log(`Copied all attributes from connected segment (fallback, no valid street name).`);
+                  alertMessageParts.push(`[${scriptName}] Copied all attributes from connected segment.`);
+                  log(`[${scriptName}] Copied all attributes from connected segment (fallback, no valid street name).`);
                 } else {
-                  alertMessageParts.push(`No connected segment found to copy attributes.`);
+                  alertMessageParts.push(`[${scriptName}] No connected segment found to copy attributes.`);
                 }
               }
             } catch (error) {
-              console.error('Error copying all attributes:', error);
+              console.error(`[${scriptName}] Error copying all attributes:`, error);
             }
           }, 100)
         );
@@ -1987,17 +2283,17 @@
       Promise.all(updatePromises).then(() => {
         if (alertMessageParts.length) {
           if (WazeToastr?.Alerts) {
-            WazeToastr.Alerts.info('EZRoads Mod', alertMessageParts.join('<br>'), false, false, 5000);
+            WazeToastr.Alerts.info(`${scriptName}`, alertMessageParts.join('<br>'), false, false, 5000);
           } else {
-            alert('EZRoads Mod: ' + alertMessageParts.join('\n'));
+            alert(`${scriptName} ` + alertMessageParts.join('\n'));
           }
         }
         // --- AUTOSAVE LOGIC HERE ---
         if (options.autosave) {
           setTimeout(() => {
-            log('Delayed Autosave starting...');
+            log(`[${scriptName}] Delayed Autosave starting...`);
             wmeSDK.Editing.save().then(() => {
-              log('Delayed Autosave completed.');
+              log(`[${scriptName}] Delayed Autosave completed.`);
             });
           }, 600);
         }
@@ -2008,12 +2304,12 @@
     // Apply motorbike restriction ONCE for all selected segments (before individual updates)
     let motorcycleRestrictionApplied = false;
     if (options.restrictExceptMotorbike) {
-      log('Applying motorbike restriction to all selected segments via UI automation...');
+      log(`[${scriptName}] Applying motorbike restriction to all selected segments via UI automation...`);
       applyMotorbikeOnlyRestriction(selection.ids[0]).then((result) => {
         if (result === true) {
           if (WazeToastr?.Alerts) {
             WazeToastr.Alerts.success(
-              'EZRoads Mod',
+              `${scriptName}`,
               `Motorbike-only restriction applied to ${selection.ids.length} segment(s) ✓`,
               false,
               false,
@@ -2023,7 +2319,7 @@
         } else if (result === 'not_supported') {
           if (WazeToastr?.Alerts) {
             WazeToastr.Alerts.warning(
-              'Motorbike Restriction - Automation Failed',
+              `${scriptName} Motorbike Restriction - Automation Failed`,
               `The UI automation could not complete. Please add manually:<br><br>` +
               `<b>Steps:</b><br>` +
               `1. Keep segment(s) selected<br>` +
@@ -2039,7 +2335,7 @@
           }
         }
       }).catch((error) => {
-        console.error('Error applying motorbike restriction:', error);
+        console.error(`[${scriptName}] Error applying motorbike restriction:`, error);
       });
       motorcycleRestrictionApplied = true;
     }
@@ -2096,9 +2392,9 @@
             const selectedRoad = roadTypes.find((rt) => rt.value === options.roadType);
             //alertMessageParts.push(`Road Type: <b>${selectedRoad.name}</b>`);
             //updatedRoadType = true;
-            log(`Segment ID: ${id}, Current Road Type: ${seg.roadType}, Target Road Type: ${options.roadType}, Target Road Name : ${selectedRoad.name}`); // Log current and target road type
+            log(`[${scriptName}] Segment ID: ${id}, Current Road Type: ${seg.roadType}, Target Road Type: ${options.roadType}, Target Road Name : ${selectedRoad.name}`); // Log current and target road type
             if (seg.roadType === options.roadType) {
-              log(`Segment ID: ${id} already has the target road type: ${options.roadType}. Skipping update.`);
+              log(`[${scriptName}] Segment ID: ${id} already has the target road type: ${options.roadType}. Skipping update.`);
               alertMessageParts.push(`Road Type: <b>${selectedRoad.name} exists. Skipping update.</b>`);
               updatedRoadType = true;
             } else {
@@ -2107,11 +2403,11 @@
                   segmentId: id,
                   roadType: options.roadType,
                 });
-                log('Road type updated successfully.');
+                log(`[${scriptName}] Road type updated successfully.`);
                 alertMessageParts.push(`Road Type: <b>${selectedRoad.name}</b>`);
                 updatedRoadType = true;
               } catch (error) {
-                console.error('Error updating road type:', error);
+                console.error(`[${scriptName}] Error updating road type:`, error);
               }
             }
           }
@@ -2137,7 +2433,7 @@
 
                 if (rank < toLock) toLock = rank;
 
-                log(toLock);
+                log(`[${scriptName}] Lock level to set: ${toLock}`);
 
                 try {
                   const seg = wmeSDK.DataModel.Segments.getById({
@@ -2153,7 +2449,7 @@
                   }
                   if (seg.lockRank === toLock || (lockSetting.lock === 'HRCS' && currentDisplayLockLevel === displayLockLevel)) {
                     // Compare lock levels
-                    log(`Segment ID: ${id} already has the target lock level: ${displayLockLevel}. Skipping update.`);
+                    log(`[${scriptName}] Segment ID: ${id} already has the target lock level: ${displayLockLevel}. Skipping update.`);
                     alertMessageParts.push(`Lock Level: <b>${displayLockLevel} exists. Skipping update.</b>`);
                     updatedLockLevel = true;
                   } else {
@@ -2165,7 +2461,7 @@
                     updatedLockLevel = true;
                   }
                 } catch (error) {
-                  console.error('Error updating segment lock rank:', error);
+                  console.error(`[${scriptName}] Error updating segment lock rank:`, error);
                 }
               }
             }
@@ -2791,9 +3087,9 @@
         const message = updatedFeatures.filter(Boolean).join(', ');
         if (message) {
           if (WazeToastr?.Alerts) {
-            WazeToastr.Alerts.info('EZRoads Mod', `Segment updated with: ${message}`, false, false, 3000);
+            WazeToastr.Alerts.info(`${scriptName}`, `Segment updated with: ${message}`, false, false, 3000);
           } else {
-            alert('EZRoads Mod: Segment updated (WazeToastr Alerts not available)');
+            alert(`${scriptName} Segment updated (WazeToastr Alerts not available)`);
           }
         }
       };
@@ -2801,9 +3097,9 @@
       // Autosave - DELAYED AUTOSAVE
       if (options.autosave) {
         setTimeout(() => {
-          log('Delayed Autosave starting...');
+          log(`[${scriptName}] Delayed Autosave starting...`);
           wmeSDK.Editing.save().then(() => {
-            log('Delayed Autosave completed.');
+            log(`[${scriptName}] Delayed Autosave completed.`);
             showAlert();
           });
         }, 600); // 1000ms (1 second) delay before autosave
@@ -2836,9 +3132,9 @@
           $('#ezroadsmod-presets-list').trigger('refresh-presets');
         }
         if (WazeToastr?.Alerts) {
-          WazeToastr.Alerts.success('EZRoads Mod', 'Lock Levels saved!', false, false, 1500);
+          WazeToastr.Alerts.success(`${scriptName}`, 'Lock Levels saved!', false, false, 1500);
         } else {
-          alert('EZRoads Mod: Lock Levels saved!');
+          alert(`${scriptName} Lock Levels saved!`);
         }
       }
     };
@@ -2861,9 +3157,9 @@
           $('#ezroadsmod-presets-list').trigger('refresh-presets');
         }
         if (WazeToastr?.Alerts) {
-          WazeToastr.Alerts.success('EZRoads Mod', 'Speed Values saved!', false, false, 1500);
+          WazeToastr.Alerts.success(`${scriptName}`, 'Speed Values saved!', false, false, 1500);
         } else {
-          alert('EZRoads Mod: Speed Values saved!');
+          alert(`${scriptName} Speed Values saved!`);
         }
       }
     };
@@ -3222,13 +3518,13 @@
         navigator.clipboard.writeText(exportStr).then(
           () => {
             if (WazeToastr?.Alerts) {
-              WazeToastr.Alerts.success('EZRoads Mod', 'Lock/Speed config with all presets copied to clipboard!', false, false, 2000);
+              WazeToastr.Alerts.success(`${scriptName}`, 'Lock/Speed config with all presets copied to clipboard!', false, false, 2000);
             } else {
-              alert('Lock/Speed config with all presets copied to clipboard!');
+              alert(`${scriptName} Lock/Speed config with all presets copied to clipboard!`);
             }
           },
           () => {
-            alert('Failed to copy config to clipboard.');
+            alert(`${scriptName} Failed to copy config to clipboard.`);
           }
         );
       });
@@ -3237,14 +3533,14 @@
       $(document).on('click', '#ezroadsmod-import-btn', function () {
         const importStr = $('#ezroadsmod-import-input').val();
         if (!importStr) {
-          alert('Please paste a config string to import.');
+          alert(`[${scriptName}] Please paste a config string to import.`);
           return;
         }
         let importData;
         try {
           importData = JSON.parse(importStr);
         } catch (e) {
-          alert('Invalid config string!');
+          alert(`[${scriptName}] Invalid config string!`);
           return;
         }
         if (importData.locks && importData.speeds) {
@@ -3277,12 +3573,12 @@
           if (WazeToastr?.Alerts) {
             const presetsCount = importData.customPresets ? Object.keys(importData.customPresets).length : 0;
             const message = presetsCount > 0 ? `Config imported with ${presetsCount} preset(s)!` : 'Config imported and applied!';
-            WazeToastr.Alerts.success('EZRoads Mod', message, false, false, 2000);
+            WazeToastr.Alerts.success(`${scriptName}`, message, false, false, 2000);
           } else {
-            alert('Config imported and applied!');
+            alert(`${scriptName} ${message}`);
           }
         } else {
-          alert('Config missing lock/speed data!');
+          alert(`${scriptName} Config missing lock/speed data!`);
         }
       });
 
@@ -3364,9 +3660,9 @@
           $('#ezroadsmod-preset-name').val('');
           refreshPresetsList();
           if (WazeToastr?.Alerts) {
-            WazeToastr.Alerts.success('EZRoads Mod', `Preset "${presetName}" saved!`, false, false, 2000);
+            WazeToastr.Alerts.success(`${scriptName}`, `Preset "${presetName}" saved!`, false, false, 2000);
           } else {
-            alert(`Preset "${presetName}" saved!`);
+            alert(`${scriptName} Preset "${presetName}" saved!`);
           }
         }
       });
@@ -3398,12 +3694,12 @@
           refreshPresetsList();
 
           if (WazeToastr?.Alerts) {
-            WazeToastr.Alerts.success('EZRoads Mod', `Preset "${presetName}" loaded!`, false, false, 2000);
+            WazeToastr.Alerts.success(`${scriptName}`, `Preset "${presetName}" loaded!`, false, false, 2000);
           } else {
-            alert(`Preset "${presetName}" loaded!`);
+            alert(`${scriptName} Preset "${presetName}" loaded!`);
           }
         } else {
-          alert(`Failed to load preset "${presetName}".`);
+          alert(`${scriptName} Failed to load preset "${presetName}".`);
         }
       });
 
@@ -3417,12 +3713,12 @@
         if (deleteCustomPreset(presetName)) {
           refreshPresetsList();
           if (WazeToastr?.Alerts) {
-            WazeToastr.Alerts.success('EZRoads Mod', `Preset "${presetName}" deleted!`, false, false, 2000);
+            WazeToastr.Alerts.success(`${scriptName}`, `Preset "${presetName}" deleted!`, false, false, 2000);
           } else {
-            alert(`Preset "${presetName}" deleted!`);
+            alert(`${scriptName} Preset "${presetName}" deleted!`);
           }
         } else {
-          alert(`Failed to delete preset "${presetName}".`);
+          alert(`${scriptName} Failed to delete preset "${presetName}".`);
         }
       });
     });
