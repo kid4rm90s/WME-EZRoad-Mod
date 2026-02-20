@@ -31,6 +31,7 @@
   const updateMessage = `<strong>Version 2.6.8.3 - 2026-02-20:</strong><br>
     - Added shortcuts support for toggling additional options.\n This is temporary fix using legacy method for saving keys between sessions.<br>
     - Migrated unpaved status handling to new SDK methods.<br>
+    - Migrated copying of flag attributes to new SDK methods.<br>
     - Fixed found bug fixes.<br>
 <br>`;
   const scriptName = GM_info.script.name;
@@ -203,71 +204,25 @@
       return;
     }
 
-    const segPanel = openPanel;
-    if (!segPanel) {
-      log('Segment panel not available for flag attribute updates');
-      return;
-    }
-
-    // Flag attribute mappings: { flagName: { selectorType, selector, checkedValue } }
-    const flagMappings = {
-      unpaved: { selectorType: 'checkbox', name: 'unpaved' },
-    };
-
-    for (let flagName in flagMappings) {
-      const mapping = flagMappings[flagName];
-      const fromValue = fromSeg.flagAttributes[flagName] === true;
-      const toValue = toSeg.flagAttributes && toSeg.flagAttributes[flagName] === true;
+    try {
+      // Use WME SDK updateSegment to copy unpaved flag attribute
+      const fromUnpavedValue = fromSeg.flagAttributes.unpaved === true;
+      const toUnpavedValue = toSeg.flagAttributes && toSeg.flagAttributes.unpaved === true;
 
       // Only update if values differ
-      if (fromValue === toValue) {
-        continue;
-      }
-
-      try {
-        // Try to find and click the checkbox
-        let checkboxFound = false;
-
-        // Try method 1: wz-checkable-chip with icon
-        const iconClass = flagName === 'unpaved' ? '.w-icon-unpaved-fill' : `.w-icon-${flagName.toLowerCase()}-fill`;
-        const unpavedIcon = segPanel.querySelector(iconClass);
-        if (unpavedIcon) {
-          const chip = unpavedIcon.closest('wz-checkable-chip');
-          if (chip) {
-            chip.click();
-            checkboxFound = true;
-            log(`Updated flag attribute ${flagName} via chip`);
-            continue;
+      if (fromUnpavedValue !== toUnpavedValue) {
+        wmeSDK.DataModel.Segments.updateSegment({
+          segmentId: toSegmentId,
+          flagAttributes: {
+            unpaved: fromUnpavedValue
           }
-        }
-
-        // Try method 2: wz-checkbox with name attribute
-        const wzCheckbox = segPanel.querySelector(`wz-checkbox[name="${mapping.name}"]`);
-        if (wzCheckbox) {
-          const hiddenInput = wzCheckbox.querySelector(`input[type="checkbox"][name="${mapping.name}"]`);
-          if (hiddenInput && hiddenInput.checked !== fromValue) {
-            hiddenInput.click();
-            checkboxFound = true;
-            log(`Updated flag attribute ${flagName} via wz-checkbox`);
-            continue;
-          }
-        }
-
-        // Try method 3: regular checkbox
-        const regularCheckbox = segPanel.querySelector(`input[type="checkbox"][name="${mapping.name}"]`);
-        if (regularCheckbox && regularCheckbox.checked !== fromValue) {
-          regularCheckbox.click();
-          checkboxFound = true;
-          log(`Updated flag attribute ${flagName} via regular checkbox`);
-          continue;
-        }
-
-        if (!checkboxFound) {
-          log(`Could not find UI element for flag attribute ${flagName}`);
-        }
-      } catch (e) {
-        log(`Error updating flag attribute ${flagName}: ${e}`);
+        });
+        log(`Copied flag attribute unpaved=${fromUnpavedValue} via SDK from segment ${fromSegmentId} to ${toSegmentId}`);
+      } else {
+        log(`Flag attribute unpaved already matches (${fromUnpavedValue}) between segments`);
       }
+    } catch (e) {
+      log(`Error copying flag attributes via SDK: ${e}`);
     }
   }
 
@@ -3819,10 +3774,11 @@ if (typeof require !== 'undefined') {
   /*
 Changelog
 
-Version
 Version 2.6.8.3 - 2026-02-20:</strong><br>
     - Added shortcuts support for toggling additional options.\n This is temporary fix using legacy method for saving keys between sessions.<br>
     - Migrated unpaved status handling to new SDK methods.<br>
+    - Migrated copying of flag attributes to new SDK methods.<br>
+    - Fixed found bug fixes.<br>
 Version 2.6.8.1 - 2026-02-18
  - Fixed an issue with copying segment name from connected segment. It will prioritize copying from the connected segment Side A that has a valid city name when "Set city as none" is unchecked.
 Version 2.6.7.9 - 2024-06-09
