@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.8.3
+// @version      2.6.8.4
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -28,10 +28,11 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.8.3 - 2026-02-20:</strong><br>
+  const updateMessage = `<strong>Version 2.6.8.4 - 2026-02-20:</strong><br>
     - Added shortcuts support for toggling additional options.\n This is temporary fix using legacy method for saving keys between sessions.<br>
     - Migrated unpaved status handling to new SDK methods.<br>
     - Migrated copying of flag attributes to new SDK methods.<br>
+    - Updated logic for copying connected segment name and city to use new SDK methods and added more robust handling for finding connected segments with valid city.<br>
     - Fixed found bug fixes.<br>
 <br>`;
   const scriptName = GM_info.script.name;
@@ -2817,6 +2818,31 @@
       ); // 500ms delay for unpaved/paved toggle
 
       // 3a. Copy segment name from connected segment if enabled
+      // =========================================================================
+      // TIER LOGIC for intelligent name copying:
+      //
+      // TIER 1 - Primary names MATCH:
+      //   - Preferred tier for merging alternate names
+      //   - Keeps selected segment's primary name unchanged
+      //   - Intelligently adds ONLY missing alternate names from connected segment
+      //   - Avoids duplicating names that already exist
+      //   - Prioritizes A-side segments first, then B-side if no A-side matches
+      //
+      // TIER 2 - Primary names DIFFER:
+      //   - Used when no TIER 1 (matching) segment is found
+      //   - Replaces primary name with connected segment's primary name
+      //   - Copies all alternate names from connected segment
+      //   - Prioritizes A-side segments first, then B-side if no A-side found
+      //
+      // TIER 3 - Selected segment has NO names:
+      //   - Used when selected segment has neither primary nor alternate names
+      //   - Copies everything (primary + all alternates) from connected segment
+      //   - Prioritizes A-side segments first, then B-side if no A-side found
+      //
+      // FALLBACK - No valid connected segment:
+      //   - If no connected segment has any names, skip copying
+      //   - No changes made to selected segment
+      // =========================================================================
       updatePromises.push(
         delayedUpdate(() => {
           if (options.copySegmentName) {
@@ -2837,95 +2863,352 @@
                 segsToTry = bSideSegs.map((s) => s.id);
               }
               
+              // Get selected segment's current names
+              const selectedSegStreetId = seg.primaryStreetId;
+              const selectedSegAltStreetIds = seg.alternateStreetIds || [];
+              let selectedSegStreetName = '';
+              let selectedSegAltNames = [];
+              
+              if (selectedSegStreetId) {
+                try {
+                  const selectedStreet = wmeSDK.DataModel.Streets.getById({ streetId: selectedSegStreetId });
+                  if (selectedStreet && selectedStreet.name) {
+                    selectedSegStreetName = selectedStreet.name;
+                  }
+                } catch (e) {
+                  log(`Error getting selected segment's primary street: ${e}`);
+                }
+              }
+              
+              selectedSegAltStreetIds.forEach((altId) => {
+                try {
+                  const altStreet = wmeSDK.DataModel.Streets.getById({ streetId: altId });
+                  if (altStreet && altStreet.name) {
+                    selectedSegAltNames.push(altStreet.name);
+                  }
+                } catch (e) {
+                  log(`Error getting selected segment's alternate street: ${e}`);
+                }
+              });
+              
               let found = false;
+              log(`[copySegmentName] Starting with ${segsToTry.length} connected segments. Selected primary="${selectedSegStreetName}"`);
+              
+              // First pass: Look for TIER 1 matches (primary names match)
+              // Collect all TIER 1 matches, then prioritize those with alt names
+              let tier1Matches = [];
               for (let connectedSegId of segsToTry) {
                 const connectedSeg = wmeSDK.DataModel.Segments.getById({ segmentId: connectedSegId });
                 if (!connectedSeg) continue;
-                const streetId = connectedSeg.primaryStreetId;
-                const altStreetIds = connectedSeg.alternateStreetIds || [];
-                let street = null;
+                
+                const connectedStreetId = connectedSeg.primaryStreetId;
+                let connectedStreetName = '';
+                
                 try {
-                  street = wmeSDK.DataModel.Streets.getById({ streetId });
-                  // Ensure street is fully loaded
-                  if (street && street.name === undefined && street.cityId === undefined) {
-                    log(`Street ${streetId} not fully loaded, skipping`);
+                  const connectedStreet = wmeSDK.DataModel.Streets.getById({ streetId: connectedStreetId });
+                  if (connectedStreet && connectedStreet.name === undefined && connectedStreet.cityId === undefined) {
+                    log(`[copySegmentName] Segment ${connectedSegId}: Street not fully loaded, skipping`);
                     continue;
                   }
+                  if (connectedStreet && connectedStreet.name) {
+                    connectedStreetName = connectedStreet.name;
+                  }
                 } catch (e) {
-                  log(`Error getting street ${streetId}: ${e}`);
+                  log(`[copySegmentName] Segment ${connectedSegId}: Error getting street: ${e}`);
                   continue;
                 }
-                // Get alternate street names
-                let altNames = [];
-                altStreetIds.forEach((altId) => {
+                
+                // Check for TIER 1: Primary names match
+                if (selectedSegStreetName !== '' && selectedSegStreetName === connectedStreetName) {
+                  const altCount = (connectedSeg.alternateStreetIds || []).length;
+                  log(`[copySegmentName] Found TIER 1 match at segment ${connectedSegId}: "${connectedStreetName}" (with ${altCount} alt IDs)`);
+                  tier1Matches.push({ segId: connectedSegId, seg: connectedSeg, altCount });
+                }
+              }
+              
+              // Prioritize TIER 1 match with alt names, fall back to any TIER 1 match
+              let tier1Match = null;
+              if (tier1Matches.length > 0) {
+                // Sort by altCount descending, pick first (highest alt count)
+                tier1Matches.sort((a, b) => b.altCount - a.altCount);
+                tier1Match = tier1Matches[0];
+                log(`[copySegmentName] Selected TIER 1 match: segment ${tier1Match.segId} with ${tier1Match.altCount} alts`);
+              }
+              
+              // If TIER 1 match found, use it
+              if (tier1Match) {
+                const connectedSeg = tier1Match.seg;
+                const connectedStreetId = connectedSeg.primaryStreetId;
+                const connectedAltStreetIds = connectedSeg.alternateStreetIds || [];
+                let connectedStreetName = '';
+                let connectedAltNames = [];
+                
+                try {
+                  const connectedStreet = wmeSDK.DataModel.Streets.getById({ streetId: connectedStreetId });
+                  if (connectedStreet && connectedStreet.name) {
+                    connectedStreetName = connectedStreet.name;
+                  }
+                } catch (e) {
+                  log(`[copySegmentName] Error getting tier1 street: ${e}`);
+                }
+                
+                // Get all alternate names
+                log(`[copySegmentName] Connected segment has ${connectedAltStreetIds.length} alt IDs: ${connectedAltStreetIds.join(', ')}`);
+                connectedAltStreetIds.forEach((altId) => {
                   try {
                     const altStreet = wmeSDK.DataModel.Streets.getById({ streetId: altId });
-                    if (altStreet && altStreet.name) altNames.push(altStreet.name);
+                    if (altStreet && altStreet.name) {
+                      connectedAltNames.push({ name: altStreet.name, id: altId });
+                      log(`[copySegmentName] Alt ID ${altId}: "${altStreet.name}"`);
+                    } else {
+                      log(`[copySegmentName] Alt ID ${altId}: Street not found or has no name`);
+                    }
                   } catch (e) {
-                    log(`Error getting alternate street ${altId}: ${e}`);
+                    log(`[copySegmentName] Error loading alt ID ${altId}: ${e}`);
                   }
                 });
-                // If any connected segment has a name or alias, use it
-                if (street && (street.name || street.englishName || street.signText || altNames.length > 0)) {
-                  if (options.setStreetCity && street) {
-                    const emptyCity = wmeSDK.DataModel.Cities.getAll().find((city) => city.isEmpty) || wmeSDK.DataModel.Cities.addCity({ cityName: '' });
-                    // Try to find or create a street with the same name but in the empty city
-                    let noneStreet = wmeSDK.DataModel.Streets.getStreet({
+                log(`[copySegmentName] Total alt names found: ${connectedAltNames.length}`);
+                log(`[copySegmentName] Selected segment currently has ${selectedSegAltStreetIds.length} alt IDs: ${selectedSegAltStreetIds.join(', ')}`);
+                log(`[copySegmentName] Selected segment alt names: ${selectedSegAltNames.join(', ')}`);
+                
+                // TIER 1: Primary names match - intelligently merge alt names
+                log(`TIER 1: Primary names match ("${selectedSegStreetName}"). Merging alts.`);
+                const newAltIds = [];
+                const addedAltNames = [];
+                
+                // Keep existing alt street IDs
+                newAltIds.push(...selectedSegAltStreetIds);
+                
+                // Add missing alt IDs from connected
+                connectedAltStreetIds.forEach((connAltId) => {
+                  const isAlreadyPresent = selectedSegAltStreetIds.includes(connAltId) || 
+                                         selectedSegAltNames.some(altName => {
+                                           const found = connectedAltNames.find(ca => ca.id === connAltId);
+                                           return found && found.name === altName;
+                                         });
+                  
+                  if (!isAlreadyPresent) {
+                    newAltIds.push(connAltId);
+                    const altName = connectedAltNames.find(ca => ca.id === connAltId);
+                    if (altName) addedAltNames.push(altName.name);
+                    log(`[copySegmentName] Adding missing alt: ID ${connAltId} = "${altName ? altName.name : 'NOT FOUND'}"`);
+                  } else {
+                    log(`[copySegmentName] Alt ID ${connAltId} already present, skipping`);
+                  }
+                });
+                log(`[copySegmentName] Final newAltIds: ${newAltIds.join(', ')}, addedAltNames: ${addedAltNames.join(', ')}`);
+                
+                let newPrimaryStreetId = selectedSegStreetId;
+                let newAltStreetIds = newAltIds;
+                const updateMessage = addedAltNames.length > 0 
+                  ? `Merged: <b>${selectedSegStreetName}</b> (Added alts: ${addedAltNames.join(', ')})`
+                  : `Already has: <b>${selectedSegStreetName}</b> (No new alts to add)`;
+                
+                // Apply the update
+                if (options.setStreetCity) {
+                  const emptyCity = wmeSDK.DataModel.Cities.getAll().find((city) => city.isEmpty) || wmeSDK.DataModel.Cities.addCity({ cityName: '' });
+                  let primaryStreetInEmptyCity = wmeSDK.DataModel.Streets.getStreet({
+                    cityId: emptyCity.id,
+                    streetName: selectedSegStreetName || '',
+                  });
+                  if (!primaryStreetInEmptyCity) {
+                    primaryStreetInEmptyCity = wmeSDK.DataModel.Streets.addStreet({
+                      streetName: selectedSegStreetName || '',
                       cityId: emptyCity.id,
-                      streetName: street.name || '',
                     });
-                    if (!noneStreet) {
-                      noneStreet = wmeSDK.DataModel.Streets.addStreet({
-                        streetName: street.name || '',
+                  }
+                  newPrimaryStreetId = primaryStreetInEmptyCity.id;
+                  
+                  let newAltStreetIdsInEmptyCity = [];
+                  newAltStreetIds.forEach((altId) => {
+                    const altStreet = wmeSDK.DataModel.Streets.getById({ streetId: altId });
+                    if (altStreet && altStreet.name) {
+                      let altInEmptyCity = wmeSDK.DataModel.Streets.getStreet({
+                        cityId: emptyCity.id,
+                        streetName: altStreet.name,
+                      });
+                      if (!altInEmptyCity) {
+                        altInEmptyCity = wmeSDK.DataModel.Streets.addStreet({
+                          streetName: altStreet.name,
+                          cityId: emptyCity.id,
+                        });
+                      }
+                      newAltStreetIdsInEmptyCity.push(altInEmptyCity.id);
+                    }
+                  });
+                  
+                  log(`[copySegmentName] Calling updateAddress (setStreetCity=true) with primaryStreetId=${newPrimaryStreetId}, alternateStreetIds=[${newAltStreetIdsInEmptyCity.join(', ')}]`);
+                  wmeSDK.DataModel.Segments.updateAddress({
+                    segmentId: id,
+                    primaryStreetId: newPrimaryStreetId,
+                    alternateStreetIds: newAltStreetIdsInEmptyCity,
+                  });
+                  pushCityNameAlert(emptyCity.id, alertMessageParts);
+                  updatedCityName = true;
+                } else {
+                  log(`[copySegmentName] Calling updateAddress with primaryStreetId=${newPrimaryStreetId}, alternateStreetIds=[${newAltStreetIds.join(', ')}]`);
+                  wmeSDK.DataModel.Segments.updateAddress({
+                    segmentId: id,
+                    primaryStreetId: newPrimaryStreetId,
+                    alternateStreetIds: newAltStreetIds,
+                  });
+                  if (connectedSeg.primaryStreetId) {
+                    const connectedPrimaryStreet = wmeSDK.DataModel.Streets.getById({ streetId: connectedSeg.primaryStreetId });
+                    if (connectedPrimaryStreet) {
+                      pushCityNameAlert(connectedPrimaryStreet.cityId, alertMessageParts);
+                      updatedCityName = true;
+                    }
+                  }
+                }
+                
+                alertMessageParts.push(`Copied Name: ${updateMessage}`);
+                updatedSegmentName = true;
+                found = true;
+              } else {
+                // Second pass: Look for TIER 3 (selected has no names) or TIER 2 (names differ)
+                for (let connectedSegId of segsToTry) {
+                  const connectedSeg = wmeSDK.DataModel.Segments.getById({ segmentId: connectedSegId });
+                  if (!connectedSeg) continue;
+                  
+                  const connectedStreetId = connectedSeg.primaryStreetId;
+                  const connectedAltStreetIds = connectedSeg.alternateStreetIds || [];
+                  let connectedStreetName = '';
+                  let connectedAltNames = [];
+                  
+                  // Get connected segment's primary street name
+                  let connectedStreet = null;
+                  try {
+                    connectedStreet = wmeSDK.DataModel.Streets.getById({ streetId: connectedStreetId });
+                    if (connectedStreet && connectedStreet.name === undefined && connectedStreet.cityId === undefined) {
+                      log(`[copySegmentName] Segment ${connectedSegId}: Street not fully loaded, skipping`);
+                      continue;
+                    }
+                    if (connectedStreet && connectedStreet.name) {
+                      connectedStreetName = connectedStreet.name;
+                    }
+                  } catch (e) {
+                    log(`[copySegmentName] Segment ${connectedSegId}: Error getting street: ${e}`);
+                    continue;
+                  }
+                  
+                  // Get connected segment's alternate street names
+                  log(`[copySegmentName] Connected segment ${connectedSegId} has ${connectedAltStreetIds.length} alt street IDs: ${connectedAltStreetIds.join(', ')}`);
+                  connectedAltStreetIds.forEach((altId) => {
+                    try {
+                      const altStreet = wmeSDK.DataModel.Streets.getById({ streetId: altId });
+                      if (altStreet && altStreet.name) {
+                        connectedAltNames.push({ name: altStreet.name, id: altId });
+                        log(`[copySegmentName] Alt ID ${altId}: "${altStreet.name}"`);
+                      } else {
+                        log(`[copySegmentName] Alt ID ${altId}: Street not found or has no name yet`);
+                      }
+                    } catch (e) {
+                      log(`[copySegmentName] Alt ID ${altId}: Error loading - ${e}`);
+                    }
+                  });
+                  log(`[copySegmentName] Successfully loaded names for ${connectedAltNames.length}/${connectedAltStreetIds.length} alt IDs`);
+                  
+                  // Skip if connected segment has no names AND no alt street IDs
+                  if (!connectedStreetName && connectedAltStreetIds.length === 0) {
+                    log(`[copySegmentName] Segment ${connectedSegId}: No primary name and no alt IDs, skipping`);
+                    continue;
+                  }
+                  
+                  let newPrimaryStreetId = selectedSegStreetId;
+                  let newAltStreetIds = [...selectedSegAltStreetIds];
+                  let updateMessage = '';
+                  
+                  if (selectedSegStreetName === '' && selectedSegAltNames.length === 0) {
+                    // TIER 3: Selected segment has NO names - copy everything from connected
+                    log(`TIER 3: Selected has no names. Copying from segment ${connectedSegId}: "${connectedStreetName}" with ${connectedAltStreetIds.length} alt IDs`);
+                    newPrimaryStreetId = connectedStreetId;
+                    newAltStreetIds = connectedAltStreetIds;
+                    const altSummary = connectedAltNames.length > 0 
+                      ? `(Alts: ${connectedAltNames.map(a => a.name).join(', ')})`
+                      : connectedAltStreetIds.length > 0 
+                      ? `(${connectedAltStreetIds.length} alt IDs: ${connectedAltStreetIds.join(', ')})`
+                      : '';
+                    updateMessage = `Copied: <b>${connectedStreetName}</b> ${altSummary}`;
+                  } else {
+                    // TIER 2: Primary names differ - replace and copy all alts
+                    log(`TIER 2: Primary names differ. Selected="${selectedSegStreetName}", Connected="${connectedStreetName}". Using connected with ${connectedAltStreetIds.length} alt IDs`);
+                    newPrimaryStreetId = connectedStreetId;
+                    newAltStreetIds = connectedAltStreetIds;
+                    const altSummary = connectedAltNames.length > 0 
+                      ? `(Alts: ${connectedAltNames.map(a => a.name).join(', ')})`
+                      : connectedAltStreetIds.length > 0 
+                      ? `(${connectedAltStreetIds.length} alt IDs: ${connectedAltStreetIds.join(', ')})`
+                      : '';
+                    updateMessage = `Replaced: <b>${connectedStreetName}</b> ${altSummary}`;
+                  }
+                  
+                  // Apply the address update
+                  if (options.setStreetCity) {
+                    const emptyCity = wmeSDK.DataModel.Cities.getAll().find((city) => city.isEmpty) || wmeSDK.DataModel.Cities.addCity({ cityName: '' });
+                    
+                    // Create/find street for primary in empty city
+                    let primaryStreetInEmptyCity = wmeSDK.DataModel.Streets.getStreet({
+                      cityId: emptyCity.id,
+                      streetName: connectedStreetName || '',
+                    });
+                    if (!primaryStreetInEmptyCity) {
+                      primaryStreetInEmptyCity = wmeSDK.DataModel.Streets.addStreet({
+                        streetName: connectedStreetName || '',
                         cityId: emptyCity.id,
                       });
                     }
-                    // For alternate streets, also convert them to the empty city
-                    let newAltStreetIds = [];
-                    altStreetIds.forEach((altId) => {
+                    newPrimaryStreetId = primaryStreetInEmptyCity.id;
+                    
+                    // Create/find streets for alts in empty city
+                    let newAltStreetIdsInEmptyCity = [];
+                    newAltStreetIds.forEach((altId) => {
                       const altStreet = wmeSDK.DataModel.Streets.getById({ streetId: altId });
                       if (altStreet && altStreet.name) {
                         let altInEmptyCity = wmeSDK.DataModel.Streets.getStreet({
                           cityId: emptyCity.id,
-                          streetName: altStreet.name || '',
+                          streetName: altStreet.name,
                         });
                         if (!altInEmptyCity) {
                           altInEmptyCity = wmeSDK.DataModel.Streets.addStreet({
-                            streetName: altStreet.name || '',
+                            streetName: altStreet.name,
                             cityId: emptyCity.id,
                           });
                         }
-                        newAltStreetIds.push(altInEmptyCity.id);
+                        newAltStreetIdsInEmptyCity.push(altInEmptyCity.id);
                       }
                     });
+                    
                     wmeSDK.DataModel.Segments.updateAddress({
                       segmentId: id,
-                      primaryStreetId: noneStreet.id,
-                      alternateStreetIds: newAltStreetIds,
+                      primaryStreetId: newPrimaryStreetId,
+                      alternateStreetIds: newAltStreetIdsInEmptyCity,
                     });
-                    let aliasMsg = altNames.length ? ` (Alternatives: ${altNames.join(', ')})` : '';
-                    alertMessageParts.push(`Copied Name: <b>${street.name || ''}</b>${aliasMsg}`);
-                    updatedSegmentName = true;
                     pushCityNameAlert(emptyCity.id, alertMessageParts);
                     updatedCityName = true;
                   } else {
                     wmeSDK.DataModel.Segments.updateAddress({
                       segmentId: id,
-                      primaryStreetId: streetId,
-                      alternateStreetIds: altStreetIds,
+                      primaryStreetId: newPrimaryStreetId,
+                      alternateStreetIds: newAltStreetIds,
                     });
-                    let aliasMsg = altNames.length ? ` (Alternatives: ${altNames.join(', ')})` : '';
-                    alertMessageParts.push(`Copied Name: <b>${street.name || ''}</b>${aliasMsg}`);
-                    updatedSegmentName = true;
-                    pushCityNameAlert(street.cityId, alertMessageParts);
-                    updatedCityName = true;
+                    if (connectedSeg.primaryStreetId) {
+                      const connectedPrimaryStreet = wmeSDK.DataModel.Streets.getById({ streetId: connectedSeg.primaryStreetId });
+                      if (connectedPrimaryStreet) {
+                        pushCityNameAlert(connectedPrimaryStreet.cityId, alertMessageParts);
+                        updatedCityName = true;
+                      }
+                    }
                   }
+                  
+                  alertMessageParts.push(`Copied Name: ${updateMessage}`);
+                  updatedSegmentName = true;
                   found = true;
                   break;
                 }
               }
+              
               if (!found) {
-                alertMessageParts.push(`Copied Name: <b>None (no connected segment found)</b>`);
+                alertMessageParts.push(`Copied Name: <b>None (no connected segment with valid name)</b>`);
                 updatedSegmentName = true;
               }
             } catch (error) {
@@ -3778,6 +4061,7 @@ Version 2.6.8.3 - 2026-02-20:</strong><br>
     - Added shortcuts support for toggling additional options.\n This is temporary fix using legacy method for saving keys between sessions.<br>
     - Migrated unpaved status handling to new SDK methods.<br>
     - Migrated copying of flag attributes to new SDK methods.<br>
+    - Updated logic for copying connected segment name and city to use new SDK methods and added more robust handling for finding connected segments with valid city.<br>
     - Fixed found bug fixes.<br>
 Version 2.6.8.1 - 2026-02-18
  - Fixed an issue with copying segment name from connected segment. It will prioritize copying from the connected segment Side A that has a valid city name when "Set city as none" is unchecked.
