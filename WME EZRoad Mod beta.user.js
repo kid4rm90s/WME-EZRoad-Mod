@@ -3065,7 +3065,11 @@
                 updatedSegmentName = true;
                 found = true;
               } else {
-                // Second pass: Look for TIER 3 (selected has no names) or TIER 2 (names differ)
+                // Second pass: Collect candidates for TIER 3 (selected has no names) or TIER 2 (names differ)
+                // Prioritize by alt count (similar to TIER 1), so segments with more alt names are preferred
+                let tier3Candidates = [];
+                let tier2Candidates = [];
+                
                 for (let connectedSegId of segsToTry) {
                   const connectedSeg = wmeSDK.DataModel.Segments.getById({ segmentId: connectedSegId });
                   if (!connectedSeg) continue;
@@ -3073,7 +3077,6 @@
                   const connectedStreetId = connectedSeg.primaryStreetId;
                   const connectedAltStreetIds = connectedSeg.alternateStreetIds || [];
                   let connectedStreetName = '';
-                  let connectedAltNames = [];
                   
                   // Get connected segment's primary street name
                   let connectedStreet = null;
@@ -3090,6 +3093,48 @@
                     log(`[copySegmentName] Segment ${connectedSegId}: Error getting street: ${e}`);
                     continue;
                   }
+                  
+                  // Skip if connected segment has no names AND no alt street IDs
+                  if (!connectedStreetName && connectedAltStreetIds.length === 0) {
+                    log(`[copySegmentName] Segment ${connectedSegId}: No primary name and no alt IDs, skipping`);
+                    continue;
+                  }
+                  
+                  const altCount = connectedAltStreetIds.length;
+                  
+                  // Classify as TIER 3 or TIER 2 candidate
+                  if (selectedSegStreetName === '' && selectedSegAltNames.length === 0) {
+                    // TIER 3: Selected has no names
+                    tier3Candidates.push({ segId: connectedSegId, seg: connectedSeg, altCount, streetName: connectedStreetName });
+                    log(`[copySegmentName] TIER 3 candidate: segment ${connectedSegId} with ${altCount} alts`);
+                  } else {
+                    // TIER 2: Names differ
+                    tier2Candidates.push({ segId: connectedSegId, seg: connectedSeg, altCount, streetName: connectedStreetName });
+                    log(`[copySegmentName] TIER 2 candidate: segment ${connectedSegId} with ${altCount} alts`);
+                  }
+                }
+                
+                // Prioritize by alt count
+                let selectedCandidate = null;
+                if (tier3Candidates.length > 0) {
+                  // TIER 3: Sort by alt count descending, pick the one with most alts
+                  tier3Candidates.sort((a, b) => b.altCount - a.altCount);
+                  selectedCandidate = tier3Candidates[0];
+                  log(`[copySegmentName] Selected TIER 3 candidate: segment ${selectedCandidate.segId} with ${selectedCandidate.altCount} alts`);
+                } else if (tier2Candidates.length > 0) {
+                  // TIER 2: Sort by alt count descending, pick the one with most alts
+                  tier2Candidates.sort((a, b) => b.altCount - a.altCount);
+                  selectedCandidate = tier2Candidates[0];
+                  log(`[copySegmentName] Selected TIER 2 candidate: segment ${selectedCandidate.segId} with ${selectedCandidate.altCount} alts`);
+                }
+                
+                // Process the selected candidate
+                if (selectedCandidate) {
+                  const connectedSeg = selectedCandidate.seg;
+                  const connectedSegId = selectedCandidate.segId;
+                  const connectedStreetId = connectedSeg.primaryStreetId;
+                  const connectedAltStreetIds = connectedSeg.alternateStreetIds || [];
+                  let connectedAltNames = [];
                   
                   // Get connected segment's alternate street names
                   log(`[copySegmentName] Connected segment ${connectedSegId} has ${connectedAltStreetIds.length} alt street IDs: ${connectedAltStreetIds.join(', ')}`);
@@ -3108,19 +3153,13 @@
                   });
                   log(`[copySegmentName] Successfully loaded names for ${connectedAltNames.length}/${connectedAltStreetIds.length} alt IDs`);
                   
-                  // Skip if connected segment has no names AND no alt street IDs
-                  if (!connectedStreetName && connectedAltStreetIds.length === 0) {
-                    log(`[copySegmentName] Segment ${connectedSegId}: No primary name and no alt IDs, skipping`);
-                    continue;
-                  }
-                  
                   let newPrimaryStreetId = selectedSegStreetId;
                   let newAltStreetIds = [...selectedSegAltStreetIds];
                   let updateMessage = '';
                   
                   if (selectedSegStreetName === '' && selectedSegAltNames.length === 0) {
                     // TIER 3: Selected segment has NO names - copy everything from connected
-                    log(`TIER 3: Selected has no names. Copying from segment ${connectedSegId}: "${connectedStreetName}" with ${connectedAltStreetIds.length} alt IDs`);
+                    log(`TIER 3: Selected has no names. Copying from segment ${connectedSegId}: "${selectedCandidate.streetName}" with ${connectedAltStreetIds.length} alt IDs`);
                     newPrimaryStreetId = connectedStreetId;
                     newAltStreetIds = connectedAltStreetIds;
                     const altSummary = connectedAltNames.length > 0 
@@ -3128,10 +3167,10 @@
                       : connectedAltStreetIds.length > 0 
                       ? `(${connectedAltStreetIds.length} alt IDs: ${connectedAltStreetIds.join(', ')})`
                       : '';
-                    updateMessage = `Copied: <b>${connectedStreetName}</b> ${altSummary}`;
+                    updateMessage = `Copied: <b>${selectedCandidate.streetName}</b> ${altSummary}`;
                   } else {
                     // TIER 2: Primary names differ - replace and copy all alts
-                    log(`TIER 2: Primary names differ. Selected="${selectedSegStreetName}", Connected="${connectedStreetName}". Using connected with ${connectedAltStreetIds.length} alt IDs`);
+                    log(`TIER 2: Primary names differ. Selected="${selectedSegStreetName}", Connected="${selectedCandidate.streetName}". Using connected with ${connectedAltStreetIds.length} alt IDs`);
                     newPrimaryStreetId = connectedStreetId;
                     newAltStreetIds = connectedAltStreetIds;
                     const altSummary = connectedAltNames.length > 0 
@@ -3139,7 +3178,7 @@
                       : connectedAltStreetIds.length > 0 
                       ? `(${connectedAltStreetIds.length} alt IDs: ${connectedAltStreetIds.join(', ')})`
                       : '';
-                    updateMessage = `Replaced: <b>${connectedStreetName}</b> ${altSummary}`;
+                    updateMessage = `Replaced: <b>${selectedCandidate.streetName}</b> ${altSummary}`;
                   }
                   
                   // Apply the address update
@@ -3149,11 +3188,11 @@
                     // Create/find street for primary in empty city
                     let primaryStreetInEmptyCity = wmeSDK.DataModel.Streets.getStreet({
                       cityId: emptyCity.id,
-                      streetName: connectedStreetName || '',
+                      streetName: selectedCandidate.streetName || '',
                     });
                     if (!primaryStreetInEmptyCity) {
                       primaryStreetInEmptyCity = wmeSDK.DataModel.Streets.addStreet({
-                        streetName: connectedStreetName || '',
+                        streetName: selectedCandidate.streetName || '',
                         cityId: emptyCity.id,
                       });
                     }
@@ -3203,7 +3242,6 @@
                   alertMessageParts.push(`Copied Name: ${updateMessage}`);
                   updatedSegmentName = true;
                   found = true;
-                  break;
                 }
               }
               
