@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.8.2
+// @version      2.6.8.3
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -28,11 +28,10 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.8.1 - 2026-02-18:</strong><br>
-    - Fixed issue with copying the names from connected segment<br>
-    Now it will prioritise the first connected segment at Side A with a valid city in its address, and if none have a valid city, it will fallback to the first connected segment with any address<br>
-    - Added direct shortcut key to update motorcycle restriction (Alt+R) <br>
-    - Improved alert message when motorbike restriction cannot be applied due to segment type
+  const updateMessage = `<strong>Version 2.6.8.3 - 2026-02-20:</strong><br>
+    - Added shortcuts support for toggling additional options.\n This is temporary fix using legacy method for saving keys between sessions.<br>
+    - Migrated unpaved status handling to new SDK methods.<br>
+    - Fixed found bug fixes.<br>
 <br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
@@ -2688,7 +2687,10 @@
         log(`City Name: ${city?.name}, City ID: ${city?.id}, Street ID: ${street?.id}`);
       }
 
-      // Updated unpaved handler with SegmentFlagAttributes and fallback
+      // COMMENTED OUT: Old unpaved handler using DOM clicks (kept for reference/fallback)
+      // ============================================================================
+      // Replaced with WME SDK updateSegment method (see below)
+      /*
       updatePromises.push(
         delayedUpdate(() => {
           const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
@@ -2811,6 +2813,50 @@
               alertMessageParts.push(`Paved Status: <b>Paved (already set)</b>`);
               updatedPaved = true;
             }
+          }
+        }, 500)
+      ); // 500ms delay for unpaved/paved toggle
+      */
+      // ============================================================================
+
+      // NEW: Updated unpaved handler using WME SDK updateSegment method
+      updatePromises.push(
+        delayedUpdate(() => {
+          try {
+            const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+            const isPedestrian = isPedestrianType(seg.roadType);
+            
+            // Determine the unpaved value based on segment type and options
+            let unpavedValue = false;
+            let statusMessage = '';
+            
+            if (isPedestrian) {
+              // Always set as paved for pedestrian types, regardless of checkbox
+              unpavedValue = false;
+              statusMessage = 'Paved (pedestrian type)';
+            } else if (options.unpaved) {
+              // Set as unpaved if option is enabled
+              unpavedValue = true;
+              statusMessage = 'Unpaved';
+            } else {
+              // Set as paved
+              unpavedValue = false;
+              statusMessage = 'Paved';
+            }
+            
+            // Use WME SDK updateSegment with flagAttributes
+            wmeSDK.DataModel.Segments.updateSegment({
+              segmentId: id,
+              flagAttributes: {
+                unpaved: unpavedValue
+              }
+            });
+            
+            alertMessageParts.push(`Paved Status: <b>${statusMessage}</b>`);
+            updatedPaved = true;
+            log(`Updated unpaved status via SDK: ${statusMessage} (unpaved=${unpavedValue})`);
+          } catch (e) {
+            log('Error updating unpaved status via SDK: ' + e);
           }
         }, 500)
       ); // 500ms delay for unpaved/paved toggle
@@ -3105,6 +3151,11 @@
         }, 600); // 1000ms (1 second) delay before autosave
       } else {
         showAlert();
+      }
+
+      // Refresh UI with updated status by reselecting the segments
+      if (selection && selection.ids && selection.ids.length > 0) {
+        wmeSDK.Editing.setSelection({ selection: { ids: selection.ids, objectType: 'segment' } });
       }
     });
   };
@@ -3769,6 +3820,9 @@ if (typeof require !== 'undefined') {
 Changelog
 
 Version
+Version 2.6.8.3 - 2026-02-20:</strong><br>
+    - Added shortcuts support for toggling additional options.\n This is temporary fix using legacy method for saving keys between sessions.<br>
+    - Migrated unpaved status handling to new SDK methods.<br>
 Version 2.6.8.1 - 2026-02-18
  - Fixed an issue with copying segment name from connected segment. It will prioritize copying from the connected segment Side A that has a valid city name when "Set city as none" is unchecked.
 Version 2.6.7.9 - 2024-06-09
