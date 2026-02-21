@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.8.4
+// @version      2.6.8.5
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -28,7 +28,7 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.8.4 - 2026-02-20:</strong><br>
+  const updateMessage = `<strong>Version 2.6.8.5 - 2026-02-20:</strong><br>
     - Added shortcuts support for toggling additional options.\n This is temporary fix using legacy method for saving keys between sessions.<br>
     - Migrated unpaved status handling to new SDK methods.<br>
     - Migrated copying of flag attributes to new SDK methods.<br>
@@ -2853,14 +2853,15 @@
               const aSideSegs = wmeSDK.DataModel.Segments.getConnectedSegments({ segmentId: id, reverseDirection: true });
               const bSideSegs = wmeSDK.DataModel.Segments.getConnectedSegments({ segmentId: id, reverseDirection: false });
               
-              // Build segsToTry: A side first (ALL A side segments), then B side (only if no A side)
+              // Build segsToTry: A side first, then B side
+              // Both sides are considered for TIER 1 matching, and the logic prioritizes by altCount
+              // This allows B-side matches with more alt names to be selected over A-side matches with fewer alt names
               let segsToTry = [];
               if (aSideSegs.length > 0) {
-                // Prefer A side - add all of them
                 segsToTry = aSideSegs.map((s) => s.id);
-              } else if (bSideSegs.length > 0) {
-                // Only use B side if NO A side segments exist
-                segsToTry = bSideSegs.map((s) => s.id);
+              }
+              if (bSideSegs.length > 0) {
+                segsToTry = segsToTry.concat(bSideSegs.map((s) => s.id));
               }
               
               // Get selected segment's current names
