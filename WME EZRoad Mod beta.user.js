@@ -3674,7 +3674,7 @@
 
     // -- Set up the tab for the script
     wmeSDK.Sidebar.registerScriptTab().then(({ tabLabel, tabPane }) => {
-      tabLabel.innerText = 'EZRoads Mod';
+      tabLabel.innerText = 'EZRoads Mod🅱️';
       tabLabel.title = 'Easily Update Roads';
 
       // Setup base styles
@@ -3730,7 +3730,7 @@
 
       // Header section
       const header = $(`<div class="ezroadsmod-section">
-		<h2>EZRoads Mod</h2>
+		<h2>EZRoads Mod🅱️</h2>
 		<div>Current Version: <b>${scriptVersion}</b></div>
 		<div>Update Keybind: <kbd>G</kbd></div>
 		<div style="font-size: 0.8em;">You can change it in WME keyboard setting!</div>
