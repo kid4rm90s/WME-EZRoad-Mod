@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.8.5
+// @version      2.6.8.6
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -28,11 +28,8 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.8.5 - 2026-02-20:</strong><br>
-    - Added shortcuts support for toggling additional options.\n This is temporary fix using legacy method for saving keys between sessions.<br>
-    - Migrated unpaved status handling to new SDK methods.<br>
-    - Migrated copying of flag attributes to new SDK methods.<br>
-    - Updated logic for copying connected segment name and city to use new SDK methods and added more robust handling for finding connected segments with valid city.<br>
+  const updateMessage = `<strong>Version 2.6.8.6 - 2026-02-20:</strong><br>
+    - Restored paved or unpaved function to DOM since SDK methods do not provide immediate feedback.<br>
     - Fixed found bug fixes.<br>
 <br>`;
   const scriptName = GM_info.script.name;
@@ -2646,7 +2643,7 @@
       // COMMENTED OUT: Old unpaved handler using DOM clicks (kept for reference/fallback)
       // ============================================================================
       // Replaced with WME SDK updateSegment method (see below)
-      /*
+      
       updatePromises.push(
         delayedUpdate(() => {
           const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
@@ -2772,50 +2769,52 @@
           }
         }, 500)
       ); // 500ms delay for unpaved/paved toggle
-      */
+      
+      // ============================================================================
+      // The SDK logic is flawed because the unpaved attribute is not immediately updated in the segment object after updateSegment call, so we cannot reliably check the current unpaved status before deciding to click or not. This can lead to unnecessary clicks and alerts showing "Paved (already set)" when it was actually toggled. The DOM method, while less elegant, reflects the actual state of the checkbox and avoids this issue. Therefore, we will keep the DOM click method as primary for now, and use the SDK updateSegment as a backup if the DOM elements are not found (like in compact mode). We can revisit this in the future if WME SDK provides a way to get immediate feedback on flag attribute changes.
       // ============================================================================
 
       // NEW: Updated unpaved handler using WME SDK updateSegment method
-      updatePromises.push(
-        delayedUpdate(() => {
-          try {
-            const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
-            const isPedestrian = isPedestrianType(seg.roadType);
+      // updatePromises.push(
+      //   delayedUpdate(() => {
+      //     try {
+      //       const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+      //       const isPedestrian = isPedestrianType(seg.roadType);
             
-            // Determine the unpaved value based on segment type and options
-            let unpavedValue = false;
-            let statusMessage = '';
+      //       // Determine the unpaved value based on segment type and options
+      //       let unpavedValue = false;
+      //       let statusMessage = '';
             
-            if (isPedestrian) {
-              // Always set as paved for pedestrian types, regardless of checkbox
-              unpavedValue = false;
-              statusMessage = 'Paved (pedestrian type)';
-            } else if (options.unpaved) {
-              // Set as unpaved if option is enabled
-              unpavedValue = true;
-              statusMessage = 'Unpaved';
-            } else {
-              // Set as paved
-              unpavedValue = false;
-              statusMessage = 'Paved';
-            }
+      //       if (isPedestrian) {
+      //         // Always set as paved for pedestrian types, regardless of checkbox
+      //         unpavedValue = false;
+      //         statusMessage = 'Paved (pedestrian type)';
+      //       } else if (options.unpaved) {
+      //         // Set as unpaved if option is enabled
+      //         unpavedValue = true;
+      //         statusMessage = 'Unpaved';
+      //       } else {
+      //         // Set as paved
+      //         unpavedValue = false;
+      //         statusMessage = 'Paved';
+      //       }
             
-            // Use WME SDK updateSegment with flagAttributes
-            wmeSDK.DataModel.Segments.updateSegment({
-              segmentId: id,
-              flagAttributes: {
-                unpaved: unpavedValue
-              }
-            });
+      //       // Use WME SDK updateSegment with flagAttributes
+      //       wmeSDK.DataModel.Segments.updateSegment({
+      //         segmentId: id,
+      //         flagAttributes: {
+      //           unpaved: unpavedValue
+      //         }
+      //       });
             
-            alertMessageParts.push(`Paved Status: <b>${statusMessage}</b>`);
-            updatedPaved = true;
-            log(`Updated unpaved status via SDK: ${statusMessage} (unpaved=${unpavedValue})`);
-          } catch (e) {
-            log('Error updating unpaved status via SDK: ' + e);
-          }
-        }, 500)
-      ); // 500ms delay for unpaved/paved toggle
+      //       alertMessageParts.push(`Paved Status: <b>${statusMessage}</b>`);
+      //       updatedPaved = true;
+      //       log(`Updated unpaved status via SDK: ${statusMessage} (unpaved=${unpavedValue})`);
+      //     } catch (e) {
+      //       log('Error updating unpaved status via SDK: ' + e);
+      //     }
+      //   }, 500)
+      // ); // 500ms delay for unpaved/paved toggle
 
       // 3a. Copy segment name from connected segment if enabled
       // =========================================================================
@@ -4095,7 +4094,8 @@ if (typeof require !== 'undefined') {
 
   /*
 Changelog
-
+Version 2.6.8.6 - 2026-02-20:</strong><br>
+    - Restored paved or unpaved function to DOM since SDK methods do not provide immediate feedback.<br>
 Version 2.6.8.3 - 2026-02-20:</strong><br>
     - Added shortcuts support for toggling additional options.\n This is temporary fix using legacy method for saving keys between sessions.<br>
     - Migrated unpaved status handling to new SDK methods.<br>
