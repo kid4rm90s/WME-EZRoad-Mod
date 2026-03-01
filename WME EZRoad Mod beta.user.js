@@ -3679,6 +3679,13 @@
 
       // Setup base styles
       const styles = $(`<style>
+            #ezroadsmod-settings {
+                padding-right: 10px;
+                box-sizing: border-box;
+            }
+            #ezroadsmod-settings * {
+                box-sizing: border-box;
+            }
             #ezroadsmod-settings h2, #ezroadsmod-settings h5 {
                 margin-top: 0;
                 margin-bottom: 10px;
@@ -3945,7 +3952,7 @@
 
           const presetDiv = $(
             `<div class="ezroadsmod-preset-item" style="margin-bottom:5px; padding:5px 5px 5px 5px; background-color:rgba(128, 128, 128, 0.12); border-radius:3px;">
-              <div style="display:flex; align-items:center; justify-content:space-between; padding-right:15px;">
+              <div style="display:flex; align-items:center; justify-content:space-between; padding-right:10px;">
                 <div style="font-size:1.0em;">
                   <strong>${presetName}</strong>
                   <span style="font-size:0.85em; color: #949494ff; margin-left:5px;">(${savedDate})</span>
