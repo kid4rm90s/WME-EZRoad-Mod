@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.8.6
+// @version      2.6.8.7
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -26,11 +26,7 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.8.6 - 2026-02-20:</strong><br>
-    - Restored paved or unpaved function to DOM since SDK methods do not provide immediate feedback.<br>
-    - Added shortcuts support for toggling additional options.\n This is temporary fix using legacy method for saving keys between sessions.<br>
-    - Migrated copying of flag attributes to new SDK methods.<br>
-    - Updated logic for copying connected segment name and city to use new SDK methods and added more robust handling for finding connected segments with valid city.<br>
+  const updateMessage = `<strong>Version 2.6.8.7 - 2026-03-01:</strong><br>
     - Fixed found bug fixes.<br>
 <br>`;
   const scriptName = GM_info.script.name;
@@ -3688,7 +3684,8 @@
                 margin-right: 5px;
             }
             .ezroadsmod-radio-container input.road-speed {
-                width: 60px;
+                width: 50px;
+                margin-right: 5px;
             }
             .ezroadsmod-reset-button {
                 margin-top: 20px;
