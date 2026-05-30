@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.8.7
+// @version      2.6.9.0
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -26,8 +26,10 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.8.7 - 2026-03-01:</strong><br>
-    - Fixed found bug fixes.<br>
+  const updateMessage = `<strong>Version 2.6.9.0 - 2026-05-30:</strong><br>
+    - Added Segment Split mode (Alt+7 shortcut).<br>
+    - With segment(s) selected: auto-splits each at midpoint / geometry node.<br>
+    - With nothing selected: activates interactive split mode — hover to preview, click to split, Esc to cancel.<br>
 <br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
@@ -822,6 +824,15 @@
           key: -1,
           arg: {},
         },
+        {
+          handler: 'WME_EZRoad_Mod_SplitSegment',
+          title: 'Toggle Split Segment Mode',
+          func: function (arg) {
+            toggleSplitMode();
+          },
+          key: -1,
+          arg: {},
+        },
       ];
 
       // Register legacy shortcuts
@@ -1049,6 +1060,21 @@
         });
       } catch (e) {
         log(`Shortcut registration failed for ${motorcycleShortcutId}: ${e}`);
+      }
+    }
+
+    // Register shortcut for Segment Split Mode
+    const splitShortcutId = 'EZRoad_Mod_SplitSegment';
+    if (!wmeSDK.Shortcuts.isShortcutRegistered({ shortcutId: splitShortcutId })) {
+      try {
+        wmeSDK.Shortcuts.createShortcut({
+          callback: () => toggleSplitMode(),
+          description: 'Toggle Split Segment Mode',
+          shortcutId: splitShortcutId,
+          shortcutKeys: 'A+7',
+        });
+      } catch (e) {
+        log(`Shortcut registration failed for ${splitShortcutId}: ${e}`);
       }
     }
 
@@ -1702,6 +1728,250 @@
     // Insert after prefs
     prefsItem.insertAdjacentElement('afterend', bugBtn);
   }
+
+  // ===== Segment Splitter Feature =====
+  // Uses only official WME SDK APIs:
+  //   - Editing.lockEditing() / releaseEditingLock() for exclusive edit mode
+  //   - Map.getMapViewportElement() + getLonLatFromMapPixel() for mouse → geo coords
+  //   - Map.addLayer() / addFeaturesToLayer() / removeAllFeaturesFromLayer() / removeLayer()
+  //   - DataModel.Segments.splitSegment({ segmentId, splitPoint: Point })
+  //   - Events.on() returns an unsubscribe fn (stored and called on exit)
+
+  const SPLIT_LAYER_NAME = 'EZRoadMod.segmentSplit';
+  let splitEditingLock = null;
+  let splitSegmentToSplit = null;
+  let splitMouseDownPoint = null;
+  let splitLastMouseMovePoint = null;
+  let splitUnsubZoom = null;
+  let splitUnsubMoveEnd = null;
+  let splitPreviewFrameRequest = null;
+  let splitVisibleSegments = null; // cached per zoom/pan — rebuilt only when map extent changes
+
+  function rebuildSplitSegmentCache() {
+    try {
+      const [west, south, east, north] = wmeSDK.Map.getMapExtent();
+      splitVisibleSegments = wmeSDK.DataModel.Segments.getAll().filter(seg => {
+        if (!seg?.geometry?.coordinates) return false;
+        if (seg.hasClosures) return false;
+        try { if (!wmeSDK.DataModel.Segments.hasPermissions({ segmentId: seg.id })) return false; } catch (ex) { return false; }
+        return seg.geometry.coordinates.some(([lon, lat]) => lon >= west && lon <= east && lat >= south && lat <= north);
+      });
+    } catch (ex) { splitVisibleSegments = []; }
+  }
+
+  // Stored as named arrow functions so addEventListener / removeEventListener work correctly
+  const splitKeyDown = (e) => { if (e.key === 'Escape') exitSplitMode(); };
+
+  const splitOnMouseMove = (e) => {
+    try {
+      const vp = wmeSDK.Map.getMapViewportElement();
+      const rect = vp.getBoundingClientRect();
+      const lonLat = wmeSDK.Map.getLonLatFromMapPixel({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+      if (!lonLat) return;
+      splitLastMouseMovePoint = lonLat;
+      // Throttle to one preview draw per animation frame to eliminate lag
+      if (splitPreviewFrameRequest) return;
+      splitPreviewFrameRequest = requestAnimationFrame(() => {
+        splitPreviewFrameRequest = null;
+        drawSplitPreview(splitLastMouseMovePoint);
+      });
+    } catch (ex) {}
+  };
+
+  const splitOnMouseDown = (e) => {
+    try {
+      const vp = wmeSDK.Map.getMapViewportElement();
+      const rect = vp.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const lonLat = wmeSDK.Map.getLonLatFromMapPixel({ x, y });
+      if (!lonLat) return;
+      splitMouseDownPoint = { lon: lonLat.lon, lat: lonLat.lat, x, y };
+    } catch (ex) {}
+  };
+
+  const splitOnMouseUp = (e) => {
+    if (!splitSegmentToSplit || !splitMouseDownPoint) return;
+    try {
+      const vp = wmeSDK.Map.getMapViewportElement();
+      const rect = vp.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      // Ignore drags — only act on clean clicks (movement < 5px)
+      if (Math.abs(splitMouseDownPoint.x - x) + Math.abs(splitMouseDownPoint.y - y) > 5) return;
+      const segToSplit = splitSegmentToSplit;
+      const clickPoint = splitMouseDownPoint;
+      exitSplitMode();
+      performSplit(segToSplit, clickPoint);
+    } catch (ex) {}
+  };
+
+  const splitOnZoomChanged = () => {
+    rebuildSplitSegmentCache();
+    try { wmeSDK.Map.removeAllFeaturesFromLayer({ layerName: SPLIT_LAYER_NAME }); } catch (ex) {}
+    if (splitLastMouseMovePoint) drawSplitPreview(splitLastMouseMovePoint);
+  };
+
+  const splitOnMoveEnd = () => {
+    rebuildSplitSegmentCache();
+  };
+
+  function drawSplitPreview(lonLat) {
+    if (!lonLat) return;
+    const mousePoint = turf.point([lonLat.lon, lonLat.lat]);
+    let closest = { segment: null, details: null };
+    let shortest = Infinity;
+    // Use the pre-built cache — no getAll() or hasPermissions() on every frame
+    const segments = splitVisibleSegments || [];
+    segments.forEach(seg => {
+      try {
+        const details = turf.nearestPointOnLine(seg.geometry, mousePoint, { units: 'meters' });
+        if (details.properties.dist < shortest) {
+          closest = { segment: seg, details };
+          shortest = details.properties.dist;
+        }
+      } catch (ex) {}
+    });
+    try { wmeSDK.Map.removeAllFeaturesFromLayer({ layerName: SPLIT_LAYER_NAME }); } catch (ex) {}
+    if (!closest.segment) return;
+    splitSegmentToSplit = closest.segment;
+    const pointOnLine = closest.details;
+    try {
+      wmeSDK.Map.addFeaturesToLayer({
+        layerName: SPLIT_LAYER_NAME,
+        features: [
+          {
+            type: 'Feature',
+            id: `pointCut_${splitSegmentToSplit.id}`,
+            geometry: pointOnLine.geometry,
+            properties: { featureType: 'splitPoint' },
+          },
+          {
+            type: 'Feature',
+            id: `lineCut_${splitSegmentToSplit.id}`,
+            geometry: { type: 'LineString', coordinates: [mousePoint.geometry.coordinates, pointOnLine.geometry.coordinates] },
+            properties: { featureType: 'splitLine' },
+          },
+        ],
+      });
+    } catch (ex) {}
+  }
+
+  function enterSplitMode() {
+    if (splitEditingLock) return;
+    wmeSDK.Editing.clearSelection();
+    splitEditingLock = wmeSDK.Editing.lockEditing();
+    try {
+      wmeSDK.Map.addLayer({
+        layerName: SPLIT_LAYER_NAME,
+        styleRules: [
+          {
+            predicate: props => props.featureType === 'splitPoint',
+            style: { pointRadius: 6, fillColor: 'white', fillOpacity: 1, strokeColor: '#00ece3', strokeWidth: 3 },
+          },
+          {
+            predicate: props => props.featureType === 'splitLine',
+            style: { strokeColor: 'white', strokeDashstyle: '7 5', strokeWidth: 2 },
+          },
+        ],
+      });
+    } catch (ex) { log('[Split] addLayer error: ' + ex); }
+    const vp = wmeSDK.Map.getMapViewportElement();
+    vp.style.cursor = 'crosshair';
+    vp.addEventListener('mousemove', splitOnMouseMove);
+    vp.addEventListener('mousedown', splitOnMouseDown);
+    vp.addEventListener('mouseup', splitOnMouseUp);
+    splitUnsubZoom = wmeSDK.Events.on({ eventName: 'wme-map-zoom-changed', eventHandler: splitOnZoomChanged });
+    splitUnsubMoveEnd = wmeSDK.Events.on({ eventName: 'wme-map-move-end', eventHandler: splitOnMoveEnd });
+    document.body.addEventListener('keydown', splitKeyDown);
+    rebuildSplitSegmentCache();
+    if (WazeToastr?.Alerts) {
+      WazeToastr.Alerts.info(scriptName, 'Split Mode: hover over a segment to preview, click to split. Press <b>Esc</b> to cancel.', false, false, 4000);
+    }
+  }
+
+  function exitSplitMode() {
+    if (!splitEditingLock) return;
+    try {
+      const vp = wmeSDK.Map.getMapViewportElement();
+      vp.style.cursor = '';
+      vp.removeEventListener('mousemove', splitOnMouseMove);
+      vp.removeEventListener('mousedown', splitOnMouseDown);
+      vp.removeEventListener('mouseup', splitOnMouseUp);
+    } catch (ex) {}
+    if (splitUnsubZoom) { splitUnsubZoom(); splitUnsubZoom = null; }
+    if (splitUnsubMoveEnd) { splitUnsubMoveEnd(); splitUnsubMoveEnd = null; }
+    if (splitPreviewFrameRequest) { cancelAnimationFrame(splitPreviewFrameRequest); splitPreviewFrameRequest = null; }
+    document.body.removeEventListener('keydown', splitKeyDown);
+    wmeSDK.Editing.releaseEditingLock({ lockId: splitEditingLock });
+    splitEditingLock = null;
+    try {
+      wmeSDK.Map.removeAllFeaturesFromLayer({ layerName: SPLIT_LAYER_NAME });
+      wmeSDK.Map.removeLayer({ layerName: SPLIT_LAYER_NAME });
+    } catch (ex) {}
+    splitSegmentToSplit = null;
+    splitMouseDownPoint = null;
+    splitLastMouseMovePoint = null;
+    splitVisibleSegments = null;
+  }
+
+  function performSplit(segment, mapPoint) {
+    if (!segment) return;
+    try {
+      const mousePoint = turf.point([mapPoint.lon, mapPoint.lat]);
+      const splitPoint = turf.nearestPointOnLine(segment.geometry, mousePoint, { units: 'meters' }).geometry;
+      wmeSDK.DataModel.Segments.splitSegment({ segmentId: segment.id, splitPoint });
+      if (WazeToastr?.Alerts) WazeToastr.Alerts.success(scriptName, 'Segment split!', false, false, 2000);
+    } catch (ex) {
+      console.error(`[${scriptName}] Split failed:`, ex);
+      if (WazeToastr?.Alerts) WazeToastr.Alerts.error(scriptName, 'Split failed: ' + ex.message);
+    }
+  }
+
+  function toggleSplitMode() {
+    if (splitEditingLock) {
+      exitSplitMode();
+      return;
+    }
+    const sel = wmeSDK.Editing.getSelection();
+    if (sel?.objectType === 'segment' && sel.ids.length > 0) {
+      // Segments selected — auto-split each at its midpoint / middle geometry node
+      let cutCount = 0;
+      sel.ids.forEach(segId => {
+        const seg = wmeSDK.DataModel.Segments.getById({ segmentId: segId });
+        if (!seg || seg.junctionId) return;
+        try { if (!wmeSDK.DataModel.Segments.hasPermissions({ segmentId: segId })) return; } catch (ex) { return; }
+        const geo = seg.geometry;
+        if (geo.coordinates.length < 2) return;
+        let splitCoord;
+        if (geo.coordinates.length === 2) {
+          splitCoord = [
+            (geo.coordinates[0][0] + geo.coordinates[1][0]) / 2,
+            (geo.coordinates[0][1] + geo.coordinates[1][1]) / 2,
+          ];
+        } else {
+          splitCoord = geo.coordinates[Math.ceil(geo.coordinates.length / 2 - 1)];
+        }
+        try {
+          const result = wmeSDK.DataModel.Segments.splitSegment({
+            segmentId: seg.id,
+            splitPoint: turf.point(splitCoord).geometry,
+          });
+          if (result) cutCount++;
+        } catch (ex) { console.error(`[${scriptName}] Auto-split failed for ${seg.id}:`, ex); }
+      });
+      if (cutCount > 0) {
+        if (WazeToastr?.Alerts) WazeToastr.Alerts.success(scriptName, `${cutCount} segment${cutCount === 1 ? '' : 's'} split`, false, false, 2500);
+      } else {
+        if (WazeToastr?.Alerts) WazeToastr.Alerts.warning(scriptName, 'Selected segment(s) could not be split', false, false, 3000);
+      }
+    } else {
+      // Nothing selected — enter interactive split mode
+      enterSplitMode();
+    }
+  }
+
+  // ===== End Segment Splitter Feature =====
 
   const getEmptyCity = () => {
     return (
@@ -4064,6 +4334,10 @@ if (typeof require !== 'undefined') {
 
   /*
 Changelog
+<strong>Version 2.6.9.0 - 2026-05-30:</strong><br>
+    - Added Segment Split mode (Alt+7 shortcut).<br>
+    - With segment(s) selected: auto-splits each at midpoint / geometry node.<br>
+    - With nothing selected: activates interactive split mode — hover to preview, click to split, Esc to cancel.<br>
 Version 2.6.8.6 - 2026-02-20:</strong><br>
     - Restored paved or unpaved function to DOM since SDK methods do not provide immediate feedback.<br>
 Version 2.6.8.3 - 2026-02-20:</strong><br>
