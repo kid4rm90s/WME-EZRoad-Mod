@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.9.0
+// @version      2.6.9.1
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -26,10 +26,11 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.9.0 - 2026-05-30:</strong><br>
+  const updateMessage = `<strong>Version 2.6.9.1 - 2026-05-31:</strong><br>
     - Added Segment Split mode (Alt+7 shortcut).<br>
     - With segment(s) selected: auto-splits each at midpoint / geometry node.<br>
     - With nothing selected: activates interactive split mode — hover to preview, click to split, Esc to cancel.<br>
+    - Minor bug fixes.
 <br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
@@ -1690,9 +1691,9 @@
     // Check user rank - only show for L3 and above (rank >= 2 in SDK)
     const userInfo = wmeSDK.State.getUserInfo();
     if (!userInfo || userInfo.rank < UserRankRequiredForGeometryFix - 1) {
-      // Remove button if it exists and user doesn't have permission
-      const existingBugBtn = document.getElementById('ezroad-fix-geometry-btn');
-      if (existingBugBtn) existingBugBtn.remove();
+      // Remove wrapper (and button inside it) if user doesn't have permission
+      const existingWrapper = document.getElementById('ezroad-geometry-wrapper');
+      if (existingWrapper) existingWrapper.remove();
       return;
     }
 
@@ -1700,22 +1701,23 @@
     let bugBtn = document.getElementById('ezroad-fix-geometry-btn');
 
     if (bugBtn) {
-      // Update visibility based on option and rank
-      bugBtn.style.display = options.checkGeometryIssues ? 'block' : 'none';
+      // Update visibility on the wrapper based on option and rank
+      const existingWrapper = document.getElementById('ezroad-geometry-wrapper');
+      if (existingWrapper) existingWrapper.style.display = options.checkGeometryIssues ? 'flex' : 'none';
       return;
     }
 
     if (!prefsItem) return;
 
+      const wrapper = document.createElement('div');
+      wrapper.id = 'ezroad-geometry-wrapper';
+      wrapper.style.cssText = `display: ${options.checkGeometryIssues ? 'flex' : 'none'}; justify-content: center; align-items: center; padding: 4px 0;`;
+
     bugBtn = document.createElement('wz-button');
     bugBtn.color = 'text';
     bugBtn.size = 'sm';
-    bugBtn.style.margin = '20px auto 0 auto';
     bugBtn.id = 'ezroad-fix-geometry-btn';
     bugBtn.type = 'button';
-
-    // Initial visibility based on option
-    bugBtn.style.display = options.checkGeometryIssues ? 'block' : 'none';
 
     // HTML content matching user request style
     bugBtn.innerHTML = `
@@ -1725,8 +1727,9 @@
 
     bugBtn.addEventListener('click', fixVisibleGeometryIssues);
 
+      wrapper.appendChild(bugBtn);
     // Insert after prefs
-    prefsItem.insertAdjacentElement('afterend', bugBtn);
+      prefsItem.insertAdjacentElement('afterend', wrapper);
   }
 
   // ===== Segment Splitter Feature =====
