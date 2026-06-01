@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.9.1
+// @version      2.6.9.2
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -26,11 +26,10 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.9.1 - 2026-05-31:</strong><br>
-    - Added Segment Split mode (Alt+7 shortcut).<br>
-    - With segment(s) selected: auto-splits each at midpoint / geometry node.<br>
-    - With nothing selected: activates interactive split mode — hover to preview, click to split, Esc to cancel.<br>
-    - Minor bug fixes.
+  const updateMessage = `<strong>Version 2.6.9.2 - 2026-06-01:</strong><br>
+    - Fix: second split attempt without saving no longer throws "node null does not exist".<br>
+    - Segments with null fromNodeId/toNodeId (newly split, unsaved) are now excluded from<br>
+      the interactive split cache and the auto-split selection path.<br>
 <br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
@@ -1756,6 +1755,10 @@
       splitVisibleSegments = wmeSDK.DataModel.Segments.getAll().filter(seg => {
         if (!seg?.geometry?.coordinates) return false;
         if (seg.hasClosures) return false;
+        // Skip segments with null nodes — these are newly split unsaved segments whose
+        // nodes haven't been committed yet; calling splitSegment on them throws
+        // "node null does not exist" from WME's SplitSegments.getSegmentNodes.
+        if (seg.fromNodeId == null || seg.toNodeId == null) return false;
         try { if (!wmeSDK.DataModel.Segments.hasPermissions({ segmentId: seg.id })) return false; } catch (ex) { return false; }
         return seg.geometry.coordinates.some(([lon, lat]) => lon >= west && lon <= east && lat >= south && lat <= north);
       });
@@ -1943,6 +1946,9 @@
       sel.ids.forEach(segId => {
         const seg = wmeSDK.DataModel.Segments.getById({ segmentId: segId });
         if (!seg || seg.junctionId) return;
+        // Skip segments with null nodes (newly split unsaved segments) to prevent
+        // "node null does not exist" on a second split without saving.
+        if (seg.fromNodeId == null || seg.toNodeId == null) return;
         try { if (!wmeSDK.DataModel.Segments.hasPermissions({ segmentId: segId })) return; } catch (ex) { return; }
         const geo = seg.geometry;
         if (geo.coordinates.length < 2) return;
@@ -4337,6 +4343,10 @@ if (typeof require !== 'undefined') {
 
   /*
 Changelog
+<strong>Version 2.6.9.2 - 2026-06-01:</strong><br>
+    - Fix: second split attempt without saving no longer throws "node null does not exist".<br>
+    - Segments with null fromNodeId/toNodeId (newly split, unsaved) are now excluded from<br>
+      the interactive split cache and the auto-split selection path.<br>
 <strong>Version 2.6.9.0 - 2026-05-30:</strong><br>
     - Added Segment Split mode (Alt+7 shortcut).<br>
     - With segment(s) selected: auto-splits each at midpoint / geometry node.<br>
