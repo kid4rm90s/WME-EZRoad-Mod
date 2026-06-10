@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.9.2
+// @version      2.6.9.3
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -28,10 +28,8 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.9.2 - 2026-06-01:</strong><br>
-    - Fix: second split attempt without saving no longer throws "node null does not exist".<br>
-    - Segments with null fromNodeId/toNodeId (newly split, unsaved) are now excluded from<br>
-      the interactive split cache and the auto-split selection path.<br>
+  const updateMessage = `<strong>Version 2.6.9.3 - 2026-06-10:</strong><br>
+    - Fix: Issue with the uturn failed to update when selected.<br>
 <br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
@@ -1711,7 +1709,7 @@
 
       const wrapper = document.createElement('div');
       wrapper.id = 'ezroad-geometry-wrapper';
-      wrapper.style.cssText = `display: ${options.checkGeometryIssues ? 'flex' : 'none'}; justify-content: center; align-items: center; padding: 4px 0;`;
+      wrapper.style.cssText = `display: ${options.checkGeometryIssues ? 'flex' : 'none'}; justify-content: center; align-items: center; padding-top: 12px; padding-bottom: 12px; height: auto;`;
 
       bugBtn = document.createElement('wz-button');
       bugBtn.color = 'text';
@@ -3533,81 +3531,65 @@
           let sideBResult = null;
 
           function switchSegmentUturnHybrid(direction = 'A') {
-            // --- 1. Legacy W Model Method ---
-            if (typeof W !== 'undefined' && W.model && W.model.getTurnGraph && W.model.actionManager) {
-              try {
-                // Fix: Ensure constructor is loaded correctly
-                if (typeof WazeActionSetTurn !== 'function') {
-                  const SetTurnModule = require('Waze/Model/Graph/Actions/SetTurn');
-                  WazeActionSetTurn = SetTurnModule.default || SetTurnModule;
-                }
-
-                const seg = W.model.segments.getObjectById(id);
-                if (!seg || seg.isOneWay()) return 'skipped';
-                
-                // Skip U-turn for non-routable road types (walking trail/footpath, pedestrian boardwalk, stairway)
-                // These road types don't support routing, so U-turns don't apply
-                // if (isPedestrianType(seg.roadType)) {
-                //   log(`[EZRoad] Skipping U-turn for non-routable road type: ${seg.roadType}`);
-                //   return 'skipped';
-                // }
-                
-                const node = direction === 'A' ? seg.getFromNode() : seg.getToNode();
-                
-                // Check current state
-                if (seg.isTurnAllowed(seg, node)) {
-                  log(`[EZRoad] U-turn at ${direction} already allowed.`);
-                  return 'already';
-                }
-
-                const turn = W.model.getTurnGraph().getTurnThroughNode(node, seg, seg);
-                if (!turn) return 'failed';
-
-                W.model.actionManager.add(
-                  new WazeActionSetTurn(
-                    W.model.getTurnGraph(),
-                    turn.withTurnData(turn.getTurnData().withState(1)) // 1 is ALLOW
-                  )
-                );
-                return 'enabled';
-              } catch (e) {
-                console.error('WME_EZRoads_Mod: Legacy U-turn error:', e);
-              }
+            // Use W Model with SDK-obtained Node ID (bypasses broken segment.getFromNode/getToNode)
+            // W model is the reliable method for turn updates.
+            //
+            // NOTE: Uses deprecated WazeActionSetTurn instead of SDK.DataModel.Turns.updateTurn
+            // because the SDK method rejects the encoded turnId format (SDK limitation/bug).
+            // Will switch to SDK once that issue is resolved.
+            
+            if (typeof W === 'undefined' || !W.model || !W.model.getTurnGraph || !W.model.actionManager) {
+              return 'failed';
             }
 
-            // --- 2. SDK Method Fallback ---
-            if (typeof wmeSDK !== 'undefined' && wmeSDK.DataModel && wmeSDK.DataModel.Turns) {
-              try {
-                const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
-                if (!seg || !seg.isTwoWay) return 'skipped';
-                
-                // Skip U-turn for non-routable road types (walking trail/footpath, pedestrian boardwalk, stairway)
-                // According to WME SDK: routingRoadType is null if there's no routing road type
-                // if (seg.routingRoadType === null || isPedestrianType(seg.roadType)) {
-                //   log(`[EZRoad] Skipping U-turn for non-routable segment (roadType: ${seg.roadType}, routingRoadType: ${seg.routingRoadType ?? 'N/A'})`);
-                //   return 'skipped';
-                // }
-                
-                const nodeId = direction === 'A' ? seg.fromNodeId : seg.toNodeId;
-                if (!wmeSDK.DataModel.Turns.canEditTurnsThroughNode({ nodeId })) return 'failed';
-
-                if (wmeSDK.DataModel.Turns.isTurnAllowed({ fromSegmentId: seg.id, nodeId, toSegmentId: seg.id })) {
-                  return 'already';
-                }
-
-                let turns = wmeSDK.DataModel.Turns.getTurnsThroughNode({ nodeId });
-                turns = turns.filter(turn => turn.isUTurn && turn.fromSegmentId === seg.id && turn.toSegmentId === seg.id);
-                if (turns.length === 0) return 'failed';
-
-                for (let i = 0; i < turns.length; i++) {
-                  wmeSDK.DataModel.Turns.updateTurn({ turnId: turns[i].id, isAllowed: true });
-                }
-                return 'enabled';
-              } catch (e) {
-                console.error('WME_EZRoads_Mod: SDK U-turn error:', e);
+            try {
+              // Ensure WazeActionSetTurn constructor is loaded
+              if (typeof WazeActionSetTurn !== 'function') {
+                const SetTurnModule = require('Waze/Model/Graph/Actions/SetTurn');
+                WazeActionSetTurn = SetTurnModule.default || SetTurnModule;
               }
+
+              const seg = W.model.segments.getObjectById(id);
+              if (!seg || seg.isOneWay()) {
+                return 'skipped';
+              }
+              
+              // Get node ID from SDK (this works reliably)
+              const sdkSeg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+              if (!sdkSeg) {
+                return 'failed';
+              }
+              
+              const nodeId = direction === 'A' ? sdkSeg.fromNodeId : sdkSeg.toNodeId;
+              
+              // Retrieve W model node using SDK node ID (avoids segment.getFromNode/getToNode failures)
+              const wNode = W.model.nodes.getObjectById(nodeId);
+              if (!wNode) {
+                return 'failed';
+              }
+              
+              // Check current state
+              if (seg.isTurnAllowed(seg, wNode)) {
+                return 'already';
+              }
+
+              const turn = W.model.getTurnGraph().getTurnThroughNode(wNode, seg, seg);
+              if (!turn) {
+                return 'failed';
+              }
+
+              // Enable the turn
+              W.model.actionManager.add(
+                new WazeActionSetTurn(
+                  W.model.getTurnGraph(),
+                  turn.withTurnData(turn.getTurnData().withState(1)) // 1 = ALLOW
+                )
+              );
+              return 'enabled';
+            } catch (e) {
+              console.error('WME_EZRoads_Mod: U-turn error:', e);
+              return 'failed';
             }
-            return 'failed';
           }
 
           try {
@@ -4364,6 +4346,8 @@ if (typeof require !== 'undefined') {
 
   /*
 Changelog
+<strong>Version 2.6.9.3 - 2026-06-10:</strong><br>
+    - Fix: Issue with the uturn failed to update when selected.<br>
 <strong>Version 2.6.9.2 - 2026-06-01:</strong><br>
     - Fix: second split attempt without saving no longer throws "node null does not exist".<br>
     - Segments with null fromNodeId/toNodeId (newly split, unsaved) are now excluded from<br>
