@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.9.3
+// @version      2.6.9.5
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -25,12 +25,14 @@
 // ==/UserScript==
 
 /*Script modified from WME EZRoad (https://greasyfork.org/en/scripts/518381-wme-ezsegments) original author: Michaelrosstarr and thanks to him*/
+/*For the toggling U-turns feature, code is adapted from WME Switch Uturns (https://greasyfork.org/en/scripts/457553-wme-switch-uturns) original authors: ixxvivxxi, uranik, turbopirate, AntonShevchuk and thanks to them*/
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.9.3 - 2026-06-10:</strong><br>
+  const updateMessage = `<strong>Version 2.6.9.5 - 2026-06-11:</strong><br>
     - Fix: Issue with the uturn failed to update when selected.<br>
-<br>`;
+    - Added: shortcut key option to enable U-turns for segment direction A or B and node.<br>
+    - Added: counter and button UI to allow all U-turns at once for a node when selected.<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://raw.githubusercontent.com/kid4rm90s/WME-EZRoad-Mod/main/WME%20EZRoad%20Mod%20beta.user.js';
@@ -774,6 +776,90 @@
           title: 'Enable U-Turn',
           func: function (arg) {
             handleToggle('enableUTurn', 'Enable U-Turn');
+          },
+          key: -1,
+          arg: {},
+        },
+        {
+          handler: 'WME_EZRoad_Mod_AllowNodeUturns',
+          title: 'Allow All U-Turns at Node',
+          func: function (arg) {
+            const selection = wmeSDK.Editing.getSelection();
+            if (selection && selection.objectType === 'node' && selection.ids && selection.ids.length > 0) {
+              const result = switchNodeUturn(selection.ids[0], true);
+              if (result.success && WazeToastr?.Alerts) {
+                WazeToastr.Alerts.success(scriptName, result.message, false, false, 3000);
+              } else if (!result.success && WazeToastr?.Alerts) {
+                WazeToastr.Alerts.warning(scriptName, result.message, false, false, 3000);
+              }
+            } else {
+              if (WazeToastr?.Alerts) {
+                WazeToastr.Alerts.warning(scriptName, 'Please select a node', false, false, 3000);
+              }
+            }
+          },
+          key: -1,
+          arg: {},
+        },
+        {
+          handler: 'WME_EZRoad_Mod_DisallowNodeUturns',
+          title: 'Disallow All U-Turns at Node',
+          func: function (arg) {
+            const selection = wmeSDK.Editing.getSelection();
+            if (selection && selection.objectType === 'node' && selection.ids && selection.ids.length > 0) {
+              const result = switchNodeUturn(selection.ids[0], false);
+              if (result.success && WazeToastr?.Alerts) {
+                WazeToastr.Alerts.success(scriptName, result.message, false, false, 3000);
+              } else if (!result.success && WazeToastr?.Alerts) {
+                WazeToastr.Alerts.warning(scriptName, result.message, false, false, 3000);
+              }
+            } else {
+              if (WazeToastr?.Alerts) {
+                WazeToastr.Alerts.warning(scriptName, 'Please select a node', false, false, 3000);
+              }
+            }
+          },
+          key: -1,
+          arg: {},
+        },
+        {
+          handler: 'WME_EZRoad_Mod_ToggleSegmentUturnA',
+          title: 'Toggle U-Turn at Segment Direction A',
+          func: function (arg) {
+            const selection = wmeSDK.Editing.getSelection();
+            if (selection && selection.objectType === 'segment' && selection.ids && selection.ids.length > 0) {
+              const result = switchSegmentUturn(selection.ids[0], 'A');
+              if (result.success && WazeToastr?.Alerts) {
+                WazeToastr.Alerts.success(scriptName, result.message, false, false, 3000);
+              } else if (!result.success && WazeToastr?.Alerts) {
+                WazeToastr.Alerts.warning(scriptName, result.message, false, false, 3000);
+              }
+            } else {
+              if (WazeToastr?.Alerts) {
+                WazeToastr.Alerts.warning(scriptName, 'Please select a segment', false, false, 3000);
+              }
+            }
+          },
+          key: -1,
+          arg: {},
+        },
+        {
+          handler: 'WME_EZRoad_Mod_ToggleSegmentUturnB',
+          title: 'Toggle U-Turn at Segment Direction B',
+          func: function (arg) {
+            const selection = wmeSDK.Editing.getSelection();
+            if (selection && selection.objectType === 'segment' && selection.ids && selection.ids.length > 0) {
+              const result = switchSegmentUturn(selection.ids[0], 'B');
+              if (result.success && WazeToastr?.Alerts) {
+                WazeToastr.Alerts.success(scriptName, result.message, false, false, 3000);
+              } else if (!result.success && WazeToastr?.Alerts) {
+                WazeToastr.Alerts.warning(scriptName, result.message, false, false, 3000);
+              }
+            } else {
+              if (WazeToastr?.Alerts) {
+                WazeToastr.Alerts.warning(scriptName, 'Please select a segment', false, false, 3000);
+              }
+            }
           },
           key: -1,
           arg: {},
@@ -1546,6 +1632,38 @@
       eventHandler: onZoomChanged,
     });
 
+    // U-turn panel: Monitor node selection using native SDK event (wme-selection-changed)
+    wmeSDK.Events.on({
+      eventName: 'wme-selection-changed',
+      eventHandler: () => {
+        try {
+          const selection = wmeSDK.Editing.getSelection();
+          
+          // Check if a node is selected
+          if (selection && selection.objectType === 'node' && selection.ids.length > 0) {
+            // Node is selected - create panel
+            createUTurnPanel();
+          } else {
+            // Nothing selected or non-node selected - remove panel
+            removeUTurnPanel();
+          }
+        } catch (e) {
+          log(`[EZRoad] Error in selection changed handler: ${e.message}`);
+        }
+      },
+    });
+
+    // Update U-turn panel when turns change
+    wmeSDK.Events.on({
+      eventName: 'wme-after-undo',
+      eventHandler: updateUTurnPanel,
+    });
+
+    wmeSDK.Events.on({
+      eventName: 'wme-after-redo-clear',
+      eventHandler: updateUTurnPanel,
+    });
+
     // Initialize polling if already enabled
     const options = getOptions();
     if (options.showSegmentLength || options.checkGeometryIssues) {
@@ -2304,6 +2422,369 @@
       return performRecreation();
     }
     return segmentId;
+  }
+
+  // Helper: Ensure WazeActionSetTurn is available (load if needed)
+  function ensureWazeActionSetTurnLoaded() {
+    if (typeof WazeActionSetTurn === 'function') {
+      return true; // Already loaded
+    }
+    
+    try {
+      const SetTurnModule = require('Waze/Model/Graph/Actions/SetTurn');
+      WazeActionSetTurn = SetTurnModule.default || SetTurnModule;
+      log('[EZRoad] WazeActionSetTurn loaded successfully');
+      return typeof WazeActionSetTurn === 'function';
+    } catch (e) {
+      log(`[EZRoad] Failed to load WazeActionSetTurn: ${e.message}`);
+      return false;
+    }
+  }
+
+  // Helper: Count U-turns at a specific node
+  // @param {number} nodeId - The node ID
+  // @return {{allowed: number, disallowed: number}}
+  function countNodeUturns(nodeId) {
+    let turns = wmeSDK.DataModel.Turns.getTurnsThroughNode({ nodeId });
+    turns = turns.filter((turn) => turn.isUTurn);
+    return {
+      allowed: turns.filter((turn) => turn.isAllowed).length,
+      disallowed: turns.filter((turn) => !turn.isAllowed).length
+    };
+  }
+
+  // Helper: Count all U-turns in the current map view
+  // @return {{nodes: number, allowed: number, disallowed: number}}
+  function countAllUturns() {
+    let counters = {
+      nodes: 0,
+      allowed: 0,
+      disallowed: 0
+    };
+    
+    try {
+      // Get all visible nodes
+      const allNodes = wmeSDK.DataModel.Nodes.getNodes();
+      
+      for (const nodeId in allNodes) {
+        const node = allNodes[nodeId];
+        if (node && node.connectedSegmentIds && node.connectedSegmentIds.length >= 2) {
+          const counter = countNodeUturns(nodeId);
+          if (counter.allowed > 0 || counter.disallowed > 0) {
+            counters.nodes++;
+            counters.allowed += counter.allowed;
+            counters.disallowed += counter.disallowed;
+          }
+        }
+      }
+    } catch (e) {
+      log(`[EZRoad] Error counting U-turns: ${e.message}`);
+    }
+    
+    return counters;
+  }
+
+  // Helper: Get the currently selected node using SDK selection API
+  function getSelectedNode() {
+    try {
+      const selection = wmeSDK.Editing.getSelection();
+      
+      // Check if exactly one node is selected
+      if (selection && selection.objectType === 'node' && selection.ids.length === 1) {
+        const nodeId = selection.ids[0];
+        return { id: nodeId }; // Return object with id property for compatibility
+      }
+      
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Helper: Create or update U-turn panel when node is selected
+  let uTurnPanelContainer = null;
+  let createPanelRetry = null; // Retry timeout reference
+  
+  function createUTurnPanel(retryCount = 0) {
+    // Clear any pending retries
+    if (createPanelRetry) {
+      clearTimeout(createPanelRetry);
+      createPanelRetry = null;
+    }
+    
+    // Remove existing panel first
+    removeUTurnPanel();
+    
+    try {
+      // Find the connections-edit container in the node panel
+      let connectionsContainer = document.querySelector('.connections-edit');
+      
+      if (!connectionsContainer) {
+        log(`[EZRoad] connections-edit container not found (attempt ${retryCount + 1}/5)`);
+        
+        // Retry up to 5 times with 100ms delays for DOM to update
+        if (retryCount < 5) {
+          createPanelRetry = setTimeout(() => createUTurnPanel(retryCount + 1), 100);
+          return;
+        }
+        
+        log('[EZRoad] Failed to find connections-edit after 5 retries. Available DOM:', 
+            document.querySelector('#edit-panel')?.className || 'edit-panel not found');
+        return;
+      }
+      
+      const container = document.createElement('div');
+      container.id = 'ezroad-uturns-panel';
+      container.className = 'ezroad-uturns-container';
+      container.style.marginTop = '12px';
+      container.style.paddingTop = '12px';
+      container.style.borderTop = '1px solid #e0e0e0';
+      
+      // Title
+      const title = document.createElement('p');
+      title.innerHTML = '<strong>U-Turns</strong>';
+      title.style.margin = '0 0 8px 0';
+      title.style.fontSize = '14px';
+      container.appendChild(title);
+      
+      // Counter text
+      const counterText = document.createElement('p');
+      counterText.id = 'ezroad-uturns-counter-text';
+      counterText.style.fontSize = '12px';
+      counterText.style.margin = '0 0 8px 0';
+      counterText.style.color = 'inherit';
+      container.appendChild(counterText);
+      
+      // Allow button
+      const allowBtn = document.createElement('wz-button');
+      allowBtn.id = 'ezroad-uturns-allow-btn';
+      allowBtn.color = 'shadowed';
+      allowBtn.size = 'md';
+      allowBtn.innerHTML = 'Allow All U-Turns';
+      allowBtn.style.marginBottom = '4px';
+      allowBtn.style.display = 'none';
+      allowBtn.style.width = '100%';
+      allowBtn.addEventListener('click', () => {
+        const node = getSelectedNode();
+        if (node) switchNodeUturn(node.id, true);
+      });
+      container.appendChild(allowBtn);
+      
+      // Disallow button
+      const disallowBtn = document.createElement('wz-button');
+      disallowBtn.id = 'ezroad-uturns-disallow-btn';
+      disallowBtn.color = 'shadowed';
+      disallowBtn.size = 'md';
+      disallowBtn.innerHTML = 'Disallow All U-Turns';
+      disallowBtn.style.display = 'none';
+      disallowBtn.style.width = '100%';
+      disallowBtn.addEventListener('click', () => {
+        const node = getSelectedNode();
+        if (node) switchNodeUturn(node.id, false);
+      });
+      container.appendChild(disallowBtn);
+      
+      // Append to connections container
+      connectionsContainer.appendChild(container);
+      uTurnPanelContainer = container;
+      log('[EZRoad] U-turn panel created successfully');
+      updateUTurnPanel();
+    } catch (e) {
+      log(`[EZRoad] Error creating U-turn panel: ${e.message}`);
+    }
+  }
+
+  // Helper: Remove U-turn panel
+  function removeUTurnPanel() {
+    // Clear any pending retry timeouts
+    if (createPanelRetry) {
+      clearTimeout(createPanelRetry);
+      createPanelRetry = null;
+    }
+    
+    const panel = document.querySelector('#ezroad-uturns-panel');
+    if (panel) {
+      panel.remove();
+      uTurnPanelContainer = null;
+    }
+  }
+
+  // Helper: Update U-turn panel counter and button visibility
+  function updateUTurnPanel() {
+    try {
+      const node = getSelectedNode();
+      if (!node || !uTurnPanelContainer) return;
+      
+      const counter = countNodeUturns(node.id);
+      const counterText = document.getElementById('ezroad-uturns-counter-text');
+      const allowBtn = document.getElementById('ezroad-uturns-allow-btn');
+      const disallowBtn = document.getElementById('ezroad-uturns-disallow-btn');
+      
+      if (counterText) {
+        counterText.innerHTML = `Allowed: ${counter.allowed}<br/>Disallowed: ${counter.disallowed}`;
+      }
+      
+      // Show allow button only if there are disallowed U-turns
+      if (allowBtn) allowBtn.style.display = counter.disallowed > 0 ? 'flex' : 'none';
+      // Show disallow button only if there are allowed U-turns
+      if (disallowBtn) disallowBtn.style.display = counter.allowed > 0 ? 'flex' : 'none';
+    } catch (e) {
+      log(`[EZRoad] Error updating U-turn panel: ${e.message}`);
+    }
+  }
+
+  // Helper: Allow/Disallow all U-turns at a selected node
+  function switchNodeUturn(nodeId, status) {
+    if (!nodeId) {
+      log('[EZRoad] switchNodeUturn: No nodeId provided');
+      return { success: false, message: 'No node selected' };
+    }
+    
+    // Ensure WazeActionSetTurn is available
+    if (!ensureWazeActionSetTurnLoaded()) {
+      log('[EZRoad] switchNodeUturn: Could not load WazeActionSetTurn');
+      return { success: false, message: 'WazeActionSetTurn not available. Please wait for WME to fully load and try again.' };
+    }
+    
+    if (!wmeSDK.DataModel.Turns.canEditTurnsThroughNode({ nodeId })) {
+      log(`[EZRoad] switchNodeUturn: Cannot edit turns at node ${nodeId}`);
+      return { success: false, message: 'Cannot edit turns at this node' };
+    }
+    
+    let turns = wmeSDK.DataModel.Turns.getTurnsThroughNode({ nodeId });
+    turns = turns.filter((turn) => turn.isUTurn);
+    turns = turns.filter((turn) => turn.isAllowed !== status);
+    
+    if (turns.length === 0) {
+      log(`[EZRoad] Node ${nodeId}: all U-turns are already ${status ? 'ALLOWED' : 'DISALLOWED'}`);
+      return { success: true, message: `All U-turns already ${status ? 'allowed' : 'disallowed'}`, count: 0 };
+    }
+    
+    // Use W model with SDK node ID
+    try {
+      if (typeof W === 'undefined' || !W.model || !W.model.getTurnGraph || !W.model.actionManager) {
+        log('[EZRoad] switchNodeUturn: W model not available');
+        return { success: false, message: 'W model not available' };
+      }
+      
+      const wNode = W.model.nodes.getObjectById(nodeId);
+      if (!wNode) {
+        log(`[EZRoad] switchNodeUturn: Could not get W model node ${nodeId}`);
+        return { success: false, message: 'Could not retrieve node' };
+      }
+      
+      let successCount = 0;
+      for (let i = 0; i < turns.length; i++) {
+        let turn = turns[i];
+        const wSeg = W.model.segments.getObjectById(turn.fromSegmentId);
+        if (wSeg) {
+          const wTurn = W.model.getTurnGraph().getTurnThroughNode(wNode, wSeg, wSeg);
+          if (wTurn) {
+            W.model.actionManager.add(
+              new WazeActionSetTurn(
+                W.model.getTurnGraph(),
+                wTurn.withTurnData(wTurn.getTurnData().withState(status ? 1 : 0)) // 1 = ALLOW, 0 = DISALLOW
+              )
+            );
+            successCount++;
+            log(`[EZRoad] Turn ${turn.id} switched to ${status ? 'ALLOW' : 'DISALLOW'}`);
+          }
+        }
+      }
+      
+      updateUTurnPanel();
+      return { success: true, message: `${successCount} U-turns ${status ? 'allowed' : 'disallowed'}`, count: successCount };
+    } catch (e) {
+      log(`[EZRoad] Error switching node U-turns: ${e.message}`);
+      updateUTurnPanel();
+      return { success: false, message: `Error: ${e.message}` };
+    }
+  }
+
+  // Helper: Toggle U-turn for a specific segment direction (checks current state, then flips)
+  function switchSegmentUturn(segmentId, direction = 'A') {
+    if (!segmentId) {
+      log('[EZRoad] switchSegmentUturn: No segmentId provided');
+      return { success: false, message: 'No segment provided' };
+    }
+    
+    // Ensure WazeActionSetTurn is available
+    if (!ensureWazeActionSetTurnLoaded()) {
+      log('[EZRoad] switchSegmentUturn: Could not load WazeActionSetTurn');
+      return { success: false, message: 'WazeActionSetTurn not available. Please wait for WME to fully load and try again.' };
+    }
+    
+    const segment = wmeSDK.DataModel.Segments.getById({ segmentId });
+    if (!segment) {
+      log(`[EZRoad] switchSegmentUturn: Segment ${segmentId} not found`);
+      return { success: false, message: 'Segment not found' };
+    }
+    
+    if (!segment.isTwoWay) {
+      log(`[EZRoad] switchSegmentUturn: Segment ${segmentId} is not two-way`);
+      return { success: false, message: 'Segment is not two-way' };
+    }
+    
+    const nodeId = direction === 'A' ? segment.fromNodeId : segment.toNodeId;
+    if (!nodeId) {
+      log(`[EZRoad] switchSegmentUturn: No node at direction ${direction}`);
+      return { success: false, message: `No node at direction ${direction}` };
+    }
+    
+    if (!wmeSDK.DataModel.Turns.canEditTurnsThroughNode({ nodeId })) {
+      log(`[EZRoad] switchSegmentUturn: Cannot edit turns at node ${nodeId}`);
+      return { success: false, message: 'Cannot edit turns at this node' };
+    }
+    
+    // Get current state
+    let isCurrentlyAllowed = wmeSDK.DataModel.Turns.isTurnAllowed({ fromSegmentId: segmentId, nodeId: nodeId, toSegmentId: segmentId });
+    let newStatus = !isCurrentlyAllowed; // Toggle
+    
+    let turns = wmeSDK.DataModel.Turns.getTurnsThroughNode({ nodeId });
+    turns = turns.filter((turn) => turn.isUTurn);
+    turns = turns.filter((turn) => turn.fromSegmentId === segmentId && turn.toSegmentId === segmentId);
+    
+    if (turns.length === 0) {
+      log(`[EZRoad] switchSegmentUturn: No U-turn found at segment ${segmentId} direction ${direction}`);
+      return { success: false, message: 'No U-turn found' };
+    }
+    
+    // Use W model with SDK node ID
+    try {
+      if (typeof W === 'undefined' || !W.model || !W.model.getTurnGraph || !W.model.actionManager) {
+        log('[EZRoad] switchSegmentUturn: W model not available');
+        return { success: false, message: 'W model not available' };
+      }
+      
+      const wSeg = W.model.segments.getObjectById(segmentId);
+      const wNode = W.model.nodes.getObjectById(nodeId);
+      
+      if (!wSeg || !wNode) {
+        log(`[EZRoad] switchSegmentUturn: Could not get W model objects`);
+        return { success: false, message: 'Could not retrieve W model objects' };
+      }
+      
+      const turn = W.model.getTurnGraph().getTurnThroughNode(wNode, wSeg, wSeg);
+      if (!turn) {
+        log(`[EZRoad] switchSegmentUturn: Could not get turn through node`);
+        return { success: false, message: 'Could not retrieve turn' };
+      }
+      
+      W.model.actionManager.add(
+        new WazeActionSetTurn(
+          W.model.getTurnGraph(),
+          turn.withTurnData(turn.getTurnData().withState(newStatus ? 1 : 0)) // 1 = ALLOW, 0 = DISALLOW (toggle)
+        )
+      );
+      
+      log(`[EZRoad] U-turn at segment ${segmentId} direction ${direction} toggled to ${newStatus ? 'ALLOW' : 'DISALLOW'}`);
+      updateUTurnPanel();
+      return { success: true, message: `U-turn toggled to ${newStatus ? 'allowed' : 'disallowed'}`, count: 1 };
+    } catch (e) {
+      log(`[EZRoad] Error toggling segment U-turn: ${e.message}`);
+      updateUTurnPanel();
+      return { success: false, message: `Error: ${e.message}` };
+    }
   }
 
   const handleUpdate = () => {
@@ -3543,10 +4024,9 @@
             }
 
             try {
-              // Ensure WazeActionSetTurn constructor is loaded
-              if (typeof WazeActionSetTurn !== 'function') {
-                const SetTurnModule = require('Waze/Model/Graph/Actions/SetTurn');
-                WazeActionSetTurn = SetTurnModule.default || SetTurnModule;
+              // Ensure WazeActionSetTurn is loaded using shared helper
+              if (!ensureWazeActionSetTurnLoaded()) {
+                return 'failed';
               }
 
               const seg = W.model.segments.getObjectById(id);
@@ -3625,6 +4105,13 @@
     }
 
     Promise.all(updatePromises).then(() => {
+      // Update U-turn panel if a node is currently selected
+      try {
+        updateUTurnPanel();
+      } catch (e) {
+        log(`[EZRoad] Error updating U-turn panel: ${e.message}`);
+      }
+      
       // Always push city name alert if not already set by other actions
       selection.ids.forEach((id) => {
         if (!alertMessageParts.some((part) => part.startsWith('City Name'))) {
@@ -4325,6 +4812,41 @@
   scriptupdatemonitor();
   console.log(`${scriptName} initialized.`);
 
+  // CSS styling for U-turn counters and UI (imported from WME Switch Uturns)
+  const ezroadUturnCss = `
+    .ezroad-uturns-info .button-toolbar {
+      padding: 8px;
+    }
+    p.ezroad-uturns-counter {
+      margin-top: 15px;
+      padding-left: 15px;
+    }
+    p.ezroad-uturns-info {
+      border-top: 1px solid #ccc;
+      color: #777;
+      font-size: x-small;
+      margin-top: 15px;
+      padding-top: 10px;
+      text-align: center;
+    }
+    #ezroad-uturns {
+      padding: 16px;
+    }
+    [wz-theme="dark"] #ezroad-uturns-disallow-btn {
+      --wz-button-background-color: var(--always_dark_surface_default) !important;
+    }
+    [wz-theme="dark"] #ezroad-uturns-allow-btn {
+      --wz-button-background-color: var(--always_dark_surface_default) !important;
+    }
+  `;
+  
+  // Inject CSS styling
+  if (document.head) {
+    const styleElement = document.createElement('style');
+    styleElement.textContent = ezroadUturnCss;
+    document.head.appendChild(styleElement);
+  }
+
   // Custom code to run after WME bootstrap for legacy require calls for UTurn action. without it WazeActionSetTurn is undefined.
     let WazeActionSetTurn
 
@@ -4346,6 +4868,13 @@ if (typeof require !== 'undefined') {
 
   /*
 Changelog
+<strong>Version 2.6.9.5 - 2026-06-11:</strong><br>
+    - Fix: Issue with the uturn failed to update when selected.<br>
+    - Added: shortcut key option to enable U-turns for segment direction A or B and node.<br>
+    - Added: counter and button UI to allow all U-turns at once for a node when selected.<br>
+<strong>Version 2.6.9.4 - 2026-06-11:</strong><br>
+    - Fix: Issue with the uturn failed to update when selected.<br>
+    - Added: shortcut key option to enable U-turns for segment direction A or B and node.<br>
 <strong>Version 2.6.9.3 - 2026-06-10:</strong><br>
     - Fix: Issue with the uturn failed to update when selected.<br>
 <strong>Version 2.6.9.2 - 2026-06-01:</strong><br>
