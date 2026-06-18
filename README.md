@@ -1,6 +1,7 @@
 ## WME EZRoad Mod
 
 Script modified from [WME EZRoad](https://greasyfork.org/scripts/518381-wme-ezsegments) (original author: Michaelrosstarr). Thanks to him!
+For the toggling U-turns feature, code is adapted from WME Switch Uturns (https://greasyfork.org/en/scripts/457553-wme-switch-uturns) original authors: ixxvivxxi, uranik, turbopirate, AntonShevchuk and thanks to them!
 
 WME EZRoad Mod is a powerful enhancement for the Waze Map Editor, designed to streamline and automate common road segment updates.
 
