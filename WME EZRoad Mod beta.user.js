@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.9.5
+// @version      2.6.9.6
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -29,10 +29,8 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.9.5 - 2026-06-11:</strong><br>
-    - Fix: Issue with the uturn failed to update when selected.<br>
-    - Added: shortcut key option to enable U-turns for segment direction A or B and node.<br>
-    - Added: counter and button UI to allow all U-turns at once for a node when selected.<br>`;
+  const updateMessage = `<strong>Version 2.6.9.6 - 2026-07-11:</strong><br>
+    - Fix: All address properties (streetId, houseNumber, alternateStreetIds, and raw components) are now organized under a single addressData object, keeping the method signatures clean following wmesdk pattern<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://raw.githubusercontent.com/kid4rm90s/WME-EZRoad-Mod/main/WME%20EZRoad%20Mod%20beta.user.js';
@@ -2347,8 +2345,10 @@
         log(`[${scriptName}] Restoring address for new segment ${newSegmentId}`);
         wmeSDK.DataModel.Segments.updateAddress({
           segmentId: newSegmentId,
-          primaryStreetId: validPrimaryStreetId,
-          alternateStreetIds: oldAltStreetIds,
+          addressData: {
+            primaryStreetId: validPrimaryStreetId,
+            alternateStreetIds: oldAltStreetIds,
+          },
         });
 
         // If we have connected segment name data to copy, apply it now
@@ -2356,8 +2356,10 @@
           log(`[${scriptName}] Applying connected segment name data`);
           wmeSDK.DataModel.Segments.updateAddress({
             segmentId: newSegmentId,
-            primaryStreetId: copyConnectedNameData.primaryStreetId,
-            alternateStreetIds: Array.isArray(copyConnectedNameData.alternateStreetIds) ? copyConnectedNameData.alternateStreetIds : [],
+            addressData: {
+              primaryStreetId: copyConnectedNameData.primaryStreetId,
+              alternateStreetIds: Array.isArray(copyConnectedNameData.alternateStreetIds) ? copyConnectedNameData.alternateStreetIds : [],
+            },
           });
         }
 
@@ -2889,8 +2891,10 @@
                   try {
                     wmeSDK.DataModel.Segments.updateAddress({
                       segmentId: id,
-                      primaryStreetId: connectedSeg.primaryStreetId,
-                      alternateStreetIds: connectedSeg.alternateStreetIds || [],
+                      addressData: {
+                        primaryStreetId: connectedSeg.primaryStreetId,
+                        alternateStreetIds: connectedSeg.alternateStreetIds || [],
+                      },
                     });
                   } catch (addrError) {
                     log(`[${scriptName}] updateAddress error: ` + addrError);
@@ -2953,8 +2957,10 @@
                   try {
                     wmeSDK.DataModel.Segments.updateAddress({
                       segmentId: id,
-                      primaryStreetId: connectedSeg.primaryStreetId,
-                      alternateStreetIds: connectedSeg.alternateStreetIds || [],
+                      addressData: {
+                        primaryStreetId: connectedSeg.primaryStreetId,
+                        alternateStreetIds: connectedSeg.alternateStreetIds || [],
+                      },
                     });
                   } catch (addrError) {
                     log(`[${scriptName}] updateAddress error in fallback: ` + addrError);
@@ -3276,8 +3282,10 @@
           // Remove all alternate street names
           wmeSDK.DataModel.Segments.updateAddress({
             segmentId: id,
-            primaryStreetId: street.id,
-            alternateStreetIds: [],
+            addressData: {
+              primaryStreetId: street.id,
+              alternateStreetIds: [],
+            },
           });
         } else if (options.setStreetCity) {
           // Use the same street name as current, but in the empty city for both primary and all alts
@@ -3320,8 +3328,10 @@
           }
           wmeSDK.DataModel.Segments.updateAddress({
             segmentId: id,
-            primaryStreetId: street.id,
-            alternateStreetIds: newAltStreetIds,
+            addressData: {
+              primaryStreetId: street.id,
+              alternateStreetIds: newAltStreetIds,
+            },
           });
           pushCityNameAlert(city.id, alertMessageParts);
           updatedCityName = true;
@@ -3361,8 +3371,10 @@
             log(`About to updateAddress: cityId=${city.id}, street.id=${street.id}, altStreetIds=${newAltStreetIds.join(',')}`);
             wmeSDK.DataModel.Segments.updateAddress({
               segmentId: id,
-              primaryStreetId: street.id,
-              alternateStreetIds: newAltStreetIds.length > 0 ? newAltStreetIds : undefined,
+              addressData: {
+                primaryStreetId: street.id,
+                alternateStreetIds: newAltStreetIds.length > 0 ? newAltStreetIds : undefined,
+              },
             });
           } else {
             // New/empty street fallback - use the city we already determined above (from top city or connected segments)
@@ -3373,8 +3385,10 @@
             }
             wmeSDK.DataModel.Segments.updateAddress({
               segmentId: id,
-              primaryStreetId: street.id,
-              alternateStreetIds: undefined,
+              addressData: {
+                primaryStreetId: street.id,
+                alternateStreetIds: undefined,
+              },
             });
           }
         }
@@ -3781,8 +3795,10 @@
                   log(`[copySegmentName] Calling updateAddress (setStreetCity=true) with primaryStreetId=${newPrimaryStreetId}, alternateStreetIds=[${newAltStreetIdsInEmptyCity.join(', ')}]`);
                   wmeSDK.DataModel.Segments.updateAddress({
                     segmentId: id,
-                    primaryStreetId: newPrimaryStreetId,
-                    alternateStreetIds: newAltStreetIdsInEmptyCity,
+                    addressData: {
+                      primaryStreetId: newPrimaryStreetId,
+                      alternateStreetIds: newAltStreetIdsInEmptyCity,
+                    },
                   });
                   pushCityNameAlert(emptyCity.id, alertMessageParts);
                   updatedCityName = true;
@@ -3790,8 +3806,10 @@
                   log(`[copySegmentName] Calling updateAddress with primaryStreetId=${newPrimaryStreetId}, alternateStreetIds=[${newAltStreetIds.join(', ')}]`);
                   wmeSDK.DataModel.Segments.updateAddress({
                     segmentId: id,
-                    primaryStreetId: newPrimaryStreetId,
-                    alternateStreetIds: newAltStreetIds,
+                    addressData: {
+                      primaryStreetId: newPrimaryStreetId,
+                      alternateStreetIds: newAltStreetIds,
+                    },
                   });
                   if (connectedSeg.primaryStreetId) {
                     const connectedPrimaryStreet = wmeSDK.DataModel.Streets.getById({ streetId: connectedSeg.primaryStreetId });
@@ -3960,16 +3978,20 @@
                     
                     wmeSDK.DataModel.Segments.updateAddress({
                       segmentId: id,
-                      primaryStreetId: newPrimaryStreetId,
-                      alternateStreetIds: newAltStreetIdsInEmptyCity,
+                      addressData: {
+                        primaryStreetId: newPrimaryStreetId,
+                        alternateStreetIds: newAltStreetIdsInEmptyCity,
+                      },
                     });
                     pushCityNameAlert(emptyCity.id, alertMessageParts);
                     updatedCityName = true;
                   } else {
                     wmeSDK.DataModel.Segments.updateAddress({
                       segmentId: id,
-                      primaryStreetId: newPrimaryStreetId,
-                      alternateStreetIds: newAltStreetIds,
+                      addressData: {
+                        primaryStreetId: newPrimaryStreetId,
+                        alternateStreetIds: newAltStreetIds,
+                      },
                     });
                     if (connectedSeg.primaryStreetId) {
                       const connectedPrimaryStreet = wmeSDK.DataModel.Streets.getById({ streetId: connectedSeg.primaryStreetId });
@@ -4868,6 +4890,8 @@ if (typeof require !== 'undefined') {
 
   /*
 Changelog
+<strong>Version 2.6.9.6 - 2026-07-11:</strong><br>
+    - Fix: All address properties (streetId, houseNumber, alternateStreetIds, and raw components) are now organized under a single addressData object, keeping the method signatures clean following wmesdk pattern<br>
 <strong>Version 2.6.9.5 - 2026-06-11:</strong><br>
     - Fix: Issue with the uturn failed to update when selected.<br>
     - Added: shortcut key option to enable U-turns for segment direction A or B and node.<br>
