@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.9.6
+// @version      2.6.9.7
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -29,13 +29,16 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.9.6 - 2026-07-11:</strong><br>
-    - Fix: All address properties (streetId, houseNumber, alternateStreetIds, and raw components) are now organized under a single addressData object, keeping the method signatures clean following wmesdk pattern<br>`;
+  const updateMessage = `<strong>Version 2.6.9.7 - 2026-07-11:</strong><br>
+    - Fix: All address properties (streetId, houseNumber, alternateStreetIds, and raw components) are now organized under a single addressData object, keeping the method signatures clean following wmesdk pattern<br>
+    - Road names will now follow localized names if available<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://raw.githubusercontent.com/kid4rm90s/WME-EZRoad-Mod/main/WME%20EZRoad%20Mod%20beta.user.js';
   const forumURL = 'https://greasyfork.org/scripts/528552-wme-ezroad-mod/feedback';
   let wmeSDK;
+  let roadTypeLocalizedNames = {};
+  
   const roadTypes = [
     { id: 1, name: 'Motorway', value: 3, shortcutKey: 'S+1' },
     { id: 2, name: 'Ramp', value: 4, shortcutKey: 'S+2' },
@@ -88,6 +91,10 @@
 
   const UserRankRequiredForGeometryFix = 3; // Minimum user rank required to use the geometry fix feature - only show for L3 and above (rank >= 2 in SDK)
 
+// Prefer the SDK's localized road type name (respects the editor's language setting),
+// falling back to our hardcoded label if the lookup isn't available for some reason.
+  const roadTypeName = (roadType) => roadTypeLocalizedNames[roadType.value] || roadType.name;
+
   const log = (message) => {
     if (typeof message === 'string') {
       console.log(`$${scriptName}: ` + message);
@@ -102,7 +109,14 @@
     wmeSDK = getWmeSdk({
       scriptId: 'wme-ez-roads-mod',
       scriptName: 'EZ Roads Mod',
-  });
+    });
+      try {
+        wmeSDK.DataModel.Segments.getRoadTypes().forEach(rt => {
+            roadTypeLocalizedNames[rt.id] = rt.localizedName || rt.name;
+        });
+    } catch (e) {
+        log(`Could not load localized road type names: ${e}`);
+    }
       WME_EZRoads_Mod_bootstrap();
   }
 
@@ -1086,10 +1100,10 @@
               saveOptions(options);
               updateRoadTypeRadios(rt.value);
               if (WazeToastr?.Alerts) {
-                WazeToastr.Alerts.success(`${scriptName}`, `Selected road type: <b>${rt.name}</b>`, false, false, 1500);
+                WazeToastr.Alerts.success(`${scriptName}`, `Selected road type: <b>${roadTypeName(rt)}</b>`, false, false, 1500);
               }
             },
-            description: `Select road type: ${rt.name}`,
+            description: `Select road type: ${roadTypeName(rt)}`,
             shortcutId,
             shortcutKeys: rt.shortcutKey,
           });
@@ -3094,7 +3108,7 @@
             log(`[${scriptName}] Segment ID: ${id}, Current Road Type: ${seg.roadType}, Target Road Type: ${options.roadType}, Target Road Name : ${selectedRoad.name}`); // Log current and target road type
             if (seg.roadType === options.roadType) {
               log(`[${scriptName}] Segment ID: ${id} already has the target road type: ${options.roadType}. Skipping update.`);
-              alertMessageParts.push(`Road Type: <b>${selectedRoad.name} exists. Skipping update.</b>`);
+              alertMessageParts.push(`Road Type: <b>${roadTypeName(selectedRoad)} exists. Skipping update.</b>`);
               updatedRoadType = true;
             } else {
               try {
@@ -3103,7 +3117,7 @@
                   roadType: options.roadType,
                 });
                 log(`[${scriptName}] Road type updated successfully.`);
-                alertMessageParts.push(`Road Type: <b>${selectedRoad.name}</b>`);
+                alertMessageParts.push(`Road Type: <b>${roadTypeName(selectedRoad)}</b>`);
                 updatedRoadType = true;
               } catch (error) {
                 console.error(`[${scriptName}] Error updating road type:`, error);
@@ -4338,7 +4352,7 @@
       const div = $(`<div class="ezroadsmod-option">
             <div class="ezroadsmod-radio-container">
                 <input type="radio" id="${id}" name="defaultRoad" data-road-value="${roadType.value}" ${isChecked ? 'checked' : ''}>
-                <label for="${id}">${roadType.name}</label>
+                <label for="${id}">${roadTypeName(roadType)}</label>
                 <select id="lock-level-${roadType.id}" class="road-lock-level" data-road-id="${roadType.id}" ${!localOptions.setLock ? 'disabled' : ''}>
                     ${locks.map((lock) => `<option value="${lock.value}" ${lockSetting.lock === lock.value ? 'selected' : ''}>${lock.value === 'HRCS' ? 'HRCS' : 'L' + lock.value}</option>`).join('')}
                 </select>
@@ -4890,6 +4904,9 @@ if (typeof require !== 'undefined') {
 
   /*
 Changelog
+<strong>Version 2.6.9.7 - 2026-07-11:</strong><br>
+    - Fix: All address properties (streetId, houseNumber, alternateStreetIds, and raw components) are now organized under a single addressData object, keeping the method signatures clean following wmesdk pattern<br>
+    - Road names will now follow localized names if available<br>
 <strong>Version 2.6.9.6 - 2026-07-11:</strong><br>
     - Fix: All address properties (streetId, houseNumber, alternateStreetIds, and raw components) are now organized under a single addressData object, keeping the method signatures clean following wmesdk pattern<br>
 <strong>Version 2.6.9.5 - 2026-06-11:</strong><br>
