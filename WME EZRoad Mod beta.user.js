@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.9.7
+// @version      2.6.9.8
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -29,9 +29,10 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.9.7 - 2026-07-11:</strong><br>
-    - Fix: All address properties (streetId, houseNumber, alternateStreetIds, and raw components) are now organized under a single addressData object, keeping the method signatures clean following wmesdk pattern<br>
-    - Road names will now follow localized names if available<br>`;
+  const updateMessage = `<strong>Version 2.6.9.8 - 2026-07-13:</strong><br>
+    - Added: Road Width (No of Lanes) buttons (0-8, + Multiple for mixed selection) in the edit panel<br>
+    - Settings checkbox to enable/disable lane count buttons<br>
+    - Tooltip when hovering lane chips<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://raw.githubusercontent.com/kid4rm90s/WME-EZRoad-Mod/main/WME%20EZRoad%20Mod%20beta.user.js';
@@ -76,6 +77,7 @@
     geometryIssueThreshold: 2,
     enableUTurn: false,
     restrictExceptMotorbike: false,
+    updateLanes: false,
     shortcutKey: 'g',
   };
 
@@ -930,6 +932,15 @@
           key: -1,
           arg: {},
         },
+        {
+          handler: 'WME_EZRoad_Mod_UpdateLaneCount',
+          title: 'Update Lane Count',
+          func: function (arg) {
+            handleToggle('updateLanes', 'Update Lane Count');
+          },
+          key: -1,
+          arg: {},
+        },
       ];
 
       // Register legacy shortcuts
@@ -1065,6 +1076,8 @@
               }
               // Always re-attach chip listeners after panel mutation
               addRoadTypeChipListeners();
+              // Add lane count buttons if enabled
+              addLaneCountButtons();
             }
           }
         }
@@ -1659,6 +1672,11 @@
             // Nothing selected or non-node selected - remove panel
             removeUTurnPanel();
           }
+          
+          // Update lane chip highlight when selection changes
+          if (typeof updateLaneChipHighlight === 'function') {
+            updateLaneChipHighlight();
+          }
         } catch (e) {
           log(`[EZRoad] Error in selection changed handler: ${e.message}`);
         }
@@ -2110,6 +2128,195 @@
   }
 
   // ===== End Segment Splitter Feature =====
+  
+  // ===== Lane Count Update Buttons =====
+  /**
+   * Updates the number of lanes (road width) for all given segment IDs.
+   * Sets both fromLanesInfo and toLanesInfo to the specified count.
+   */
+  function handleLaneCountUpdate(segmentIds, laneCount) {
+    if (!segmentIds || segmentIds.length === 0) {
+      log('[LaneCount] No segments to update');
+      return;
+    }
+    
+    let successCount = 0;
+    const totalCount = segmentIds.length;
+    
+    segmentIds.forEach((id) => {
+      try {
+        const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+        if (!seg) {
+          log(`[LaneCount] Segment ${id} not found`);
+          return;
+        }
+        // Pass null to clear both directions when laneCount is 0
+        wmeSDK.DataModel.Segments.updateSegment({
+          segmentId: id,
+          fromLanesInfo: laneCount > 0 ? { numberOfLanes: laneCount, laneWidth: null } : null,
+          toLanesInfo: laneCount > 0 ? { numberOfLanes: laneCount, laneWidth: null } : null,
+        });
+        successCount++;
+        log(`[LaneCount] Set numberOfLanes=${laneCount} for segment ${id} (road width)`);
+      } catch (e) {
+        log(`[LaneCount] Error updating segment ${id}: ${e.message}`);
+      }
+    });
+    
+    if (WazeToastr?.Alerts) {
+      if (successCount === totalCount) {
+        WazeToastr.Alerts.success(`${scriptName}`, `Road width set to ${laneCount} lane(s) for ${successCount} segment(s).`, false, false, 2000);
+      } else if (successCount > 0) {
+        WazeToastr.Alerts.warning(`${scriptName}`, `Road width set to ${laneCount} lane(s) for ${successCount}/${totalCount} segment(s).`, false, false, 3000);
+      } else {
+        WazeToastr.Alerts.error(`${scriptName}`, 'Failed to update road width.', false, false, 3000);
+      }
+    }
+  }
+
+  /**
+   * Creates or refreshes the lane count button row in the segment edit panel.
+   * Inserted between the HOV chip container and the routing road type control.
+   */
+  function addLaneCountButtons() {
+    const options = getOptions();
+    if (!options.updateLanes) {
+      // Remove existing lane buttons container if present
+      const existing = document.getElementById('ezroad-lane-buttons');
+      if (existing) existing.remove();
+      return;
+    }
+    
+    // Avoid duplicates
+    if (document.getElementById('ezroad-lane-buttons')) return;
+    
+    const editGeneral = document.querySelector('#segment-edit-general');
+    if (!editGeneral) return;
+    
+    //const routingControl = editGeneral.querySelector('.routing-road-type-control');
+    const routingControl = editGeneral.querySelector('.controls.roadDetailsFlags--h4KVD');
+    if (!routingControl) return;
+    
+    // Create container
+    const container = document.createElement('div');
+    container.id = 'ezroad-lane-buttons';
+    container.className = 'ezroad-lane-buttons-container';
+    
+    // Label
+    const label = document.createElement('span');
+    label.className = 'ezroad-lane-label';
+    label.textContent = 'Lanes:';
+    container.appendChild(label);
+    
+    // Add 'Multiple' chip for mixed selection (similar to WME lock level selector)
+    const mixedChip = document.createElement('wz-checkable-chip');
+    mixedChip.className = 'ezroad-lane-chip';
+    mixedChip.textContent = 'Multiple';
+    mixedChip.setAttribute('size', 'md');
+    mixedChip.setAttribute('value', 'MIXED');
+    mixedChip.setAttribute('read-only', '');
+    mixedChip.setAttribute('title', 'No of Lane Road width');
+    mixedChip.style.display = 'none'; // hidden until mixed selection detected
+    container.appendChild(mixedChip);
+    
+    // Create chips 0-8 matching WME's lock rank chip style
+    for (let i = 0; i <= 8; i++) {
+      const chip = document.createElement('wz-checkable-chip');
+      chip.className = 'ezroad-lane-chip';
+      chip.textContent = String(i);
+      chip.setAttribute('size', 'md');
+      chip.setAttribute('value', String(i));
+      chip.setAttribute('title', 'No of Lane Road width');
+      
+      chip.addEventListener('click', () => {
+        const selection = wmeSDK.Editing.getSelection();
+        if (!selection || selection.objectType !== 'segment' || !selection.ids || selection.ids.length === 0) {
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.warning(`${scriptName}`, 'No segments selected.', false, false, 2000);
+          }
+          return;
+        }
+        handleLaneCountUpdate(selection.ids, i);
+        
+        // Visual feedback: highlight clicked chip
+        container.querySelectorAll('wz-checkable-chip.ezroad-lane-chip').forEach((c) => c.removeAttribute('checked'));
+        chip.setAttribute('checked', '');
+      });
+      
+      container.appendChild(chip);
+    }
+    
+    // Insert after routing road type control
+    routingControl.parentNode.insertBefore(container, routingControl.nextSibling);
+    
+    // Highlight the chip matching the currently selected segment's lane width
+    updateLaneChipHighlight();
+    
+    log('[LaneCount] Lane count buttons added to edit panel');
+  }
+
+  /**
+   * Updates the chip highlight to reflect the currently selected segment's lane width.
+   */
+  function updateLaneChipHighlight() {
+    const container = document.getElementById('ezroad-lane-buttons');
+    if (!container) return;
+    
+    const selection = wmeSDK.Editing.getSelection();
+    if (!selection || selection.objectType !== 'segment' || !selection.ids || selection.ids.length === 0) {
+      return;
+    }
+    
+    // Determine the lane count for each selected segment and check if they differ
+    function getLaneCount(seg) {
+      if (seg.fromLanesInfo && seg.fromLanesInfo.numberOfLanes !== null && seg.fromLanesInfo.numberOfLanes !== undefined) {
+        return seg.fromLanesInfo.numberOfLanes;
+      }
+      if (seg.toLanesInfo && seg.toLanesInfo.numberOfLanes !== null && seg.toLanesInfo.numberOfLanes !== undefined) {
+        return seg.toLanesInfo.numberOfLanes;
+      }
+      return 0; // null/undefined treated as 0
+    }
+    
+    // Check if multiple segments have different lane counts
+    let uniqueCounts = new Set();
+    let targetLaneCount = null;
+    let isMixed = false;
+    
+    for (let id of selection.ids) {
+      const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+      if (!seg) continue;
+      const count = getLaneCount(seg);
+      uniqueCounts.add(count);
+      if (targetLaneCount === null) targetLaneCount = count;
+    }
+    
+    if (uniqueCounts.size > 1) {
+      isMixed = true;
+    }
+    
+    // Clear all highlights first
+    container.querySelectorAll('wz-checkable-chip.ezroad-lane-chip').forEach((c) => c.removeAttribute('checked'));
+    
+    // Show/hide the 'Multiple' chip based on mixed detection
+    const mixedChip = container.querySelector('wz-checkable-chip.ezroad-lane-chip[value="MIXED"]');
+    
+    if (isMixed) {
+      if (mixedChip) {
+        mixedChip.style.display = '';
+        mixedChip.setAttribute('checked', '');
+      }
+    } else {
+      if (mixedChip) mixedChip.style.display = 'none';
+      
+      // Highlight the specific number chips 0-8 
+      if (targetLaneCount !== null && targetLaneCount >= 0 && targetLaneCount <= 8) {
+        const targetChip = container.querySelector(`wz-checkable-chip.ezroad-lane-chip[value="${targetLaneCount}"]`);
+        if (targetChip) targetChip.setAttribute('checked', '');
+      }
+    }
+  }
+  // ===== End Lane Count Update Buttons =====
 
   const getEmptyCity = () => {
     return (
@@ -4340,6 +4547,12 @@
         key: 'restrictExceptMotorbike',
         tooltip: 'Automatically adds motorbike-only vehicle restrictions via UI automation. Applies to entire segment in both directions, all day. Blocks all vehicles except motorcycles. May use shortcut key (Alt+R) or (Quick Update Segment) to apply.',
       },
+      {
+        id: 'updateLanes',
+        text: 'Enable Road Width (No of Lanes) buttons',
+        key: 'updateLanes',
+        tooltip: 'Shows lane count buttons (0-10) in the edit panel. Click a number to set the number of lanes for both directions on selected segments.',
+      },
     ];
 
     // Helper function to create radio buttons
@@ -4388,7 +4601,7 @@
     // Helper function to create checkboxes
     const createCheckbox = (option) => {
       const isChecked = localOptions[option.key];
-      const otherClass = option.key !== 'autosave' && option.key !== 'copySegmentAttributes' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' && option.key !== 'restrictExceptMotorbike' ? 'ezroadsmod-other-checkbox' : '';
+      const otherClass = option.key !== 'autosave' && option.key !== 'copySegmentAttributes' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' && option.key !== 'restrictExceptMotorbike' && option.key !== 'updateLanes' ? 'ezroadsmod-other-checkbox' : '';
       const attrClass = option.key === 'copySegmentAttributes' ? 'ezroadsmod-attr-checkbox' : '';
 
       const div = $(`<div class="ezroadsmod-option">
@@ -4419,15 +4632,15 @@
           } else {
             update('copySegmentAttributes', false);
           }
-        } else if (option.key !== 'autosave' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' && option.key !== 'restrictExceptMotorbike') {
-          // If any other checkbox (except autosave, showSegmentLength, checkGeometryIssues, restrictExceptMotorbike) is checked, uncheck copySegmentAttributes
+        } else if (option.key !== 'autosave' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' && option.key !== 'restrictExceptMotorbike' && option.key !== 'updateLanes') {
+          // If any other checkbox (except autosave, showSegmentLength, checkGeometryIssues, restrictExceptMotorbike, updateLanes) is checked, uncheck copySegmentAttributes
           if ($(`#${option.id}`).prop('checked')) {
             $('#copySegmentAttributes').prop('checked', false);
             update('copySegmentAttributes', false);
           }
           update(option.key, $(`#${option.id}`).prop('checked'));
         } else {
-          // Autosave, showSegmentLength, checkGeometryIssues, or restrictExceptMotorbike
+          // Autosave, showSegmentLength, checkGeometryIssues, restrictExceptMotorbike, or updateLanes
           update(option.key, $(`#${option.id}`).prop('checked'));
         }
 
@@ -4496,6 +4709,27 @@
             }
             .ezroadsmod-reset-button:hover {
                 background-color: #d32f2f;
+            }
+            .ezroad-lane-buttons-container {
+                display: flex;
+                align-items: center;
+                gap: 2px;
+                padding: 4px 5px;
+                margin: 2px 0;
+                flex-wrap: wrap;
+                border: 1px solid #ccc;
+                border-radius: 6px;
+                background: rgba(128, 128, 128, 0.05);
+            }
+            .ezroad-lane-buttons-container .ezroad-lane-label {
+                font-size: 12px;
+                font-weight: 600;
+                margin-right: 6px;
+                white-space: nowrap;
+                min-width: 40px;
+            }
+            .ezroad-lane-buttons-container wz-checkable-chip.ezroad-lane-chip {
+                margin: 0;
             }
         </style>`);
 
@@ -4904,6 +5138,10 @@ if (typeof require !== 'undefined') {
 
   /*
 Changelog
+<strong>Version 2.6.9.8 - 2026-07-13:</strong><br>
+    - Added: Road Width (No of Lanes) buttons (0-8) in the edit panel with Multiple chip for mixed selection<br>
+    - Settings checkbox to enable/disable lane count buttons<br>
+    - Tooltip on hover for lane chips<br>
 <strong>Version 2.6.9.7 - 2026-07-11:</strong><br>
     - Fix: All address properties (streetId, houseNumber, alternateStreetIds, and raw components) are now organized under a single addressData object, keeping the method signatures clean following wmesdk pattern<br>
     - Road names will now follow localized names if available<br>
