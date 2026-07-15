@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.9.8
+// @version      2.6.9.9
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -29,10 +29,10 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.9.8 - 2026-07-13:</strong><br>
-    - Added: Road Width (No of Lanes) buttons (0-8, + Multiple for mixed selection) in the edit panel<br>
-    - Settings checkbox to enable/disable lane count buttons<br>
-    - Tooltip when hovering lane chips<br>`;
+  const updateMessage = `<strong>Version 2.6.9.9 - 2026-07-15:</strong><br>
+    - Fixed: Lane update feature now displays added lanes properly before saving<br>
+    - Fixed: Lane update feature now works properly with undo/redo<br>
+    - Fixed: Other minor bug fixes and improvements<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://raw.githubusercontent.com/kid4rm90s/WME-EZRoad-Mod/main/WME%20EZRoad%20Mod%20beta.user.js';
@@ -1686,12 +1686,41 @@
     // Update U-turn panel when turns change
     wmeSDK.Events.on({
       eventName: 'wme-after-undo',
-      eventHandler: updateUTurnPanel,
+      eventHandler: () => {
+        updateUTurnPanel();
+        // Refresh lane chip highlight after undo — segment lanes may have reverted
+        if (typeof updateLaneChipHighlight === 'function') {
+          updateLaneChipHighlight();
+        }
+      },
     });
 
     wmeSDK.Events.on({
       eventName: 'wme-after-redo-clear',
-      eventHandler: updateUTurnPanel,
+      eventHandler: () => {
+        updateUTurnPanel();
+        if (typeof updateLaneChipHighlight === 'function') {
+          updateLaneChipHighlight();
+        }
+      },
+    });
+
+    // Listen for any segment data model changes (e.g., lane updates from other
+    // scripts, undo of lane changes) to auto-refresh the chip highlight.
+    wmeSDK.Events.on({
+      eventName: 'wme-data-model-objects-changed',
+      eventHandler: (data) => {
+        if (data && data.dataModelName === 'Segment' && data.objectIds && data.objectIds.length > 0) {
+          // Only refresh if the changed segments match the current selection
+          const selection = wmeSDK.Editing.getSelection();
+          if (selection && selection.objectType === 'segment' && selection.ids) {
+            const hasMatch = data.objectIds.some((id) => selection.ids.includes(Number(id)));
+            if (hasMatch && typeof updateLaneChipHighlight === 'function') {
+              updateLaneChipHighlight();
+            }
+          }
+        }
+      },
     });
 
     // Initialize polling if already enabled
@@ -2238,9 +2267,21 @@
         }
         handleLaneCountUpdate(selection.ids, i);
         
-        // Visual feedback: highlight clicked chip
-        container.querySelectorAll('wz-checkable-chip.ezroad-lane-chip').forEach((c) => c.removeAttribute('checked'));
-        chip.setAttribute('checked', '');
+        // Programmatic reselect (clearSelection → setSelection) triggers the
+        // wme-selection-changed event, which calls updateLaneChipHighlight()
+        // automatically — same as manually deselecting and reselecting.
+        // A small delay ensures the SDK has processed the updateSegment call.
+        setTimeout(() => {
+          try {
+            const currentSelection = wmeSDK.Editing.getSelection();
+            if (currentSelection && currentSelection.objectType === 'segment') {
+              wmeSDK.Editing.clearSelection();
+              wmeSDK.Editing.setSelection({ selection: currentSelection });
+            }
+          } catch (e) {
+            log(`[LaneCount] Reselect error: ${e.message}`);
+          }
+        }, 50);
       });
       
       container.appendChild(chip);
@@ -5138,6 +5179,10 @@ if (typeof require !== 'undefined') {
 
   /*
 Changelog
+<strong>Version 2.6.9.8 - 2026-07-15:</strong><br>
+    - Fixed: Lane update feature now displays added lanes properly before saving<br>
+    - Fixed: Lane update feature now works properly with undo/redo<br>
+    - Fixed: Other minor bug fixes and improvements<br>
 <strong>Version 2.6.9.8 - 2026-07-13:</strong><br>
     - Added: Road Width (No of Lanes) buttons (0-8) in the edit panel with Multiple chip for mixed selection<br>
     - Settings checkbox to enable/disable lane count buttons<br>
