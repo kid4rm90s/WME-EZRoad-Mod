@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.7.0.3
+// @version      2.7.0.4
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -32,6 +32,7 @@
   ('use strict');
   const updateMessage = `<strong>Version 2.7.0.3 - 2026-07-16:</strong><br>
     - Added: Validation of segment node connection<br>
+    - Added: Highlight layer for segments with node connection issues<br>
     - Fixed: Paved/Unpaved feature is now using fully SDK<br>
     - Fixed: Other minor bug fixes and improvements<br>`;
   const scriptName = GM_info.script.name;
@@ -76,7 +77,7 @@
     showSegmentLength: false,
     checkGeometryIssues: false,
     geometryIssueThreshold: 2,
-    validateSegmentConnection: false,
+    validateNodeConnection: false,
     connectionCheckRadius: 5,
     enableUTurn: false,
     restrictExceptMotorbike: false,
@@ -688,7 +689,7 @@
       // Mutual exclusion logic for copySegmentAttributes
       if (optionKey === 'copySegmentAttributes') {
         if (options[optionKey]) {
-          // Uncheck all other checkboxes except autosave, showSegmentLength, checkGeometryIssues, validateSegmentConnection, restrictExceptMotorbike
+          // Uncheck all other checkboxes except autosave, showSegmentLength, checkGeometryIssues, validateNodeConnection, restrictExceptMotorbike
           $('.ezroadsmod-other-checkbox').each(function () {
             $(this).prop('checked', false);
           });
@@ -703,8 +704,8 @@
           newOpts.copySegmentAttributes = true;
           saveOptions(newOpts);
         }
-      } else if (optionKey !== 'autosave' && optionKey !== 'showSegmentLength' && optionKey !== 'checkGeometryIssues' && optionKey !== 'validateSegmentConnection' && optionKey !== 'restrictExceptMotorbike') {
-        // If any other checkbox (except autosave, showSegmentLength, checkGeometryIssues, validateSegmentConnection, restrictExceptMotorbike) is checked, uncheck copySegmentAttributes
+      } else if (optionKey !== 'autosave' && optionKey !== 'showSegmentLength' && optionKey !== 'checkGeometryIssues' && optionKey !== 'validateNodeConnection' && optionKey !== 'restrictExceptMotorbike') {
+        // If any other checkbox (except autosave, showSegmentLength, checkGeometryIssues, validateNodeConnection, restrictExceptMotorbike) is checked, uncheck copySegmentAttributes
         if (options[optionKey]) {
           $('#copySegmentAttributes').prop('checked', false);
           const newOpts = getOptions();
@@ -714,7 +715,7 @@
       }
       
       // Handle Segment Length / Geometry Check / Segment Connection toggle
-      if (optionKey === 'showSegmentLength' || optionKey === 'checkGeometryIssues' || optionKey === 'validateSegmentConnection' || optionKey === 'copySegmentAttributes') {
+      if (optionKey === 'showSegmentLength' || optionKey === 'checkGeometryIssues' || optionKey === 'validateNodeConnection' || optionKey === 'copySegmentAttributes') {
         if (typeof handleSegmentLengthToggle === 'function') {
           handleSegmentLengthToggle();
         }
@@ -945,10 +946,10 @@
           arg: {},
         },
         {
-          handler: 'WME_EZRoad_Mod_ValidateSegmentConnection',
-          title: 'Validate Segment Connection',
+          handler: 'WME_EZRoad_Mod_validateNodeConnection',
+          title: 'Validate Node Connection',
           func: function (arg) {
-            handleToggle('validateSegmentConnection', 'Validate Segment Connection');
+            handleToggle('validateNodeConnection', 'Validate Node Connection');
           },
           key: -1,
           arg: {},
@@ -1458,6 +1459,9 @@
     return minDistance;
   }
 
+  // ===== Segment Connection Highlight Layer =====
+  const CONNECTION_HIGHLIGHT_LAYER = 'EZRoadMod.connectionHighlight';
+
   // ===== Segment Length Display Functionality =====
   let segmentLengthContainer = null;
   let segmentLabelCache = []; // Cache segment data and label elements
@@ -1484,7 +1488,7 @@
     // Update dashboard count if exists (even if hidden)
     const countBadge = document.getElementById('ezroad-geometry-error-count');
 
-    if ((!options.showSegmentLength && !options.checkGeometryIssues && !options.validateSegmentConnection) || !segmentLengthContainer) {
+    if ((!options.showSegmentLength && !options.checkGeometryIssues && !options.validateNodeConnection) || !segmentLengthContainer) {
       if (countBadge) countBadge.style.display = 'none';
       return;
     }
@@ -1510,7 +1514,7 @@
       // Check if any feature can be shown at this zoom level
       const canShowGeometry = options.checkGeometryIssues && currentZoom >= 18;
       const canShowLength = options.showSegmentLength && currentZoom >= 18;
-      const canShowConnection = options.validateSegmentConnection && currentZoom >= 16;
+      const canShowConnection = options.validateNodeConnection && currentZoom >= 16;
       if (!canShowGeometry && !canShowLength && !canShowConnection) {
         if (countBadge) countBadge.style.display = 'none';
         return;
@@ -1601,9 +1605,9 @@
           // 2. Check for segment connection issues (dangling node near another segment)
           // Skip non-drivable segments (footpath, pedestrian, stairway, ferry, railway, runway)
           // Skip very short segments (< connectionCheckRadius) — follows WME Validator 107/108 pattern
-          if (canShowConnection && options.validateSegmentConnection && !isNonDrivableType(segment.roadType)) {
+          if (canShowConnection && options.validateNodeConnection && !isNonDrivableType(segment.roadType)) {
             const segLength = turf.length(turf.lineString(geometry.coordinates), { units: 'meters' });
-            if (segLength < options.connectionCheckRadius) return; // Skip if segment is shorter than the check radius
+            if (segLength >= options.connectionCheckRadius) {
             const connResult = checkSegmentConnection(segment, options.connectionCheckRadius, viewportSegments);
             if (connResult.hasIssue) {
               let hasVisibleIssue = false;
@@ -1616,7 +1620,7 @@
                 hasVisibleIssue = true;
 
                 const warnDiv = document.createElement('div');
-                warnDiv.innerHTML = '⚠️'; // Warning icon
+                warnDiv.innerHTML = '<i class="w-icon w-icon-avoid-highways" style="font-size: 30px; color: red; background: rgba(255, 255, 255, 0.5)"></i>'; // Warning icon
                 warnDiv.style.position = 'absolute';
                 warnDiv.style.width = '24px';
                 warnDiv.style.height = '24px';
@@ -1624,7 +1628,7 @@
                 warnDiv.style.alignItems = 'center';
                 warnDiv.style.justifyContent = 'center';
                 warnDiv.style.fontSize = '24px';
-                warnDiv.style.pointerEvents = 'none';
+                warnDiv.style.pointerEvents = 'auto'; // Enable hover for native tooltip
                 warnDiv.title = `Segment ${issue.side} side disconnected but only ${Math.round(issue.distance * 10) / 10}m from another segment`;
 
                 fragment.appendChild(warnDiv);
@@ -1642,6 +1646,7 @@
                 segmentsWithConnectionIssues.add(segment.id);
               }
             }
+            } // closes segLength >= connectionCheckRadius guard
           }
 
           // 3. Show Segment Length
@@ -1716,7 +1721,7 @@
       // Update badge count for connection validation (⚠️ warning icon)
       const connBadge = document.getElementById('ezroad-connection-error-count');
       if (connBadge) {
-        if (connectionIssueCount > 0 && options.validateSegmentConnection) {
+        if (connectionIssueCount > 0 && options.validateNodeConnection) {
           connBadge.value = connectionIssueCount;
           connBadge.style.display = 'inline-flex';
           const connIcon = document.getElementById('ezroad-connection-icon');
@@ -1727,7 +1732,34 @@
           if (connIcon) connIcon.style.color = '#33CCFF';
         }
       }
-      if (connectionIssueCount > 0) {
+      // Highlight segments with connection issues on the map
+      try {
+        wmeSDK.Map.removeAllFeaturesFromLayer({ layerName: CONNECTION_HIGHLIGHT_LAYER });
+      } catch (e) { /* layer may not exist yet */ }
+
+      if (connectionIssueCount > 0 && options.validateNodeConnection) {
+        const highlightFeatures = [];
+        segmentsWithConnectionIssues.forEach((segId) => {
+          const seg = wmeSDK.DataModel.Segments.getById({ segmentId: segId });
+          if (seg && seg.geometry) {
+            highlightFeatures.push({
+              type: 'Feature',
+              id: `conn_highlight_${segId}`,
+              geometry: seg.geometry,
+              properties: { featureType: 'connectionHighlight' },
+            });
+          }
+        });
+        if (highlightFeatures.length > 0) {
+          try {
+            wmeSDK.Map.addFeaturesToLayer({
+              layerName: CONNECTION_HIGHLIGHT_LAYER,
+              features: highlightFeatures,
+            });
+          } catch (e) {
+            log(`Error highlighting connection issues: ${e}`);
+          }
+        }
         log(`Connection issues: ${connectionIssueCount} segments with dangling endpoints near other segments`);
       }
     } catch (error) {
@@ -1765,7 +1797,7 @@
     if (typeof isMapMoving !== 'undefined' && isMapMoving) return;
 
     const options = getOptions();
-    if (!options.showSegmentLength && !options.checkGeometryIssues && !options.validateSegmentConnection) {
+    if (!options.showSegmentLength && !options.checkGeometryIssues && !options.validateNodeConnection) {
       if (segmentLengthContainer) segmentLengthContainer.style.display = 'none';
       return;
     } else {
@@ -1806,7 +1838,7 @@
     addGeometryFixButton();
     addConnectionCheckButton();
 
-    if (options.showSegmentLength || options.checkGeometryIssues || options.validateSegmentConnection) {
+    if (options.showSegmentLength || options.checkGeometryIssues || options.validateNodeConnection) {
       if (segmentLengthContainer) segmentLengthContainer.style.display = 'block';
 
       // Ensure polling is active
@@ -1877,7 +1909,7 @@
       updateFrameRequest = requestAnimationFrame(() => {
         updateFrameRequest = null;
         const options = getOptions();
-        if ((options.showSegmentLength || options.checkGeometryIssues || options.validateSegmentConnection) && segmentLengthContainer && segmentLengthContainer.style.display !== 'none') {
+        if ((options.showSegmentLength || options.checkGeometryIssues || options.validateNodeConnection) && segmentLengthContainer && segmentLengthContainer.style.display !== 'none') {
           updateSegmentLabelPositions(); // Fast position update only
         }
       });
@@ -1887,7 +1919,7 @@
       isMapMoving = false;
       // Rebuild labels after movement ends (checks if segments entered/left viewport)
       const options = getOptions();
-      if ((options.showSegmentLength || options.checkGeometryIssues || options.validateSegmentConnection) && segmentLengthContainer) {
+      if ((options.showSegmentLength || options.checkGeometryIssues || options.validateNodeConnection) && segmentLengthContainer) {
         segmentLengthContainer.style.display = 'block';
         rebuildSegmentLengthDisplay();
 
@@ -1907,7 +1939,7 @@
 
     const onZoomChanged = function () {
       const options = getOptions();
-      if ((options.showSegmentLength || options.checkGeometryIssues || options.validateSegmentConnection) && segmentLengthContainer) {
+      if ((options.showSegmentLength || options.checkGeometryIssues || options.validateNodeConnection) && segmentLengthContainer) {
         rebuildSegmentLengthDisplay(); // Full rebuild on zoom
         try {
           let extent = wmeSDK.Map.getMapExtent();
@@ -2004,9 +2036,24 @@
       },
     });
 
+    // Initialize the connection highlight layer (even if not enabled yet — segments are drawn when issues found)
+    try {
+      wmeSDK.Map.addLayer({
+        layerName: CONNECTION_HIGHLIGHT_LAYER,
+        styleRules: [
+          {
+            predicate: props => props.featureType === 'connectionHighlight',
+            style: { strokeColor: '#ff0000', strokeWidth: 25, strokeOpacity: 0.4 },
+          },
+        ],
+      });
+    } catch (e) {
+      log(`Connection highlight layer init: ${e}`);
+    }
+
     // Initialize polling if already enabled
     const options = getOptions();
-    if (options.showSegmentLength || options.checkGeometryIssues || options.validateSegmentConnection) {
+    if (options.showSegmentLength || options.checkGeometryIssues || options.validateNodeConnection) {
       handleSegmentLengthToggle();
     }
 
@@ -2198,7 +2245,7 @@
     if (connBtn) {
       // Update visibility on the wrapper
       const existingWrapper = document.getElementById('ezroad-connection-wrapper');
-      if (existingWrapper) existingWrapper.style.display = options.validateSegmentConnection ? 'flex' : 'none';
+      if (existingWrapper) existingWrapper.style.display = options.validateNodeConnection ? 'flex' : 'none';
       return;
     }
 
@@ -2206,7 +2253,7 @@
 
       const wrapper = document.createElement('div');
       wrapper.id = 'ezroad-connection-wrapper';
-      wrapper.style.cssText = `display: ${options.validateSegmentConnection ? 'flex' : 'none'}; justify-content: center; align-items: center; padding-top: 12px; padding-bottom: 12px; height: auto;`;
+      wrapper.style.cssText = `display: ${options.validateNodeConnection ? 'flex' : 'none'}; justify-content: center; align-items: center; padding-top: 12px; padding-bottom: 12px; height: auto;`;
 
       connBtn = document.createElement('wz-button');
       connBtn.color = 'text';
@@ -2215,7 +2262,7 @@
       connBtn.type = 'button';
 
       connBtn.innerHTML = `
-        <i class="w-icon w-icon-alert-fill" id="ezroad-connection-icon" style="color: #33CCFF" title="Validation: disconnected nodes near other segments"></i>
+        <i class="w-icon w-icon-avoid-highways" id="ezroad-connection-icon" style="color: #33CCFF" title="Validation: disconnected nodes near other segments"></i>
         <wz-notification-indicator value="0" id="ezroad-connection-error-count" class="counter" style="display: none;"></wz-notification-indicator>
       `;
 
@@ -4829,9 +4876,9 @@
         tooltip: 'Shows lane count buttons (0-10) in the edit panel. Click a number to set the number of lanes for both directions on selected segments.',
       },
       {
-        id: 'validateSegmentConnection',
-        text: 'Validate segment connection',
-        key: 'validateSegmentConnection',
+        id: 'validateNodeConnection',
+        text: 'Validate Node Connection',
+        key: 'validateNodeConnection',
         tooltip: 'Checks if a segment\'s A or B node is disconnected (no other segments attached) but is within the threshold distance of another segment\'s geometry. Displays a warning icon at flagged nodes.',
       },
     ];
@@ -4882,7 +4929,7 @@
     // Helper function to create checkboxes
     const createCheckbox = (option) => {
       const isChecked = localOptions[option.key];
-      const otherClass = option.key !== 'autosave' && option.key !== 'copySegmentAttributes' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' && option.key !== 'validateSegmentConnection' && option.key !== 'restrictExceptMotorbike' && option.key !== 'updateLanes' ? 'ezroadsmod-other-checkbox' : '';
+      const otherClass = option.key !== 'autosave' && option.key !== 'copySegmentAttributes' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' && option.key !== 'validateNodeConnection' && option.key !== 'restrictExceptMotorbike' && option.key !== 'updateLanes' ? 'ezroadsmod-other-checkbox' : '';
       const attrClass = option.key === 'copySegmentAttributes' ? 'ezroadsmod-attr-checkbox' : '';
 
       const div = $(`<div class="ezroadsmod-option">
@@ -4913,20 +4960,20 @@
           } else {
             update('copySegmentAttributes', false);
           }
-        } else if (option.key !== 'autosave' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' && option.key !== 'validateSegmentConnection' && option.key !== 'restrictExceptMotorbike' && option.key !== 'updateLanes') {
-          // If any other checkbox (except autosave, showSegmentLength, checkGeometryIssues, validateSegmentConnection, restrictExceptMotorbike, updateLanes) is checked, uncheck copySegmentAttributes
+        } else if (option.key !== 'autosave' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' && option.key !== 'validateNodeConnection' && option.key !== 'restrictExceptMotorbike' && option.key !== 'updateLanes') {
+          // If any other checkbox (except autosave, showSegmentLength, checkGeometryIssues, validateNodeConnection, restrictExceptMotorbike, updateLanes) is checked, uncheck copySegmentAttributes
           if ($(`#${option.id}`).prop('checked')) {
             $('#copySegmentAttributes').prop('checked', false);
             update('copySegmentAttributes', false);
           }
           update(option.key, $(`#${option.id}`).prop('checked'));
         } else {
-          // Autosave, showSegmentLength, checkGeometryIssues, validateSegmentConnection, restrictExceptMotorbike, or updateLanes
+          // Autosave, showSegmentLength, checkGeometryIssues, validateNodeConnection, restrictExceptMotorbike, or updateLanes
           update(option.key, $(`#${option.id}`).prop('checked'));
         }
 
         // Handle Segment Length / Geometry Check / Segment Connection toggle
-        if (option.key === 'showSegmentLength' || option.key === 'checkGeometryIssues' || option.key === 'validateSegmentConnection' || option.key === 'copySegmentAttributes') {
+        if (option.key === 'showSegmentLength' || option.key === 'checkGeometryIssues' || option.key === 'validateNodeConnection' || option.key === 'copySegmentAttributes') {
           handleSegmentLengthToggle();
         }
       });
@@ -5069,8 +5116,8 @@
           additionalOptions.append(geometryThresholdDiv);
         }
         
-        // Add connection radius input right after the validateSegmentConnection checkbox
-        if (option.key === 'validateSegmentConnection') {
+        // Add connection radius input right after the validateNodeConnection checkbox
+        if (option.key === 'validateNodeConnection') {
           const connectionRadiusDiv = $(`<div class="ezroadsmod-option" style="margin-left: 20px; margin-top: -5px;">
             <label for="connectionCheckRadius" style="font-size: 0.9em;">Connection check radius (meters):</label>
             <input type="number" id="connectionCheckRadius" min="1" max="20" step="0.5" value="${
@@ -5110,7 +5157,7 @@
         }
         update('connectionCheckRadius', radiusValue);
         // Refresh display if segment connection validation is enabled
-        if (localOptions.validateSegmentConnection) {
+        if (localOptions.validateNodeConnection) {
           rebuildSegmentLengthDisplay();
         }
       });
@@ -5447,6 +5494,11 @@ if (typeof require !== 'undefined') {
 
   /*
 Changelog
+<strong>Version 2.7.0.4 - 2026-07-16:</strong><br>
+    - Added: Validation of segment node connection<br>
+    - Added: Highlight layer for segments with node connection issues<br>
+    - Fixed: Paved/Unpaved feature is now using fully SDK<br>
+    - Fixed: Other minor bug fixes and improvements<br>
 <strong>Version 2.7.0.3 - 2026-07-16:</strong><br>
     - Added: Validation of segment node connection<br>
     - Fixed: Paved/Unpaved feature is now using fully SDK<br>
