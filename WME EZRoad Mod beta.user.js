@@ -30,7 +30,7 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.7.0.3 - 2026-07-16:</strong><br>
+  const updateMessage = `<strong>Version 2.7.0.4 - 2026-07-16:</strong><br>
     - Added: Validation of segment node connection<br>
     - Added: Highlight layer for segments with node connection issues<br>
     - Fixed: Paved/Unpaved feature is now using fully SDK<br>
@@ -1628,6 +1628,7 @@
                 warnDiv.style.alignItems = 'center';
                 warnDiv.style.justifyContent = 'center';
                 warnDiv.style.fontSize = '24px';
+                warnDiv.style.marginTop = '-10px'; // Shift up so it doesn't cover the node
                 warnDiv.style.pointerEvents = 'auto'; // Enable hover for native tooltip
                 warnDiv.title = `Segment ${issue.side} side disconnected but only ${Math.round(issue.distance * 10) / 10}m from another segment`;
 
@@ -1638,7 +1639,7 @@
                   lat: issue.coordinates[1],
                   labelDiv: warnDiv,
                   offsetX: 12, // Center of 24px
-                  offsetY: 24, // Shift up (full height)
+                  offsetY: 34, // Shift up (more than full height) to clear the node
                 });
               });
               // Count unique segments with visible connection issues
