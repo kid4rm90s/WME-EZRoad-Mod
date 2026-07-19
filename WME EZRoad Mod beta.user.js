@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.7.0.4
+// @version      2.7.0.6
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -30,10 +30,9 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.7.0.4 - 2026-07-16:</strong><br>
+  const updateMessage = `<strong>Version 2.7.0.6 - 2026-07-19:</strong><br>
     - Added: Validation of segment node connection<br>
     - Added: Highlight layer for segments with node connection issues<br>
-    - Fixed: Paved/Unpaved feature is now using fully SDK<br>
     - Fixed: Other minor bug fixes and improvements<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
@@ -1279,13 +1278,17 @@
   // ===== Segment Connection Validation Helper =====
   // Per-rebuild caches to avoid redundant node lookups and distance calculations
   // across multiple segments sharing the same node. Cleared each rebuild cycle.
-  let _nodeDanglingCache = null;   // Map<nodeId, boolean>
+  // _nodeConnectionMap is built upfront from ALL segments (by fromNodeId/toNodeId)
+  // to avoid relying on node.connectedSegmentIds which may be incomplete during panning.
+  let _nodeConnectionMap = null;   // Map<nodeId, number> - count of segments connected to each node
   let _nodeDistanceCache = null;  // Map<nodeId, {distance: number|null, coordinates: Array}>
 
   /**
    * Checks if a segment's A or B node is disconnected (no other segments attached)
    * but is within the given radius of another segment's geometry.
-   * Uses node.connectedSegmentIds from the SDK for reliable detection.
+   * Uses the pre-built _nodeConnectionMap (from ALL segments' fromNodeId/toNodeId)
+   * for reliable dangling detection, avoiding SDK node.connectedSegmentIds
+   * which may be incomplete during panning.
    * Results are cached per nodeId across the current rebuild cycle.
    * @param {Object} segment - WME segment object
    * @param {number} radiusMeters - Search radius in meters (default: 5)
@@ -1305,33 +1308,35 @@
     const issues = [];
     const segmentId = segment.id;
 
-    // Initialize caches on first call per rebuild cycle
-    if (!_nodeDanglingCache) _nodeDanglingCache = new Map();
+    // Initialize distance cache on first call per rebuild cycle
     if (!_nodeDistanceCache) _nodeDistanceCache = new Map();
 
     /**
      * Checks if a node is truly dangling (no other segments connected to it).
-     * Uses node.connectedSegmentIds from the SDK for reliability.
-     * Results cached per nodeId — only queried from SDK once per rebuild.
+     * Uses the pre-built _nodeConnectionMap (built from ALL segments' fromNodeId/toNodeId)
+     * instead of node.connectedSegmentIds, which may be incomplete during panning.
+     * A node is dangling if it has ≤1 segment connected (i.e. only the current segment).
      */
     function isNodeDangling(nodeId) {
-      // Check cache first
-      if (_nodeDanglingCache.has(nodeId)) {
-        return _nodeDanglingCache.get(nodeId);
-      }
+      const count = _nodeConnectionMap ? _nodeConnectionMap.get(nodeId) : 0;
+      return !count || count <= 1;
+    }
 
-      let dangling = true;
+    /**
+     * Checks if a node is "partial" (data incomplete — at the edge of the loaded area).
+     * Matches WME Validator's check: W.model.nodes.getObjectById().attributes.partial
+     * Partial nodes may have unloaded connected segments, so connection checks should be skipped.
+     */
+    function isNodePartial(nodeId) {
       try {
-        const node = wmeSDK.DataModel.Nodes.getById({ nodeId });
-        if (node && Array.isArray(node.connectedSegmentIds)) {
-          dangling = node.connectedSegmentIds.length <= 1;
+        if (typeof W !== 'undefined' && W.model && W.model.nodes) {
+          const wNode = W.model.nodes.getObjectById(nodeId);
+          return wNode && wNode.attributes && wNode.attributes.partial === true;
         }
       } catch (e) {
-        // Node doesn't exist in SDK yet (e.g. unsaved temp node) — assume dangling
+        // W model not available — assume not partial
       }
-
-      _nodeDanglingCache.set(nodeId, dangling);
-      return dangling;
+      return false;
     }
 
     /**
@@ -1351,7 +1356,7 @@
         if (node && node.geometry && node.geometry.coordinates) {
           coords = node.geometry.coordinates;
           const nodePoint = turf.point(coords);
-          distance = findClosestSegmentDistance(nodePoint, segmentId, allSegments, segment.elevationLevel);
+          distance = findClosestSegmentDistance(nodePoint, segmentId, allSegments, segment.elevationLevel, radiusMeters);
         }
       } catch (e) {
         log(`Error computing distance for node ${nodeId}: ${e}`);
@@ -1362,10 +1367,24 @@
       return result;
     }
 
-    // Check A side (fromNode)
+    // Helper: compute the direction angle (radians) at the node from the segment's geometry.
+    // For side A (fromNode), segment runs coords[0] → coords[1].
+    // For side B (toNode), segment runs coords[last-1] → coords[last]; we use the reversed
+    // direction (from node backward) to keep the perpendicular placement consistent.
+    function getSegmentAngleAtNode(side, geometryCoords) {
+      const coords = geometryCoords;
+      if (side === 'A') {
+        return Math.atan2(coords[1][1] - coords[0][1], coords[1][0] - coords[0][0]);
+      } else {
+        const last = coords.length - 1;
+        return Math.atan2(coords[last - 1][1] - coords[last][1], coords[last - 1][0] - coords[last][0]);
+      }
+    }
+
+    // Check A side (fromNode) — skip partial nodes (incomplete data at map edge)
     if (segment.fromNodeId != null) {
       const nodeId = segment.fromNodeId;
-      if (isNodeDangling(nodeId)) {
+      if (!isNodePartial(nodeId) && isNodeDangling(nodeId)) {
         const cached = getNodeClosestDistance(nodeId);
         if (cached.distance !== null && cached.distance <= radiusMeters && cached.coordinates) {
           issues.push({
@@ -1374,15 +1393,16 @@
             coordinates: cached.coordinates,
             distance: cached.distance,
             segmentId: segmentId,
+            angle: getSegmentAngleAtNode('A', segment.geometry.coordinates),
           });
         }
       }
     }
 
-    // Check B side (toNode)
+    // Check B side (toNode) — skip partial nodes (incomplete data at map edge)
     if (segment.toNodeId != null) {
       const nodeId = segment.toNodeId;
-      if (isNodeDangling(nodeId)) {
+      if (!isNodePartial(nodeId) && isNodeDangling(nodeId)) {
         const cached = getNodeClosestDistance(nodeId);
         if (cached.distance !== null && cached.distance <= radiusMeters && cached.coordinates) {
           issues.push({
@@ -1391,6 +1411,7 @@
             coordinates: cached.coordinates,
             distance: cached.distance,
             segmentId: segmentId,
+            angle: getSegmentAngleAtNode('B', segment.geometry.coordinates),
           });
         }
       }
@@ -1413,10 +1434,19 @@
    * @param {number} excludeSegmentId - Segment ID to exclude from search
    * @param {Array} allSegments - Array of all segments
    * @param {number} segmentElevation - Elevation level of the segment being checked
+   * @param {number} radiusMeters - Search radius in meters (for spatial pre-filter)
    * @returns {number|null} Minimum distance in meters, or null if no segments to check
    */
-  function findClosestSegmentDistance(point, excludeSegmentId, allSegments, segmentElevation) {
+  function findClosestSegmentDistance(point, excludeSegmentId, allSegments, segmentElevation, radiusMeters) {
     let minDistance = null;
+
+    // Pre-compute the point's bounding box for the search radius.
+    // 1 degree of latitude ≈ 111320 m; longitude degrees vary with cos(lat).
+    const [plon, plat] = point.geometry.coordinates;
+    const latRad = radiusMeters / 111320;
+    const lonRad = radiusMeters / (111320 * Math.cos(plat * Math.PI / 180));
+    const pMinLat = plat - latRad, pMaxLat = plat + latRad;
+    const pMinLon = plon - lonRad, pMaxLon = plon + lonRad;
 
     allSegments.forEach((otherSeg) => {
       if (otherSeg.id === excludeSegmentId) return;
@@ -1433,20 +1463,27 @@
       if (isNonDrivableType(otherSeg.roadType)) return;
 
       try {
-        // Quick rejection: check distance from point to the segment's first coordinate.
-        // If even the closest endpoint is far, the whole segment is likely far.
         const coords = otherSeg.geometry.coordinates;
-        const firstDist = turf.distance(point, turf.point(coords[0]), { units: 'meters' });
-        const lastDist = turf.distance(point, turf.point(coords[coords.length - 1]), { units: 'meters' });
 
-        // If minDistance is already set and both endpoints are much farther,
-        // this segment can't be closer — skip the expensive pointToLineDistance.
-        if (minDistance !== null && firstDist > minDistance * 1.5 && lastDist > minDistance * 1.5) {
+        // Spatial bounding box pre-filter: compute the segment's bounding box and
+        // check overlap with the point's radius box. If no overlap, the segment
+        // cannot be within radiusMeters — skip the expensive pointToLineDistance.
+        let segMinLat = coords[0][1], segMaxLat = coords[0][1];
+        let segMinLon = coords[0][0], segMaxLon = coords[0][0];
+        for (let i = 1; i < coords.length; i++) {
+          const lon = coords[i][0], lat = coords[i][1];
+          if (lat < segMinLat) segMinLat = lat;
+          else if (lat > segMaxLat) segMaxLat = lat;
+          if (lon < segMinLon) segMinLon = lon;
+          else if (lon > segMaxLon) segMaxLon = lon;
+        }
+        // No overlap between segment bounding box and point's radius box
+        if (segMaxLat < pMinLat || segMinLat > pMaxLat ||
+            segMaxLon < pMinLon || segMinLon > pMaxLon) {
           return;
         }
 
         // Precise distance to the full segment geometry using pointToLineDistance
-        // (simpler API than nearestPointOnLine — matches WME Validator approach)
         const dist = turf.pointToLineDistance(point, otherSeg.geometry, { units: 'meters' });
         if (minDistance === null || dist < minDistance) {
           minDistance = dist;
@@ -1472,6 +1509,7 @@
   let updateInterval = null;
   let isMapMoving = false;
   let updateFrameRequest = null;
+  let moveEndTimer = null;
 
   // Define helper functions first
   function clearSegmentLengthDisplay() {
@@ -1496,12 +1534,32 @@
     clearSegmentLengthDisplay();
 
     // Clear per-rebuild caches for segment connection validation
-    _nodeDanglingCache = null;
+    _nodeConnectionMap = null;
     _nodeDistanceCache = null;
 
     if (typeof turf === 'undefined') {
       log('ERROR: Turf.js is not loaded!');
       return;
+    }
+
+    // Build node connection map from ALL loaded segments
+    // (using fromNodeId/toNodeId instead of node.connectedSegmentIds,
+    //  which may be incomplete during panning).
+    // Maps each nodeId to the count of segments connected to it.
+    try {
+      _nodeConnectionMap = new Map();
+      const allSegments = wmeSDK.DataModel.Segments.getAll();
+      for (const seg of allSegments) {
+        if (seg.fromNodeId != null) {
+          _nodeConnectionMap.set(seg.fromNodeId, (_nodeConnectionMap.get(seg.fromNodeId) || 0) + 1);
+        }
+        if (seg.toNodeId != null) {
+          _nodeConnectionMap.set(seg.toNodeId, (_nodeConnectionMap.get(seg.toNodeId) || 0) + 1);
+        }
+      }
+    } catch (e) {
+      log(`Error building node connection map: ${e}`);
+      _nodeConnectionMap = new Map();
     }
 
     let issueCount = 0; // Count for geometry nodes near endpoints (📍 pin icon - bug button)
@@ -1608,16 +1666,22 @@
           if (canShowConnection && options.validateNodeConnection && !isNonDrivableType(segment.roadType)) {
             const segLength = turf.length(turf.lineString(geometry.coordinates), { units: 'meters' });
             if (segLength >= options.connectionCheckRadius) {
-            const connResult = checkSegmentConnection(segment, options.connectionCheckRadius, viewportSegments);
+            // Use allSegments (not viewportSegments) for proximity check to match
+            // WME Validator's approach (getAll()), ensuring nearby segments just outside
+            // the viewport are still detected.
+            const connResult = checkSegmentConnection(segment, options.connectionCheckRadius, allSegments);
             if (connResult.hasIssue) {
-              let hasVisibleIssue = false;
+              // Always mark the segment for highlight — the segment itself is visible
+              // (it passed the viewportSegments filter), even if the problematic node
+              // is off-screen. Matches WME Validator behavior.
+              segmentsWithConnectionIssues.add(segment.id);
+
               connResult.details.forEach((issue) => {
-                // Check visibility
+                // Skip the warning icon only if the exact node is outside the viewport
+                // (icon would be off-screen), but the highlight remains.
                 if (issue.coordinates[0] < mapBounds.west || issue.coordinates[0] > mapBounds.east || issue.coordinates[1] < mapBounds.south || issue.coordinates[1] > mapBounds.north) {
                   return;
                 }
-
-                hasVisibleIssue = true;
 
                 const warnDiv = document.createElement('div');
                 warnDiv.innerHTML = '<i class="w-icon w-icon-avoid-highways" style="font-size: 30px; color: red; background: rgba(255, 255, 255, 0.5)"></i>'; // Warning icon
@@ -1628,7 +1692,6 @@
                 warnDiv.style.alignItems = 'center';
                 warnDiv.style.justifyContent = 'center';
                 warnDiv.style.fontSize = '24px';
-                warnDiv.style.marginTop = '-10px'; // Shift up so it doesn't cover the node
                 warnDiv.style.pointerEvents = 'auto'; // Enable hover for native tooltip
                 warnDiv.title = `Segment ${issue.side} side disconnected but only ${Math.round(issue.distance * 10) / 10}m from another segment`;
 
@@ -1638,14 +1701,11 @@
                   lon: issue.coordinates[0],
                   lat: issue.coordinates[1],
                   labelDiv: warnDiv,
-                  offsetX: 12, // Center of 24px
-                  offsetY: 34, // Shift up (more than full height) to clear the node
+                  offsetX: 12, // Base center of 24px; may be adjusted dynamically
+                  offsetY: 24, // Base shift up; may be adjusted dynamically
+                  angle: issue.angle, // Segment direction at node, for perpendicular offset
                 });
               });
-              // Count unique segments with visible connection issues
-              if (hasVisibleIssue) {
-                segmentsWithConnectionIssues.add(segment.id);
-              }
             }
             } // closes segLength >= connectionCheckRadius guard
           }
@@ -1781,8 +1841,31 @@
         });
 
         if (pixel && typeof pixel.x === 'number' && typeof pixel.y === 'number') {
-          const offX = cached.offsetX || 15;
-          const offY = cached.offsetY || 35;
+          let offX = cached.offsetX || 15;
+          let offY = cached.offsetY || 35;
+
+          // If the label has a segment direction angle, offset perpendicular to the
+          // segment so the icon sits beside it rather than on top of it.
+          if (cached.angle !== undefined) {
+            // Perpendicular to the right of the segment direction in screen space.
+            // Geo y is inverted in screen (y-down), so negate the geo angle.
+            const screenAngle = -cached.angle + Math.PI / 2; // 90° clockwise
+            // Dynamic offset based on zoom level — further out at higher zooms
+            let zoom;
+            try { zoom = wmeSDK.Map.getZoomLevel(); } catch (e) { zoom = 19; }
+            const perpDist = zoom >= 22 ? 40 :
+                            zoom === 21 ? 35 :
+                            zoom === 20 ? 30 :
+                            zoom === 19 ? 25 :
+                            zoom === 18 ? 20 :
+                            zoom === 17 ? 15 :
+                                          10; // zoom 16 and below
+            offX += Math.cos(screenAngle) * perpDist;
+            // Negate Y because offY is subtracted (top = pixel.y - offY), so
+            // to move in the positive screen-y (down) direction, offY must decrease.
+            offY += -Math.sin(screenAngle) * perpDist;
+          }
+
           cached.labelDiv.style.left = pixel.x - offX + 'px';
           cached.labelDiv.style.top = pixel.y - offY + 'px';
         }
@@ -1918,24 +2001,29 @@
 
     const onMoveEnd = function () {
       isMapMoving = false;
-      // Rebuild labels after movement ends (checks if segments entered/left viewport)
-      const options = getOptions();
-      if ((options.showSegmentLength || options.checkGeometryIssues || options.validateNodeConnection) && segmentLengthContainer) {
-        segmentLengthContainer.style.display = 'block';
-        rebuildSegmentLengthDisplay();
+      // Debounce rebuild to let SDK populate node/segment data after panning
+      if (moveEndTimer) clearTimeout(moveEndTimer);
+      moveEndTimer = setTimeout(() => {
+        moveEndTimer = null;
+        // Rebuild labels after movement ends (checks if segments entered/left viewport)
+        const options = getOptions();
+        if ((options.showSegmentLength || options.checkGeometryIssues || options.validateNodeConnection) && segmentLengthContainer) {
+          segmentLengthContainer.style.display = 'block';
+          rebuildSegmentLengthDisplay();
 
-        // Update lastBounds/Zoom to prevent redundant update from interval
-        try {
-          let extent = wmeSDK.Map.getMapExtent();
-          lastBounds = {
-            west: extent[0],
-            south: extent[1],
-            east: extent[2],
-            north: extent[3],
-          };
-          lastZoom = wmeSDK.Map.getZoomLevel();
-        } catch (e) {}
-      }
+          // Update lastBounds/Zoom to prevent redundant update from interval
+          try {
+            let extent = wmeSDK.Map.getMapExtent();
+            lastBounds = {
+              west: extent[0],
+              south: extent[1],
+              east: extent[2],
+              north: extent[3],
+            };
+            lastZoom = wmeSDK.Map.getZoomLevel();
+          } catch (e) {}
+        }
+      }, 150);
     };
 
     const onZoomChanged = function () {
@@ -5495,6 +5583,10 @@ if (typeof require !== 'undefined') {
 
   /*
 Changelog
+<strong>Version 2.7.0.6 - 2026-07-19:</strong><br>
+    - Added: Validation of segment node connection<br>
+    - Added: Highlight layer for segments with node connection issues<br>
+    - Fixed: Other minor bug fixes and improvements<br>`
 <strong>Version 2.7.0.4 - 2026-07-16:</strong><br>
     - Added: Validation of segment node connection<br>
     - Added: Highlight layer for segments with node connection issues<br>
