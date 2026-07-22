@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.6.9.5
+// @version      2.7.0.7
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -24,18 +24,21 @@
 
 /*Script modified from WME EZRoad (https://greasyfork.org/en/scripts/518381-wme-ezsegments) original author: Michaelrosstarr and thanks to him*/
 /*For the toggling U-turns feature, code is adapted from WME Switch Uturns (https://greasyfork.org/en/scripts/457553-wme-switch-uturns) original authors: ixxvivxxi, uranik, turbopirate, AntonShevchuk and thanks to them*/
+/*For the segment connection validation logic, approach adapted from WME Validator (https://greasyfork.org/en/scripts/1571-wme-validator) — checks 107/108 'Node A/B: No connection (slow)' — thanks to the validator team*/
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.6.9.5 - 2026-06-18:</strong><br>
-    - Fix: Issue with the uturn failed to update when selected.<br>
-    - Added: shortcut key option to enable U-turns for segment direction A or B and node.<br>
-    - Added: counter and button UI to allow all U-turns at once for a node when selected.<br>`;
+  const updateMessage = `<strong>Version 2.7.0.7 - 2026-07-23:</strong><br>
+    - Segment & Node Connection: Added validation for segment node connections and introduced a highlight layer for segments with connection issues.<br>
+    - Lane Management: Added road width (0–8 lanes) buttons in the edit panel with a "Multiple" chip, hover tooltips, and a settings toggle. Fixed preview display before saving and resolved undo/redo support.<br>
+    - SDK & Address Architecture: Reorganized address properties under a unified addressData object following WMESDK patterns, and migrated the Paved/Unpaved feature to full SDK support.<br>
+    -Localization & Maintenance: Added support for localized road names, alongside general bug fixes and stability improvements.<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://greasyfork.org/en/scripts/528552-wme-ezroad-mod/code/WME%20EZRoad%20Mod.user.js';
   const forumURL = 'https://greasyfork.org/scripts/528552-wme-ezroad-mod/feedback';
   let wmeSDK;
+  let roadTypeLocalizedNames = {};
 
   const roadTypes = [
     { id: 1, name: 'Motorway', value: 3, shortcutKey: 'S+1' },
@@ -72,8 +75,11 @@
     showSegmentLength: false,
     checkGeometryIssues: false,
     geometryIssueThreshold: 2,
+    validateNodeConnection: false,
+    connectionCheckRadius: 5,
     enableUTurn: false,
     restrictExceptMotorbike: false,
+    updateLanes: false,
     shortcutKey: 'g',
   };
 
@@ -88,6 +94,10 @@
   ];
 
   const UserRankRequiredForGeometryFix = 3; // Minimum user rank required to use the geometry fix feature - only show for L3 and above (rank >= 2 in SDK)
+
+// Prefer the SDK's localized road type name (respects the editor's language setting),
+// falling back to our hardcoded label if the lookup isn't available for some reason.
+  const roadTypeName = (roadType) => roadTypeLocalizedNames[roadType.value] || roadType.name;
 
   const log = (message) => {
     if (typeof message === 'string') {
@@ -104,6 +114,13 @@
       scriptId: 'wme-ez-roads-mod',
       scriptName: 'EZ Roads Mod',
     });
+      try {
+        wmeSDK.DataModel.Segments.getRoadTypes().forEach(rt => {
+            roadTypeLocalizedNames[rt.id] = rt.localizedName || rt.name;
+        });
+    } catch (e) {
+        log(`Could not load localized road type names: ${e}`);
+    }
     WME_EZRoads_Mod_bootstrap();
   }
 
@@ -217,7 +234,7 @@
     return new Promise((resolve) => {
       try {
         const segment = wmeSDK.DataModel.Segments.getById({ segmentId });
-        if (!segment || isPedestrianType(segment.roadType)) {
+        if (!segment || isNonDrivableType(segment.roadType)) {
           const roadTypeName = segment ? roadTypes.find(rt => rt.value === segment.roadType)?.name || 'Unknown' : 'N/A';
           log(`Segment ${segmentId} not found or pedestrian type ${roadTypeName} (${segment?.roadType || 'N/A'}), cannot apply motorbike restriction`);
           WazeToastr.Alerts.warning(`${scriptName}`, `Segment not found or "${roadTypeName}" is not supported type, cannot apply motorbike restriction`, false, false, 5000);
@@ -670,7 +687,7 @@
       // Mutual exclusion logic for copySegmentAttributes
       if (optionKey === 'copySegmentAttributes') {
         if (options[optionKey]) {
-          // Uncheck all other checkboxes except autosave, showSegmentLength, checkGeometryIssues, restrictExceptMotorbike
+          // Uncheck all other checkboxes except autosave, showSegmentLength, checkGeometryIssues, validateNodeConnection, restrictExceptMotorbike
           $('.ezroadsmod-other-checkbox').each(function () {
             $(this).prop('checked', false);
           });
@@ -685,8 +702,8 @@
           newOpts.copySegmentAttributes = true;
           saveOptions(newOpts);
         }
-      } else if (optionKey !== 'autosave' && optionKey !== 'showSegmentLength' && optionKey !== 'checkGeometryIssues' && optionKey !== 'restrictExceptMotorbike') {
-        // If any other checkbox (except autosave, showSegmentLength, checkGeometryIssues, restrictExceptMotorbike) is checked, uncheck copySegmentAttributes
+      } else if (optionKey !== 'autosave' && optionKey !== 'showSegmentLength' && optionKey !== 'checkGeometryIssues' && optionKey !== 'validateNodeConnection' && optionKey !== 'restrictExceptMotorbike') {
+        // If any other checkbox (except autosave, showSegmentLength, checkGeometryIssues, validateNodeConnection, restrictExceptMotorbike) is checked, uncheck copySegmentAttributes
         if (options[optionKey]) {
           $('#copySegmentAttributes').prop('checked', false);
           const newOpts = getOptions();
@@ -695,8 +712,8 @@
         }
       }
       
-      // Handle Segment Length / Geometry Check toggle
-      if (optionKey === 'showSegmentLength' || optionKey === 'checkGeometryIssues' || optionKey === 'copySegmentAttributes') {
+      // Handle Segment Length / Geometry Check / Segment Connection toggle
+      if (optionKey === 'showSegmentLength' || optionKey === 'checkGeometryIssues' || optionKey === 'validateNodeConnection' || optionKey === 'copySegmentAttributes') {
         if (typeof handleSegmentLengthToggle === 'function') {
           handleSegmentLengthToggle();
         }
@@ -917,6 +934,24 @@
           key: -1,
           arg: {},
         },
+        {
+          handler: 'WME_EZRoad_Mod_UpdateLaneCount',
+          title: 'Enable Road Width (No of Lanes) buttons',
+          func: function (arg) {
+            handleToggle('updateLanes', 'Enable Road Width (No of Lanes) buttons');
+          },
+          key: -1,
+          arg: {},
+        },
+        {
+          handler: 'WME_EZRoad_Mod_validateNodeConnection',
+          title: 'Validate Node Connection',
+          func: function (arg) {
+            handleToggle('validateNodeConnection', 'Validate Node Connection');
+          },
+          key: -1,
+          arg: {},
+        },
       ];
 
       // Register legacy shortcuts
@@ -1052,6 +1087,8 @@
               }
               // Always re-attach chip listeners after panel mutation
               addRoadTypeChipListeners();
+              // Add lane count buttons if enabled
+              addLaneCountButtons();
             }
           }
         }
@@ -1087,10 +1124,10 @@
               saveOptions(options);
               updateRoadTypeRadios(rt.value);
               if (WazeToastr?.Alerts) {
-                WazeToastr.Alerts.success(`${scriptName}`, `Selected road type: <b>${rt.name}</b>`, false, false, 1500);
+                WazeToastr.Alerts.success(`${scriptName}`, `Selected road type: <b>${roadTypeName(rt)}</b>`, false, false, 1500);
               }
             },
-            description: `Select road type: ${rt.name}`,
+            description: `Select road type: ${roadTypeName(rt)}`,
             shortcutId,
             shortcutKeys: rt.shortcutKey,
           });
@@ -1165,8 +1202,9 @@
     // Initialize segment length display layer
     initSegmentLengthLayer();
 
-    // Inject Geometry Fix Button
+    // Inject Dashboard Buttons
     setInterval(addGeometryFixButton, 2000);
+    setInterval(addConnectionCheckButton, 2000);
 
     log('Completed Init');
   };
@@ -1236,6 +1274,230 @@
     };
   }
 
+  // ===== Segment Connection Validation Helper =====
+  // Per-rebuild caches to avoid redundant node lookups and distance calculations
+  // across multiple segments sharing the same node. Cleared each rebuild cycle.
+  // _nodeConnectionMap is built upfront from ALL segments (by fromNodeId/toNodeId)
+  // to avoid relying on node.connectedSegmentIds which may be incomplete during panning.
+  let _nodeConnectionMap = null;   // Map<nodeId, number> - count of segments connected to each node
+  let _nodeDistanceCache = null;  // Map<nodeId, {distance: number|null, coordinates: Array}>
+
+  /**
+   * Checks if a segment's A or B node is disconnected (no other segments attached)
+   * but is within the given radius of another segment's geometry.
+   * Uses the pre-built _nodeConnectionMap (from ALL segments' fromNodeId/toNodeId)
+   * for reliable dangling detection, avoiding SDK node.connectedSegmentIds
+   * which may be incomplete during panning.
+   * Results are cached per nodeId across the current rebuild cycle.
+   * @param {Object} segment - WME segment object
+   * @param {number} radiusMeters - Search radius in meters (default: 5)
+   * @param {Array} allSegments - Array of all segments for proximity check
+   * @returns {Object} { hasIssue: boolean, details: Array }
+   */
+  function checkSegmentConnection(segment, radiusMeters = 5, allSegments = []) {
+    if (!segment || !segment.geometry || !segment.geometry.coordinates) {
+      return { hasIssue: false, details: [] };
+    }
+
+    if (typeof turf === 'undefined') {
+      log('ERROR: Turf.js is not loaded!');
+      return { hasIssue: false, details: [] };
+    }
+
+    const issues = [];
+    const segmentId = segment.id;
+
+    // Initialize distance cache on first call per rebuild cycle
+    if (!_nodeDistanceCache) _nodeDistanceCache = new Map();
+
+    /**
+     * Checks if a node is truly dangling (no other segments connected to it).
+     * Uses the pre-built _nodeConnectionMap (built from ALL segments' fromNodeId/toNodeId)
+     * instead of node.connectedSegmentIds, which may be incomplete during panning.
+     * A node is dangling if it has ≤1 segment connected (i.e. only the current segment).
+     */
+    function isNodeDangling(nodeId) {
+      const count = _nodeConnectionMap ? _nodeConnectionMap.get(nodeId) : 0;
+      return !count || count <= 1;
+    }
+
+    /**
+     * Checks if a node is "partial" (data incomplete — at the edge of the loaded area).
+     * Matches WME Validator's check: W.model.nodes.getObjectById().attributes.partial
+     * Partial nodes may have unloaded connected segments, so connection checks should be skipped.
+     */
+    function isNodePartial(nodeId) {
+      try {
+        if (typeof W !== 'undefined' && W.model && W.model.nodes) {
+          const wNode = W.model.nodes.getObjectById(nodeId);
+          return wNode && wNode.attributes && wNode.attributes.partial === true;
+        }
+      } catch (e) {
+        // W model not available — assume not partial
+      }
+      return false;
+    }
+
+    /**
+     * Gets or computes the closest distance from a node to any other drivable segment.
+     * Applies elevation and drivability filters (matching WME Validator 107/108).
+     * Cached per nodeId to avoid redundant O(n) scans.
+     */
+    function getNodeClosestDistance(nodeId) {
+      if (_nodeDistanceCache.has(nodeId)) {
+        return _nodeDistanceCache.get(nodeId);
+      }
+
+      let distance = null;
+      let coords = null;
+      try {
+        const node = wmeSDK.DataModel.Nodes.getById({ nodeId });
+        if (node && node.geometry && node.geometry.coordinates) {
+          coords = node.geometry.coordinates;
+          const nodePoint = turf.point(coords);
+          distance = findClosestSegmentDistance(nodePoint, segmentId, allSegments, segment.elevationLevel, radiusMeters);
+        }
+      } catch (e) {
+        log(`Error computing distance for node ${nodeId}: ${e}`);
+      }
+
+      const result = { distance, coordinates: coords };
+      _nodeDistanceCache.set(nodeId, result);
+      return result;
+    }
+
+    // Helper: compute the direction angle (radians) at the node from the segment's geometry.
+    // For side A (fromNode), segment runs coords[0] → coords[1].
+    // For side B (toNode), segment runs coords[last-1] → coords[last]; we use the reversed
+    // direction (from node backward) to keep the perpendicular placement consistent.
+    function getSegmentAngleAtNode(side, geometryCoords) {
+      const coords = geometryCoords;
+      if (side === 'A') {
+        return Math.atan2(coords[1][1] - coords[0][1], coords[1][0] - coords[0][0]);
+      } else {
+        const last = coords.length - 1;
+        return Math.atan2(coords[last - 1][1] - coords[last][1], coords[last - 1][0] - coords[last][0]);
+      }
+    }
+
+    // Check A side (fromNode) — skip partial nodes (incomplete data at map edge)
+    if (segment.fromNodeId != null) {
+      const nodeId = segment.fromNodeId;
+      if (!isNodePartial(nodeId) && isNodeDangling(nodeId)) {
+        const cached = getNodeClosestDistance(nodeId);
+        if (cached.distance !== null && cached.distance <= radiusMeters && cached.coordinates) {
+          issues.push({
+            side: 'A',
+            nodeId: nodeId,
+            coordinates: cached.coordinates,
+            distance: cached.distance,
+            segmentId: segmentId,
+            angle: getSegmentAngleAtNode('A', segment.geometry.coordinates),
+          });
+        }
+      }
+    }
+
+    // Check B side (toNode) — skip partial nodes (incomplete data at map edge)
+    if (segment.toNodeId != null) {
+      const nodeId = segment.toNodeId;
+      if (!isNodePartial(nodeId) && isNodeDangling(nodeId)) {
+        const cached = getNodeClosestDistance(nodeId);
+        if (cached.distance !== null && cached.distance <= radiusMeters && cached.coordinates) {
+          issues.push({
+            side: 'B',
+            nodeId: nodeId,
+            coordinates: cached.coordinates,
+            distance: cached.distance,
+            segmentId: segmentId,
+            angle: getSegmentAngleAtNode('B', segment.geometry.coordinates),
+          });
+        }
+      }
+    }
+
+    return {
+      hasIssue: issues.length > 0,
+      details: issues,
+      segmentId: segment.id,
+    };
+  }
+
+  /**
+   * Finds the minimum distance from a point to any other drivable segment's geometry (excluding self).
+   * Applies elevation and drivability filters matching WME Validator (checks 107/108) behavior:
+   *   - Skips segments at different elevation levels
+   *   - Skips non-drivable segments (footpath, pedestrian, stairway, ferry, railway, runway)
+   *   - Skips segments with null fromNode/toNode (newly split unsaved segments)
+   * @param {Object} point - Turf.js point
+   * @param {number} excludeSegmentId - Segment ID to exclude from search
+   * @param {Array} allSegments - Array of all segments
+   * @param {number} segmentElevation - Elevation level of the segment being checked
+   * @param {number} radiusMeters - Search radius in meters (for spatial pre-filter)
+   * @returns {number|null} Minimum distance in meters, or null if no segments to check
+   */
+  function findClosestSegmentDistance(point, excludeSegmentId, allSegments, segmentElevation, radiusMeters) {
+    let minDistance = null;
+
+    // Pre-compute the point's bounding box for the search radius.
+    // 1 degree of latitude ≈ 111320 m; longitude degrees vary with cos(lat).
+    const [plon, plat] = point.geometry.coordinates;
+    const latRad = radiusMeters / 111320;
+    const lonRad = radiusMeters / (111320 * Math.cos(plat * Math.PI / 180));
+    const pMinLat = plat - latRad, pMaxLat = plat + latRad;
+    const pMinLon = plon - lonRad, pMaxLon = plon + lonRad;
+
+    allSegments.forEach((otherSeg) => {
+      if (otherSeg.id === excludeSegmentId) return;
+      if (!otherSeg.geometry || !otherSeg.geometry.coordinates || otherSeg.geometry.coordinates.length < 2) return;
+
+      // Skip segments with null nodes (newly split unsaved segments) — matches WME Validator
+      if (otherSeg.fromNodeId == null && otherSeg.toNodeId == null) return;
+
+      // Only consider segments at the same elevation level — matches WME Validator 107/108
+      if (typeof segmentElevation === 'number' && typeof otherSeg.elevationLevel === 'number' &&
+          segmentElevation !== otherSeg.elevationLevel) return;
+
+      // Skip non-drivable segments in proximity check — matches WME Validator
+      if (isNonDrivableType(otherSeg.roadType)) return;
+
+      try {
+        const coords = otherSeg.geometry.coordinates;
+
+        // Spatial bounding box pre-filter: compute the segment's bounding box and
+        // check overlap with the point's radius box. If no overlap, the segment
+        // cannot be within radiusMeters — skip the expensive pointToLineDistance.
+        let segMinLat = coords[0][1], segMaxLat = coords[0][1];
+        let segMinLon = coords[0][0], segMaxLon = coords[0][0];
+        for (let i = 1; i < coords.length; i++) {
+          const lon = coords[i][0], lat = coords[i][1];
+          if (lat < segMinLat) segMinLat = lat;
+          else if (lat > segMaxLat) segMaxLat = lat;
+          if (lon < segMinLon) segMinLon = lon;
+          else if (lon > segMaxLon) segMaxLon = lon;
+        }
+        // No overlap between segment bounding box and point's radius box
+        if (segMaxLat < pMinLat || segMinLat > pMaxLat ||
+            segMaxLon < pMinLon || segMinLon > pMaxLon) {
+          return;
+        }
+
+        // Precise distance to the full segment geometry using pointToLineDistance
+        const dist = turf.pointToLineDistance(point, otherSeg.geometry, { units: 'meters' });
+        if (minDistance === null || dist < minDistance) {
+          minDistance = dist;
+        }
+      } catch (e) {
+        // Skip segments with invalid geometry
+      }
+    });
+
+    return minDistance;
+  }
+
+  // ===== Segment Connection Highlight Layer =====
+  const CONNECTION_HIGHLIGHT_LAYER = 'EZRoadMod.connectionHighlight';
+
   // ===== Segment Length Display Functionality =====
   let segmentLengthContainer = null;
   let segmentLabelCache = []; // Cache segment data and label elements
@@ -1246,6 +1508,7 @@
   let updateInterval = null;
   let isMapMoving = false;
   let updateFrameRequest = null;
+  let moveEndTimer = null;
 
   // Define helper functions first
   function clearSegmentLengthDisplay() {
@@ -1262,24 +1525,54 @@
     // Update dashboard count if exists (even if hidden)
     const countBadge = document.getElementById('ezroad-geometry-error-count');
 
-    if ((!options.showSegmentLength && !options.checkGeometryIssues) || !segmentLengthContainer) {
+    if ((!options.showSegmentLength && !options.checkGeometryIssues && !options.validateNodeConnection) || !segmentLengthContainer) {
       if (countBadge) countBadge.style.display = 'none';
       return;
     }
 
     clearSegmentLengthDisplay();
 
+    // Clear per-rebuild caches for segment connection validation
+    _nodeConnectionMap = null;
+    _nodeDistanceCache = null;
+
     if (typeof turf === 'undefined') {
       log('ERROR: Turf.js is not loaded!');
       return;
     }
 
+    // Build node connection map from ALL loaded segments
+    // (using fromNodeId/toNodeId instead of node.connectedSegmentIds,
+    //  which may be incomplete during panning).
+    // Maps each nodeId to the count of segments connected to it.
+    try {
+      _nodeConnectionMap = new Map();
+      const allSegments = wmeSDK.DataModel.Segments.getAll();
+      for (const seg of allSegments) {
+        if (seg.fromNodeId != null) {
+          _nodeConnectionMap.set(seg.fromNodeId, (_nodeConnectionMap.get(seg.fromNodeId) || 0) + 1);
+        }
+        if (seg.toNodeId != null) {
+          _nodeConnectionMap.set(seg.toNodeId, (_nodeConnectionMap.get(seg.toNodeId) || 0) + 1);
+        }
+      }
+    } catch (e) {
+      log(`Error building node connection map: ${e}`);
+      _nodeConnectionMap = new Map();
+    }
+
     let issueCount = 0; // Count for geometry nodes near endpoints (📍 pin icon - bug button)
     const segmentsWithIssues = new Set(); // Track unique segments with geometry node issues
+    let connectionIssueCount = 0; // Count for segment connection issues (⚠️ warning icon)
+    const segmentsWithConnectionIssues = new Set(); // Track unique segments with connection issues
 
     try {
       const currentZoom = wmeSDK.Map.getZoomLevel();
-      if (currentZoom < 18) {
+      // Check if any feature can be shown at this zoom level
+      const canShowGeometry = options.checkGeometryIssues && currentZoom >= 18;
+      const canShowLength = options.showSegmentLength && currentZoom >= 18;
+      const canShowConnection = options.validateNodeConnection && currentZoom >= 16;
+      if (!canShowGeometry && !canShowLength && !canShowConnection) {
         if (countBadge) countBadge.style.display = 'none';
         return;
       }
@@ -1299,10 +1592,20 @@
         north: extent[3],
       };
 
+      // Pre-filter segments to only those overlapping the viewport.
+      // This is essential for the connection check to avoid checking
+      // segments across the entire map (potentially 10,000s).
+      const viewportSegments = allSegments.filter((seg) => {
+        if (!seg.geometry || !seg.geometry.coordinates || seg.geometry.coordinates.length < 2) return false;
+        return seg.geometry.coordinates.some(
+          ([lon, lat]) => lon >= mapBounds.west && lon <= mapBounds.east && lat >= mapBounds.south && lat <= mapBounds.north
+        );
+      });
+
       // Use a DocumentFragment to batch DOM insertions (Performance optimization)
       const fragment = document.createDocumentFragment();
 
-      allSegments.forEach((segment) => {
+      viewportSegments.forEach((segment) => {
         try {
           const geometry = segment.geometry;
           if (!geometry || !geometry.coordinates || geometry.coordinates.length < 2) {
@@ -1315,7 +1618,7 @@
             }
 
           // 1. Check for geometry nodes near endpoints
-          if (options.checkGeometryIssues) {
+          if (canShowGeometry && options.checkGeometryIssues) {
             const geoResult = checkGeometryNodePlacement(segment, options.geometryIssueThreshold);
             if (geoResult.hasIssue) {
               let hasVisibleIssue = false;
@@ -1356,8 +1659,58 @@
             }
           }
 
-          // 2. Show Segment Length
-          if (options.showSegmentLength) {
+          // 2. Check for segment connection issues (dangling node near another segment)
+          // Skip non-drivable segments (footpath, pedestrian, stairway, ferry, railway, runway)
+          // Skip very short segments (< connectionCheckRadius) — follows WME Validator 107/108 pattern
+          if (canShowConnection && options.validateNodeConnection && !isNonDrivableType(segment.roadType)) {
+            const segLength = turf.length(turf.lineString(geometry.coordinates), { units: 'meters' });
+            if (segLength >= options.connectionCheckRadius) {
+            // Use allSegments (not viewportSegments) for proximity check to match
+            // WME Validator's approach (getAll()), ensuring nearby segments just outside
+            // the viewport are still detected.
+            const connResult = checkSegmentConnection(segment, options.connectionCheckRadius, allSegments);
+            if (connResult.hasIssue) {
+              // Always mark the segment for highlight — the segment itself is visible
+              // (it passed the viewportSegments filter), even if the problematic node
+              // is off-screen. Matches WME Validator behavior.
+              segmentsWithConnectionIssues.add(segment.id);
+
+              connResult.details.forEach((issue) => {
+                // Skip the warning icon only if the exact node is outside the viewport
+                // (icon would be off-screen), but the highlight remains.
+                if (issue.coordinates[0] < mapBounds.west || issue.coordinates[0] > mapBounds.east || issue.coordinates[1] < mapBounds.south || issue.coordinates[1] > mapBounds.north) {
+                  return;
+                }
+
+                const warnDiv = document.createElement('div');
+                warnDiv.innerHTML = '<i class="w-icon w-icon-avoid-highways" style="font-size: 30px; color: red; background: rgba(255, 255, 255, 0.5)"></i>'; // Warning icon
+                warnDiv.style.position = 'absolute';
+                warnDiv.style.width = '24px';
+                warnDiv.style.height = '24px';
+                warnDiv.style.display = 'flex';
+                warnDiv.style.alignItems = 'center';
+                warnDiv.style.justifyContent = 'center';
+                warnDiv.style.fontSize = '24px';
+                warnDiv.style.pointerEvents = 'auto'; // Enable hover for native tooltip
+                warnDiv.title = `Segment ${issue.side} side disconnected but only ${Math.round(issue.distance * 10) / 10}m from another segment`;
+
+                fragment.appendChild(warnDiv);
+
+                segmentLabelCache.push({
+                  lon: issue.coordinates[0],
+                  lat: issue.coordinates[1],
+                  labelDiv: warnDiv,
+                  offsetX: 12, // Base center of 24px; may be adjusted dynamically
+                  offsetY: 24, // Base shift up; may be adjusted dynamically
+                  angle: issue.angle, // Segment direction at node, for perpendicular offset
+                });
+              });
+            }
+            } // closes segLength >= connectionCheckRadius guard
+          }
+
+          // 3. Show Segment Length
+          if (canShowLength && options.showSegmentLength) {
             const line = turf.lineString(geometry.coordinates);
             const lengthMeters = turf.length(line, { units: 'meters' });
 
@@ -1407,6 +1760,7 @@
 
         // Get final counts
       issueCount = segmentsWithIssues.size; // Number of segments with geometry node issues
+      connectionIssueCount = segmentsWithConnectionIssues.size; // Number of segments with connection issues
       // Update badge count and icon color for bug icon (geometry nodes near endpoints only - 📍 pin icon)
       if (countBadge) {
         if (issueCount > 0 && options.checkGeometryIssues) {
@@ -1423,6 +1777,50 @@
           const bugIcon = document.getElementById('ezroad-bug-icon');
           if (bugIcon) bugIcon.style.color = '#33CCFF';
         }
+      }
+      // Update badge count for connection validation (⚠️ warning icon)
+      const connBadge = document.getElementById('ezroad-connection-error-count');
+      if (connBadge) {
+        if (connectionIssueCount > 0 && options.validateNodeConnection) {
+          connBadge.value = connectionIssueCount;
+          connBadge.style.display = 'inline-flex';
+          const connIcon = document.getElementById('ezroad-connection-icon');
+          if (connIcon) connIcon.style.color = '#ff3333ff';
+        } else {
+          connBadge.style.display = 'none';
+          const connIcon = document.getElementById('ezroad-connection-icon');
+          if (connIcon) connIcon.style.color = '#33CCFF';
+        }
+      }
+      // Highlight segments with connection issues on the map
+      try {
+        wmeSDK.Map.removeAllFeaturesFromLayer({ layerName: CONNECTION_HIGHLIGHT_LAYER });
+      } catch (e) { /* layer may not exist yet */ }
+
+      if (connectionIssueCount > 0 && options.validateNodeConnection) {
+        const highlightFeatures = [];
+        segmentsWithConnectionIssues.forEach((segId) => {
+          const seg = wmeSDK.DataModel.Segments.getById({ segmentId: segId });
+          if (seg && seg.geometry) {
+            highlightFeatures.push({
+              type: 'Feature',
+              id: `conn_highlight_${segId}`,
+              geometry: seg.geometry,
+              properties: { featureType: 'connectionHighlight' },
+            });
+          }
+        });
+        if (highlightFeatures.length > 0) {
+          try {
+            wmeSDK.Map.addFeaturesToLayer({
+              layerName: CONNECTION_HIGHLIGHT_LAYER,
+              features: highlightFeatures,
+            });
+          } catch (e) {
+            log(`Error highlighting connection issues: ${e}`);
+          }
+        }
+        log(`Connection issues: ${connectionIssueCount} segments with dangling endpoints near other segments`);
       }
     } catch (error) {
       log('Error rebuilding segment length display: ' + error.message);
@@ -1442,8 +1840,31 @@
         });
 
         if (pixel && typeof pixel.x === 'number' && typeof pixel.y === 'number') {
-          const offX = cached.offsetX || 15;
-          const offY = cached.offsetY || 35;
+          let offX = cached.offsetX || 15;
+          let offY = cached.offsetY || 35;
+
+          // If the label has a segment direction angle, offset perpendicular to the
+          // segment so the icon sits beside it rather than on top of it.
+          if (cached.angle !== undefined) {
+            // Perpendicular to the right of the segment direction in screen space.
+            // Geo y is inverted in screen (y-down), so negate the geo angle.
+            const screenAngle = -cached.angle + Math.PI / 2; // 90° clockwise
+            // Dynamic offset based on zoom level — further out at higher zooms
+            let zoom;
+            try { zoom = wmeSDK.Map.getZoomLevel(); } catch (e) { zoom = 19; }
+            const perpDist = zoom >= 22 ? 40 :
+                            zoom === 21 ? 35 :
+                            zoom === 20 ? 30 :
+                            zoom === 19 ? 25 :
+                            zoom === 18 ? 20 :
+                            zoom === 17 ? 15 :
+                                          10; // zoom 16 and below
+            offX += Math.cos(screenAngle) * perpDist;
+            // Negate Y because offY is subtracted (top = pixel.y - offY), so
+            // to move in the positive screen-y (down) direction, offY must decrease.
+            offY += -Math.sin(screenAngle) * perpDist;
+          }
+
           cached.labelDiv.style.left = pixel.x - offX + 'px';
           cached.labelDiv.style.top = pixel.y - offY + 'px';
         }
@@ -1459,7 +1880,7 @@
     if (typeof isMapMoving !== 'undefined' && isMapMoving) return;
 
     const options = getOptions();
-    if (!options.showSegmentLength && !options.checkGeometryIssues) {
+    if (!options.showSegmentLength && !options.checkGeometryIssues && !options.validateNodeConnection) {
       if (segmentLengthContainer) segmentLengthContainer.style.display = 'none';
       return;
     } else {
@@ -1498,8 +1919,9 @@
 
     // Update button visibility immediately on toggle
     addGeometryFixButton();
+    addConnectionCheckButton();
 
-    if (options.showSegmentLength || options.checkGeometryIssues) {
+    if (options.showSegmentLength || options.checkGeometryIssues || options.validateNodeConnection) {
       if (segmentLengthContainer) segmentLengthContainer.style.display = 'block';
 
       // Ensure polling is active
@@ -1570,7 +1992,7 @@
       updateFrameRequest = requestAnimationFrame(() => {
         updateFrameRequest = null;
         const options = getOptions();
-        if ((options.showSegmentLength || options.checkGeometryIssues) && segmentLengthContainer && segmentLengthContainer.style.display !== 'none') {
+        if ((options.showSegmentLength || options.checkGeometryIssues || options.validateNodeConnection) && segmentLengthContainer && segmentLengthContainer.style.display !== 'none') {
           updateSegmentLabelPositions(); // Fast position update only
         }
       });
@@ -1578,9 +2000,13 @@
 
     const onMoveEnd = function () {
       isMapMoving = false;
+      // Debounce rebuild to let SDK populate node/segment data after panning
+      if (moveEndTimer) clearTimeout(moveEndTimer);
+      moveEndTimer = setTimeout(() => {
+        moveEndTimer = null;
       // Rebuild labels after movement ends (checks if segments entered/left viewport)
       const options = getOptions();
-      if ((options.showSegmentLength || options.checkGeometryIssues) && segmentLengthContainer) {
+        if ((options.showSegmentLength || options.checkGeometryIssues || options.validateNodeConnection) && segmentLengthContainer) {
         segmentLengthContainer.style.display = 'block';
         rebuildSegmentLengthDisplay();
 
@@ -1596,11 +2022,12 @@
           lastZoom = wmeSDK.Map.getZoomLevel();
         } catch (e) {}
       }
+      }, 150);
     };
 
     const onZoomChanged = function () {
       const options = getOptions();
-      if ((options.showSegmentLength || options.checkGeometryIssues) && segmentLengthContainer) {
+      if ((options.showSegmentLength || options.checkGeometryIssues || options.validateNodeConnection) && segmentLengthContainer) {
         rebuildSegmentLengthDisplay(); // Full rebuild on zoom
         try {
           let extent = wmeSDK.Map.getMapExtent();
@@ -1646,6 +2073,11 @@
             // Nothing selected or non-node selected - remove panel
             removeUTurnPanel();
           }
+          
+          // Update lane chip highlight when selection changes
+          if (typeof updateLaneChipHighlight === 'function') {
+            updateLaneChipHighlight();
+          }
         } catch (e) {
           log(`[EZRoad] Error in selection changed handler: ${e.message}`);
         }
@@ -1655,17 +2087,61 @@
     // Update U-turn panel when turns change
     wmeSDK.Events.on({
       eventName: 'wme-after-undo',
-      eventHandler: updateUTurnPanel,
+      eventHandler: () => {
+        updateUTurnPanel();
+        // Refresh lane chip highlight after undo — segment lanes may have reverted
+        if (typeof updateLaneChipHighlight === 'function') {
+          updateLaneChipHighlight();
+        }
+      },
     });
 
     wmeSDK.Events.on({
       eventName: 'wme-after-redo-clear',
-      eventHandler: updateUTurnPanel,
+      eventHandler: () => {
+        updateUTurnPanel();
+        if (typeof updateLaneChipHighlight === 'function') {
+          updateLaneChipHighlight();
+        }
+      },
     });
+
+    // Listen for any segment data model changes (e.g., lane updates from other
+    // scripts, undo of lane changes) to auto-refresh the chip highlight.
+    wmeSDK.Events.on({
+      eventName: 'wme-data-model-objects-changed',
+      eventHandler: (data) => {
+        if (data && data.dataModelName === 'Segment' && data.objectIds && data.objectIds.length > 0) {
+          // Only refresh if the changed segments match the current selection
+          const selection = wmeSDK.Editing.getSelection();
+          if (selection && selection.objectType === 'segment' && selection.ids) {
+            const hasMatch = data.objectIds.some((id) => selection.ids.includes(Number(id)));
+            if (hasMatch && typeof updateLaneChipHighlight === 'function') {
+              updateLaneChipHighlight();
+            }
+          }
+        }
+      },
+    });
+
+    // Initialize the connection highlight layer (even if not enabled yet — segments are drawn when issues found)
+    try {
+      wmeSDK.Map.addLayer({
+        layerName: CONNECTION_HIGHLIGHT_LAYER,
+        styleRules: [
+          {
+            predicate: props => props.featureType === 'connectionHighlight',
+            style: { strokeColor: '#ff0000', strokeWidth: 25, strokeOpacity: 0.4 },
+          },
+        ],
+      });
+    } catch (e) {
+      log(`Connection highlight layer init: ${e}`);
+    }
 
     // Initialize polling if already enabled
     const options = getOptions();
-    if (options.showSegmentLength || options.checkGeometryIssues) {
+    if (options.showSegmentLength || options.checkGeometryIssues || options.validateNodeConnection) {
       handleSegmentLengthToggle();
     }
 
@@ -1846,6 +2322,42 @@
     // Insert after prefs
       prefsItem.insertAdjacentElement('afterend', wrapper);
   }
+
+  // ===== Connection Validation Dashboard Button =====
+  function addConnectionCheckButton() {
+    const options = getOptions();
+
+    const prefsItem = document.querySelector('wz-navigation-item[data-for="prefs"]');
+    let connBtn = document.getElementById('ezroad-connection-btn');
+
+    if (connBtn) {
+      // Update visibility on the wrapper
+      const existingWrapper = document.getElementById('ezroad-connection-wrapper');
+      if (existingWrapper) existingWrapper.style.display = options.validateNodeConnection ? 'flex' : 'none';
+      return;
+    }
+
+    if (!prefsItem) return;
+
+      const wrapper = document.createElement('div');
+      wrapper.id = 'ezroad-connection-wrapper';
+      wrapper.style.cssText = `display: ${options.validateNodeConnection ? 'flex' : 'none'}; justify-content: center; align-items: center; padding-top: 12px; padding-bottom: 12px; height: auto;`;
+
+      connBtn = document.createElement('wz-button');
+      connBtn.color = 'text';
+      connBtn.size = 'sm';
+      connBtn.id = 'ezroad-connection-btn';
+      connBtn.type = 'button';
+
+      connBtn.innerHTML = `
+        <i class="w-icon w-icon-avoid-highways" id="ezroad-connection-icon" style="color: #33CCFF" title="Validation: disconnected nodes near other segments"></i>
+        <wz-notification-indicator value="0" id="ezroad-connection-error-count" class="counter" style="display: none;"></wz-notification-indicator>
+      `;
+
+      wrapper.appendChild(connBtn);
+    // Insert after prefs (next to the geometry button)
+      prefsItem.insertAdjacentElement('afterend', wrapper);
+    }
 
   // ===== Segment Splitter Feature =====
   // Uses only official WME SDK APIs:
@@ -2097,6 +2609,207 @@
   }
 
   // ===== End Segment Splitter Feature =====
+  
+  // ===== Lane Count Update Buttons =====
+  /**
+   * Updates the number of lanes (road width) for all given segment IDs.
+   * Sets both fromLanesInfo and toLanesInfo to the specified count.
+   */
+  function handleLaneCountUpdate(segmentIds, laneCount) {
+    if (!segmentIds || segmentIds.length === 0) {
+      log('[LaneCount] No segments to update');
+      return;
+    }
+    
+    let successCount = 0;
+    const totalCount = segmentIds.length;
+    
+    segmentIds.forEach((id) => {
+      try {
+        const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+        if (!seg) {
+          log(`[LaneCount] Segment ${id} not found`);
+          return;
+        }
+        // Pass null to clear both directions when laneCount is 0
+        wmeSDK.DataModel.Segments.updateSegment({
+          segmentId: id,
+          fromLanesInfo: laneCount > 0 ? { numberOfLanes: laneCount, laneWidth: null } : null,
+          toLanesInfo: laneCount > 0 ? { numberOfLanes: laneCount, laneWidth: null } : null,
+        });
+        successCount++;
+        log(`[LaneCount] Set numberOfLanes=${laneCount} for segment ${id} (road width)`);
+      } catch (e) {
+        log(`[LaneCount] Error updating segment ${id}: ${e.message}`);
+      }
+    });
+    
+    if (WazeToastr?.Alerts) {
+      if (successCount === totalCount) {
+        WazeToastr.Alerts.success(`${scriptName}`, `Road width set to ${laneCount} lane(s) for ${successCount} segment(s).`, false, false, 2000);
+      } else if (successCount > 0) {
+        WazeToastr.Alerts.warning(`${scriptName}`, `Road width set to ${laneCount} lane(s) for ${successCount}/${totalCount} segment(s).`, false, false, 3000);
+      } else {
+        WazeToastr.Alerts.error(`${scriptName}`, 'Failed to update road width.', false, false, 3000);
+      }
+    }
+  }
+
+  /**
+   * Creates or refreshes the lane count button row in the segment edit panel.
+   * Inserted between the HOV chip container and the routing road type control.
+   */
+  function addLaneCountButtons() {
+    const options = getOptions();
+    if (!options.updateLanes) {
+      // Remove existing lane buttons container if present
+      const existing = document.getElementById('ezroad-lane-buttons');
+      if (existing) existing.remove();
+      return;
+    }
+    
+    // Avoid duplicates
+    if (document.getElementById('ezroad-lane-buttons')) return;
+    
+    const editGeneral = document.querySelector('#segment-edit-general');
+    if (!editGeneral) return;
+    
+    //const routingControl = editGeneral.querySelector('.routing-road-type-control');
+    const routingControl = editGeneral.querySelector('.controls.roadDetailsFlags--h4KVD');
+    if (!routingControl) return;
+    
+    // Create container
+    const container = document.createElement('div');
+    container.id = 'ezroad-lane-buttons';
+    container.className = 'ezroad-lane-buttons-container';
+    
+    // Label
+    const label = document.createElement('span');
+    label.className = 'ezroad-lane-label';
+    label.textContent = 'Lanes:';
+    container.appendChild(label);
+    
+    // Add 'Multiple' chip for mixed selection (similar to WME lock level selector)
+    const mixedChip = document.createElement('wz-checkable-chip');
+    mixedChip.className = 'ezroad-lane-chip';
+    mixedChip.textContent = 'Multiple';
+    mixedChip.setAttribute('size', 'md');
+    mixedChip.setAttribute('value', 'MIXED');
+    mixedChip.setAttribute('read-only', '');
+    mixedChip.setAttribute('title', 'No of Lane Road width');
+    mixedChip.style.display = 'none'; // hidden until mixed selection detected
+    container.appendChild(mixedChip);
+    
+    // Create chips 0-8 matching WME's lock rank chip style
+    for (let i = 0; i <= 8; i++) {
+      const chip = document.createElement('wz-checkable-chip');
+      chip.className = 'ezroad-lane-chip';
+      chip.textContent = String(i);
+      chip.setAttribute('size', 'md');
+      chip.setAttribute('value', String(i));
+      chip.setAttribute('title', 'No of Lane Road width');
+      
+      chip.addEventListener('click', () => {
+        const selection = wmeSDK.Editing.getSelection();
+        if (!selection || selection.objectType !== 'segment' || !selection.ids || selection.ids.length === 0) {
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.warning(`${scriptName}`, 'No segments selected.', false, false, 2000);
+          }
+          return;
+        }
+        handleLaneCountUpdate(selection.ids, i);
+        
+        // Programmatic reselect (clearSelection → setSelection) triggers the
+        // wme-selection-changed event, which calls updateLaneChipHighlight()
+        // automatically — same as manually deselecting and reselecting.
+        // A small delay ensures the SDK has processed the updateSegment call.
+        setTimeout(() => {
+          try {
+            const currentSelection = wmeSDK.Editing.getSelection();
+            if (currentSelection && currentSelection.objectType === 'segment') {
+              wmeSDK.Editing.clearSelection();
+              wmeSDK.Editing.setSelection({ selection: currentSelection });
+            }
+          } catch (e) {
+            log(`[LaneCount] Reselect error: ${e.message}`);
+          }
+        }, 50);
+      });
+      
+      container.appendChild(chip);
+    }
+    
+    // Insert after routing road type control
+    routingControl.parentNode.insertBefore(container, routingControl.nextSibling);
+    
+    // Highlight the chip matching the currently selected segment's lane width
+    updateLaneChipHighlight();
+    
+    log('[LaneCount] Lane count buttons added to edit panel');
+  }
+
+  /**
+   * Updates the chip highlight to reflect the currently selected segment's lane width.
+   */
+  function updateLaneChipHighlight() {
+    const container = document.getElementById('ezroad-lane-buttons');
+    if (!container) return;
+    
+    const selection = wmeSDK.Editing.getSelection();
+    if (!selection || selection.objectType !== 'segment' || !selection.ids || selection.ids.length === 0) {
+      return;
+    }
+    
+    // Determine the lane count for each selected segment and check if they differ
+    function getLaneCount(seg) {
+      if (seg.fromLanesInfo && seg.fromLanesInfo.numberOfLanes !== null && seg.fromLanesInfo.numberOfLanes !== undefined) {
+        return seg.fromLanesInfo.numberOfLanes;
+      }
+      if (seg.toLanesInfo && seg.toLanesInfo.numberOfLanes !== null && seg.toLanesInfo.numberOfLanes !== undefined) {
+        return seg.toLanesInfo.numberOfLanes;
+      }
+      return 0; // null/undefined treated as 0
+    }
+    
+    // Check if multiple segments have different lane counts
+    let uniqueCounts = new Set();
+    let targetLaneCount = null;
+    let isMixed = false;
+    
+    for (let id of selection.ids) {
+      const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+      if (!seg) continue;
+      const count = getLaneCount(seg);
+      uniqueCounts.add(count);
+      if (targetLaneCount === null) targetLaneCount = count;
+    }
+    
+    if (uniqueCounts.size > 1) {
+      isMixed = true;
+    }
+    
+    // Clear all highlights first
+    container.querySelectorAll('wz-checkable-chip.ezroad-lane-chip').forEach((c) => c.removeAttribute('checked'));
+    
+    // Show/hide the 'Multiple' chip based on mixed detection
+    const mixedChip = container.querySelector('wz-checkable-chip.ezroad-lane-chip[value="MIXED"]');
+    
+    if (isMixed) {
+      if (mixedChip) {
+        mixedChip.style.display = '';
+        mixedChip.setAttribute('checked', '');
+      }
+    } else {
+      if (mixedChip) mixedChip.style.display = 'none';
+      
+      // Highlight the specific number chips 0-8 
+      if (targetLaneCount !== null && targetLaneCount >= 0 && targetLaneCount <= 8) {
+        const targetChip = container.querySelector(`wz-checkable-chip.ezroad-lane-chip[value="${targetLaneCount}"]`);
+        if (targetChip) targetChip.setAttribute('checked', '');
+      }
+    }
+  }
+  // ===== End Lane Count Update Buttons =====
 
   const getEmptyCity = () => {
     return (
@@ -2212,19 +2925,22 @@
     alertMessageParts.push(`City Name: <b>${cityName || 'None'}</b>`);
   }
 
-  // Helper: Returns true if the roadType is non-routable (Footpath, Pedestrianised Area, Stairway, Ferry, Railway, Runway)
-  // According to WME SDK, non-routable segments should have routingRoadType === null
-  // This function provides a fallback check based on roadType values
-  function isPedestrianType(roadType) {
-    // Footpath (5), Pedestrianised Area (10), Stairway (16), Ferry (15), Railway (18), Runway (19)
+  // Helper: Returns true if the roadType is non-drivable (Footpath, Pedestrianised Area, Stairway, Ferry, Railway, Runway)
+  // Uses the WME SDK's isRoadTypeDrivable method which is more reliable and future-proof
+  function isNonDrivableType(roadType) {
+    try {
+      return !wmeSDK.DataModel.Segments.isRoadTypeDrivable({ roadType });
+    } catch (e) {
+      // Fallback: hardcoded list if SDK method fails (e.g., during early init)
     return [5, 10, 16, 15, 18, 19].includes(roadType);
+    }
   }
 
   // Helper: Enable all turns at both nodes of a segment for routable road types
   function enableAllTurnsForSegment(segmentId) {
     try {
       const seg = wmeSDK.DataModel.Segments.getById({ segmentId });
-      if (!seg || isPedestrianType(seg.roadType)) {
+      if (!seg || isNonDrivableType(seg.roadType)) {
         log(`[${scriptName}] Skipping turn enablement for non-routable segment ${segmentId}`);
         return;
       }
@@ -2275,8 +2991,8 @@
       return segmentId;
     }
 
-    const currentIsPed = isPedestrianType(seg.roadType);
-    const targetIsPed = isPedestrianType(targetRoadType);
+    const currentIsPed = isNonDrivableType(seg.roadType);
+    const targetIsPed = isNonDrivableType(targetRoadType);
 
     if (currentIsPed !== targetIsPed) {
       // Show confirmation dialog before swapping
@@ -2346,8 +3062,10 @@
         log(`[${scriptName}] Restoring address for new segment ${newSegmentId}`);
         wmeSDK.DataModel.Segments.updateAddress({
           segmentId: newSegmentId,
+          addressData: {
           primaryStreetId: validPrimaryStreetId,
           alternateStreetIds: oldAltStreetIds,
+          },
         });
 
         // If we have connected segment name data to copy, apply it now
@@ -2355,8 +3073,10 @@
           log(`[${scriptName}] Applying connected segment name data`);
           wmeSDK.DataModel.Segments.updateAddress({
             segmentId: newSegmentId,
+            addressData: {
             primaryStreetId: copyConnectedNameData.primaryStreetId,
             alternateStreetIds: Array.isArray(copyConnectedNameData.alternateStreetIds) ? copyConnectedNameData.alternateStreetIds : [],
+            },
           });
         }
 
@@ -2888,8 +3608,10 @@
                   try {
                     wmeSDK.DataModel.Segments.updateAddress({
                       segmentId: id,
+                      addressData: {
                       primaryStreetId: connectedSeg.primaryStreetId,
                       alternateStreetIds: connectedSeg.alternateStreetIds || [],
+                      },
                     });
                   } catch (addrError) {
                     log(`[${scriptName}] updateAddress error: ` + addrError);
@@ -2952,8 +3674,10 @@
                   try {
                     wmeSDK.DataModel.Segments.updateAddress({
                       segmentId: id,
+                      addressData: {
                       primaryStreetId: connectedSeg.primaryStreetId,
                       alternateStreetIds: connectedSeg.alternateStreetIds || [],
+                      },
                     });
                   } catch (addrError) {
                     log(`[${scriptName}] updateAddress error in fallback: ` + addrError);
@@ -3042,8 +3766,8 @@
       if (options.roadType) {
         // If copySegmentName is enabled and switching Street → Pedestrian, prefetch connected segment name
         const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
-        const currentIsPed = isPedestrianType(seg.roadType);
-        const targetIsPed = isPedestrianType(options.roadType);
+        const currentIsPed = isNonDrivableType(seg.roadType);
+        const targetIsPed = isNonDrivableType(options.roadType);
         if (!currentIsPed && targetIsPed && options.copySegmentName) {
           // Find connected segment and store its name info
           const fromNode = seg.fromNodeId;
@@ -3087,7 +3811,7 @@
             log(`[${scriptName}] Segment ID: ${id}, Current Road Type: ${seg.roadType}, Target Road Type: ${options.roadType}, Target Road Name : ${selectedRoad.name}`); // Log current and target road type
             if (seg.roadType === options.roadType) {
               log(`[${scriptName}] Segment ID: ${id} already has the target road type: ${options.roadType}. Skipping update.`);
-              alertMessageParts.push(`Road Type: <b>${selectedRoad.name} exists. Skipping update.</b>`);
+              alertMessageParts.push(`Road Type: <b>${roadTypeName(selectedRoad)} exists. Skipping update.</b>`);
               updatedRoadType = true;
             } else {
               try {
@@ -3096,7 +3820,7 @@
                   roadType: options.roadType,
                 });
                 log(`[${scriptName}] Road type updated successfully.`);
-                alertMessageParts.push(`Road Type: <b>${selectedRoad.name}</b>`);
+                alertMessageParts.push(`Road Type: <b>${roadTypeName(selectedRoad)}</b>`);
                 updatedRoadType = true;
               } catch (error) {
                 console.error(`[${scriptName}] Error updating road type:`, error);
@@ -3165,6 +3889,16 @@
       updatePromises.push(
         delayedUpdate(() => {
           if (options.updateSpeed) {
+            // Skip speed limit updates for pedestrian type segments (they don't support it)
+            const seg = wmeSDK.DataModel.Segments.getById({
+              segmentId: id,
+            });
+            if (seg && isNonDrivableType(seg.roadType)) {
+              log(`Skipping speed limit update for Non-Drivable type segment (roadType: ${seg.roadType})`);
+              alertMessageParts.push(`Speed Limit: <b>Skipped (Non-Drivable type)</b>`);
+              updatedSpeedLimit = true;
+              return;
+            }
             const selectedRoad = roadTypes.find((rt) => rt.value === options.roadType);
             if (selectedRoad) {
               const speedSetting = options.speeds.find((s) => s.id === selectedRoad.id);
@@ -3178,9 +3912,6 @@
                 // If speedValue is 0 or less, treat as unset (null for removal)
                 // Use null instead of undefined to properly remove speed limits
                 const speedToSet = !isNaN(speedValue) && speedValue > 0 ? speedValue : null;
-                const seg = wmeSDK.DataModel.Segments.getById({
-                  segmentId: id,
-                });
                 // Compare using loose equality (==) to treat null and undefined as equivalent
                 // This ensures we don't try to update when segment already has no speed limit
                 const needsUpdate = seg.fwdSpeedLimit != speedToSet || seg.revSpeedLimit != speedToSet;
@@ -3275,8 +4006,10 @@
           // Remove all alternate street names
           wmeSDK.DataModel.Segments.updateAddress({
             segmentId: id,
+            addressData: {
             primaryStreetId: street.id,
             alternateStreetIds: [],
+            },
           });
         } else if (options.setStreetCity) {
           // Use the same street name as current, but in the empty city for both primary and all alts
@@ -3319,8 +4052,10 @@
           }
           wmeSDK.DataModel.Segments.updateAddress({
             segmentId: id,
+            addressData: {
             primaryStreetId: street.id,
             alternateStreetIds: newAltStreetIds,
+            },
           });
           pushCityNameAlert(city.id, alertMessageParts);
           updatedCityName = true;
@@ -3360,8 +4095,10 @@
             log(`About to updateAddress: cityId=${city.id}, street.id=${street.id}, altStreetIds=${newAltStreetIds.join(',')}`);
             wmeSDK.DataModel.Segments.updateAddress({
               segmentId: id,
+              addressData: {
               primaryStreetId: street.id,
               alternateStreetIds: newAltStreetIds.length > 0 ? newAltStreetIds : undefined,
+              },
             });
           } else {
             // New/empty street fallback - use the city we already determined above (from top city or connected segments)
@@ -3372,189 +4109,60 @@
             }
             wmeSDK.DataModel.Segments.updateAddress({
               segmentId: id,
+              addressData: {
               primaryStreetId: street.id,
               alternateStreetIds: undefined,
+              },
             });
           }
         }
         log(`City Name: ${city?.name}, City ID: ${city?.id}, Street ID: ${street?.id}`);
       }
 
-      // COMMENTED OUT: Old unpaved handler using DOM clicks (kept for reference/fallback)
-      // ============================================================================
-      // Replaced with WME SDK updateSegment method (see below)
-      
+      // NEW: Updated unpaved handler using WME SDK updateSegment method
       updatePromises.push(
         delayedUpdate(() => {
+          try {
           const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
-          const isPedestrian = isPedestrianType(seg.roadType);
+            const isPedestrian = isNonDrivableType(seg.roadType);
+            
+            // Determine the unpaved value based on segment type and options
+            let unpavedValue = false;
+            let statusMessage = '';
+            
           if (isPedestrian) {
             // Always set as paved for pedestrian types, regardless of checkbox
-            const isUnpaved = seg.flagAttributes && seg.flagAttributes.unpaved === true;
-            let pavedToggled = false;
-            if (isUnpaved) {
-              // Click to set as paved
-              const unpavedIcon = openPanel.querySelector('.w-icon-unpaved-fill');
-              if (unpavedIcon) {
-                const unpavedChip = unpavedIcon.closest('wz-checkable-chip');
-                if (unpavedChip) {
-                  unpavedChip.click();
-                  log('Clicked unpaved chip (set to paved for pedestrian type)');
-                  pavedToggled = true;
-                }
-              }
-              if (!pavedToggled) {
-                try {
-                  const wzCheckbox = openPanel.querySelector('wz-checkbox[name="unpaved"]');
-                  if (wzCheckbox) {
-                    const hiddenInput = wzCheckbox.querySelector('input[type="checkbox"][name="unpaved"]');
-                    if (hiddenInput && hiddenInput.checked) {
-                      hiddenInput.click();
-                      log('Clicked unpaved checkbox (set to paved, non-compact mode, pedestrian type)');
-                      pavedToggled = true;
-                    }
-                  }
-                } catch (e) {
-                  log('Fallback to non-compact mode paved toggle method failed: ' + e);
-                }
-              }
-              if (pavedToggled) {
-                alertMessageParts.push(`Paved Status: <b>Paved (pedestrian type)</b>`);
-                updatedPaved = true;
-              }
+              unpavedValue = false;
+              statusMessage = 'Paved (pedestrian type)';
+            } else if (options.unpaved) {
+              // Set as unpaved if option is enabled
+              unpavedValue = true;
+              statusMessage = 'Unpaved';
             } else {
-              alertMessageParts.push(`Paved Status: <b>Paved (pedestrian type, already set)</b>`);
-              updatedPaved = true;
+              // Set as paved
+              unpavedValue = false;
+              statusMessage = 'Paved';
             }
-          } else if (options.unpaved) {
-            const isUnpaved = seg.flagAttributes && seg.flagAttributes.unpaved === true;
-            let unpavedToggled = false;
-
-            if (!isUnpaved) {
-              // Only click if segment is not already unpaved
-              const unpavedIcon = openPanel.querySelector('.w-icon-unpaved-fill');
-              if (unpavedIcon) {
-                const unpavedChip = unpavedIcon.closest('wz-checkable-chip');
-                if (unpavedChip) {
-                  unpavedChip.click();
-                  log('Clicked unpaved chip (set to unpaved)');
-                  unpavedToggled = true;
-                }
-              }
-              // If new method failed, try the old method as fallback for non-compact mode
-              if (!unpavedToggled) {
-                try {
-                  const wzCheckbox = openPanel.querySelector('wz-checkbox[name="unpaved"]');
-                  if (wzCheckbox) {
-                    const hiddenInput = wzCheckbox.querySelector('input[type="checkbox"][name="unpaved"]');
-                    if (hiddenInput && !hiddenInput.checked) {
-                      hiddenInput.click();
-                      log('Clicked unpaved checkbox (set to unpaved, non-compact mode)');
-                      unpavedToggled = true;
+            
+            // Use WME SDK updateSegment with flagAttributes
+            // Note: Pedestrian types don't support the unpaved flag, so skip the call
+            if (!isPedestrian) {
+              wmeSDK.DataModel.Segments.updateSegment({
+                segmentId: id,
+                flagAttributes: {
+                  unpaved: unpavedValue
                     }
-                  }
-                } catch (e) {
-                  log('Fallback to non-compact mode unpaved toggle method failed: ' + e);
+              });
                 }
-              }
-              if (unpavedToggled) {
-                alertMessageParts.push(`Paved Status: <b>Unpaved</b>`);
+            
+            alertMessageParts.push(`Paved Status: <b>${statusMessage}</b>`);
                 updatedPaved = true;
-              }
-            } else {
-              // Already unpaved, no action needed
-              alertMessageParts.push(`Paved Status: <b>Unpaved (already set)</b>`);
-              updatedPaved = true;
-            }
-          } else {
-            const isUnpaved = seg.flagAttributes && seg.flagAttributes.unpaved === true;
-            let pavedToggled = false;
-
-            if (isUnpaved) {
-              // Click to set as paved
-              const unpavedIcon = openPanel.querySelector('.w-icon-unpaved-fill');
-              if (unpavedIcon) {
-                const unpavedChip = unpavedIcon.closest('wz-checkable-chip');
-                if (unpavedChip) {
-                  unpavedChip.click();
-                  log('Clicked unpaved chip (set to paved)');
-                  pavedToggled = true;
-                }
-              }
-              // If new method failed, try the old method as fallback for non-compact mode
-              if (!pavedToggled) {
-                try {
-                  const wzCheckbox = openPanel.querySelector('wz-checkbox[name="unpaved"]');
-                  if (wzCheckbox) {
-                    const hiddenInput = wzCheckbox.querySelector('input[type="checkbox"][name="unpaved"]');
-                    if (hiddenInput && hiddenInput.checked) {
-                      hiddenInput.click();
-                      log('Clicked unpaved checkbox (set to paved, non-compact mode)');
-                      pavedToggled = true;
-                    }
-                  }
+            log(`Updated unpaved status via SDK: ${statusMessage} (unpaved=${unpavedValue})`);
                 } catch (e) {
-                  log('Fallback to non-compact mode paved toggle method failed: ' + e);
-                }
-              }
-              if (pavedToggled) {
-                alertMessageParts.push(`Paved Status: <b>Paved</b>`);
-                updatedPaved = true;
-              }
-            } else {
-              // Already paved, no action needed
-              alertMessageParts.push(`Paved Status: <b>Paved (already set)</b>`);
-              updatedPaved = true;
-            }
+            log('Error updating unpaved status via SDK: ' + e);
           }
         }, 500)
       ); // 500ms delay for unpaved/paved toggle
-      
-      // ============================================================================
-      // The SDK logic is flawed because the unpaved attribute is not immediately updated in the segment object after updateSegment call, so we cannot reliably check the current unpaved status before deciding to click or not. This can lead to unnecessary clicks and alerts showing "Paved (already set)" when it was actually toggled. The DOM method, while less elegant, reflects the actual state of the checkbox and avoids this issue. Therefore, we will keep the DOM click method as primary for now, and use the SDK updateSegment as a backup if the DOM elements are not found (like in compact mode). We can revisit this in the future if WME SDK provides a way to get immediate feedback on flag attribute changes.
-      // ============================================================================
-
-      // NEW: Updated unpaved handler using WME SDK updateSegment method
-      // updatePromises.push(
-      //   delayedUpdate(() => {
-      //     try {
-      //       const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
-      //       const isPedestrian = isPedestrianType(seg.roadType);
-            
-      //       // Determine the unpaved value based on segment type and options
-      //       let unpavedValue = false;
-      //       let statusMessage = '';
-            
-      //       if (isPedestrian) {
-      //         // Always set as paved for pedestrian types, regardless of checkbox
-      //         unpavedValue = false;
-      //         statusMessage = 'Paved (pedestrian type)';
-      //       } else if (options.unpaved) {
-      //         // Set as unpaved if option is enabled
-      //         unpavedValue = true;
-      //         statusMessage = 'Unpaved';
-      //       } else {
-      //         // Set as paved
-      //         unpavedValue = false;
-      //         statusMessage = 'Paved';
-      //       }
-            
-      //       // Use WME SDK updateSegment with flagAttributes
-      //       wmeSDK.DataModel.Segments.updateSegment({
-      //         segmentId: id,
-      //         flagAttributes: {
-      //           unpaved: unpavedValue
-      //         }
-      //       });
-            
-      //       alertMessageParts.push(`Paved Status: <b>${statusMessage}</b>`);
-      //       updatedPaved = true;
-      //       log(`Updated unpaved status via SDK: ${statusMessage} (unpaved=${unpavedValue})`);
-      //     } catch (e) {
-      //       log('Error updating unpaved status via SDK: ' + e);
-      //     }
-      //   }, 500)
-      // ); // 500ms delay for unpaved/paved toggle
 
       // 3a. Copy segment name from connected segment if enabled
       // =========================================================================
@@ -3780,8 +4388,10 @@
                   log(`[copySegmentName] Calling updateAddress (setStreetCity=true) with primaryStreetId=${newPrimaryStreetId}, alternateStreetIds=[${newAltStreetIdsInEmptyCity.join(', ')}]`);
                     wmeSDK.DataModel.Segments.updateAddress({
                       segmentId: id,
+                    addressData: {
                     primaryStreetId: newPrimaryStreetId,
                     alternateStreetIds: newAltStreetIdsInEmptyCity,
+                    },
                   });
                   pushCityNameAlert(emptyCity.id, alertMessageParts);
                   updatedCityName = true;
@@ -3789,8 +4399,10 @@
                   log(`[copySegmentName] Calling updateAddress with primaryStreetId=${newPrimaryStreetId}, alternateStreetIds=[${newAltStreetIds.join(', ')}]`);
                   wmeSDK.DataModel.Segments.updateAddress({
                     segmentId: id,
+                    addressData: {
                     primaryStreetId: newPrimaryStreetId,
                       alternateStreetIds: newAltStreetIds,
+                    },
                     });
                   if (connectedSeg.primaryStreetId) {
                     const connectedPrimaryStreet = wmeSDK.DataModel.Streets.getById({ streetId: connectedSeg.primaryStreetId });
@@ -3959,16 +4571,20 @@
                     
                     wmeSDK.DataModel.Segments.updateAddress({
                       segmentId: id,
+                      addressData: {
                       primaryStreetId: newPrimaryStreetId,
                       alternateStreetIds: newAltStreetIdsInEmptyCity,
+                      },
                     });
                     pushCityNameAlert(emptyCity.id, alertMessageParts);
                     updatedCityName = true;
                   } else {
                     wmeSDK.DataModel.Segments.updateAddress({
                       segmentId: id,
+                      addressData: {
                       primaryStreetId: newPrimaryStreetId,
                       alternateStreetIds: newAltStreetIds,
+                      },
                     });
                     if (connectedSeg.primaryStreetId) {
                       const connectedPrimaryStreet = wmeSDK.DataModel.Streets.getById({ streetId: connectedSeg.primaryStreetId });
@@ -4001,8 +4617,8 @@
       delayedUpdate(() => {
         // Skip U-turn updates for pedestrian type segments (non-routable)
         const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
-        if (seg && isPedestrianType(seg.roadType)) {
-          log(`[EZRoad] Skipping U-turn update for pedestrian type segment (roadType: ${seg.roadType})`);
+        if (seg && isNonDrivableType(seg.roadType)) {
+          log(`[EZRoad] Skipping U-turn update for Non-Drivable segment (roadType: ${seg.roadType})`);
           return;
         }
         
@@ -4303,6 +4919,18 @@
         key: 'restrictExceptMotorbike',
         tooltip: 'Automatically adds motorbike-only vehicle restrictions via UI automation. Applies to entire segment in both directions, all day. Blocks all vehicles except motorcycles. May use shortcut key (Alt+R) or (Quick Update Segment) to apply.',
       },
+      {
+        id: 'updateLanes',
+        text: 'Enable Road Width (No of Lanes) buttons',
+        key: 'updateLanes',
+        tooltip: 'Shows lane count buttons (0-10) in the edit panel. Click a number to set the number of lanes for both directions on selected segments.',
+      },
+      {
+        id: 'validateNodeConnection',
+        text: 'Validate Node Connection',
+        key: 'validateNodeConnection',
+        tooltip: 'Checks if a segment\'s A or B node is disconnected (no other segments attached) but is within the threshold distance of another segment\'s geometry. Displays a warning icon at flagged nodes.',
+      },
     ];
 
     // Helper function to create radio buttons
@@ -4315,7 +4943,7 @@
       const div = $(`<div class="ezroadsmod-option">
             <div class="ezroadsmod-radio-container">
                 <input type="radio" id="${id}" name="defaultRoad" data-road-value="${roadType.value}" ${isChecked ? 'checked' : ''}>
-                <label for="${id}">${roadType.name}</label>
+                <label for="${id}">${roadTypeName(roadType)}</label>
                 <select id="lock-level-${roadType.id}" class="road-lock-level" data-road-id="${roadType.id}" ${!localOptions.setLock ? 'disabled' : ''}>
                     ${locks.map((lock) => `<option value="${lock.value}" ${lockSetting.lock === lock.value ? 'selected' : ''}>${lock.value === 'HRCS' ? 'HRCS' : 'L' + lock.value}</option>`).join('')}
                 </select>
@@ -4351,7 +4979,7 @@
     // Helper function to create checkboxes
     const createCheckbox = (option) => {
       const isChecked = localOptions[option.key];
-      const otherClass = option.key !== 'autosave' && option.key !== 'copySegmentAttributes' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' && option.key !== 'restrictExceptMotorbike' ? 'ezroadsmod-other-checkbox' : '';
+      const otherClass = option.key !== 'autosave' && option.key !== 'copySegmentAttributes' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' && option.key !== 'validateNodeConnection' && option.key !== 'restrictExceptMotorbike' && option.key !== 'updateLanes' ? 'ezroadsmod-other-checkbox' : '';
       const attrClass = option.key === 'copySegmentAttributes' ? 'ezroadsmod-attr-checkbox' : '';
 
       const div = $(`<div class="ezroadsmod-option">
@@ -4382,20 +5010,20 @@
           } else {
             update('copySegmentAttributes', false);
           }
-        } else if (option.key !== 'autosave' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' && option.key !== 'restrictExceptMotorbike') {
-          // If any other checkbox (except autosave, showSegmentLength, checkGeometryIssues, restrictExceptMotorbike) is checked, uncheck copySegmentAttributes
+        } else if (option.key !== 'autosave' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' && option.key !== 'validateNodeConnection' && option.key !== 'restrictExceptMotorbike' && option.key !== 'updateLanes') {
+          // If any other checkbox (except autosave, showSegmentLength, checkGeometryIssues, validateNodeConnection, restrictExceptMotorbike, updateLanes) is checked, uncheck copySegmentAttributes
           if ($(`#${option.id}`).prop('checked')) {
             $('#copySegmentAttributes').prop('checked', false);
             update('copySegmentAttributes', false);
           }
           update(option.key, $(`#${option.id}`).prop('checked'));
         } else {
-          // Autosave, showSegmentLength, checkGeometryIssues, or restrictExceptMotorbike
+          // Autosave, showSegmentLength, checkGeometryIssues, validateNodeConnection, restrictExceptMotorbike, or updateLanes
           update(option.key, $(`#${option.id}`).prop('checked'));
         }
 
-        // Handle Segment Length / Geometry Check toggle
-        if (option.key === 'showSegmentLength' || option.key === 'checkGeometryIssues' || option.key === 'copySegmentAttributes') {
+        // Handle Segment Length / Geometry Check / Segment Connection toggle
+        if (option.key === 'showSegmentLength' || option.key === 'checkGeometryIssues' || option.key === 'validateNodeConnection' || option.key === 'copySegmentAttributes') {
           handleSegmentLengthToggle();
         }
       });
@@ -4460,6 +5088,27 @@
             .ezroadsmod-reset-button:hover {
                 background-color: #d32f2f;
             }
+            .ezroad-lane-buttons-container {
+                display: flex;
+                align-items: center;
+                gap: 2px;
+                padding: 4px 5px;
+                margin: 2px 0;
+                flex-wrap: wrap;
+                border: 1px solid #ccc;
+                border-radius: 6px;
+                background: rgba(128, 128, 128, 0.05);
+            }
+            .ezroad-lane-buttons-container .ezroad-lane-label {
+                font-size: 12px;
+                font-weight: 600;
+                margin-right: 6px;
+                white-space: nowrap;
+                min-width: 40px;
+            }
+            .ezroad-lane-buttons-container wz-checkable-chip.ezroad-lane-chip {
+                margin: 0;
+            }
         </style>`);
 
       tabPane.innerHTML = '<div id="ezroadsmod-settings"></div>';
@@ -4516,6 +5165,17 @@
       </div>`);
       additionalOptions.append(geometryThresholdDiv);
         }
+        
+        // Add connection radius input right after the validateNodeConnection checkbox
+        if (option.key === 'validateNodeConnection') {
+          const connectionRadiusDiv = $(`<div class="ezroadsmod-option" style="margin-left: 20px; margin-top: -5px;">
+            <label for="connectionCheckRadius" style="font-size: 0.9em;">Connection check radius (meters):</label>
+            <input type="number" id="connectionCheckRadius" min="1" max="20" step="0.5" value="${
+              localOptions.connectionCheckRadius || 5
+            }" style="width: 60px; margin-left: 5px;" title="Radius in meters to check if a disconnected node is near another segment">
+          </div>`);
+          additionalOptions.append(connectionRadiusDiv);
+        }
       });
 
       // Handle geometry threshold input change
@@ -4531,6 +5191,23 @@
         update('geometryIssueThreshold', thresholdValue);
         // Refresh display if geometry check is enabled
         if (localOptions.checkGeometryIssues) {
+          rebuildSegmentLengthDisplay();
+        }
+      });
+
+      // Handle connection check radius input change
+      $(document).on('change', '#connectionCheckRadius', function () {
+        let radiusValue = parseFloat($(this).val());
+        if (isNaN(radiusValue) || radiusValue < 1) {
+          radiusValue = 5;
+          $(this).val(5);
+        } else if (radiusValue > 20) {
+          radiusValue = 20;
+          $(this).val(20);
+        }
+        update('connectionCheckRadius', radiusValue);
+        // Refresh display if segment connection validation is enabled
+        if (localOptions.validateNodeConnection) {
           rebuildSegmentLengthDisplay();
         }
       });
@@ -4859,7 +5536,33 @@ if (typeof require !== 'undefined') {
 
   /*
 Changelog
-<strong>Version 2.6.9.5 - 2026-06-18:</strong><br>
+<strong>Version 2.7.0.6 - 2026-07-19:</strong><br>
+    - Added: Validation of segment node connection<br>
+    - Added: Highlight layer for segments with node connection issues<br>
+    - Fixed: Other minor bug fixes and improvements<br>`
+<strong>Version 2.7.0.4 - 2026-07-16:</strong><br>
+    - Added: Validation of segment node connection<br>
+    - Added: Highlight layer for segments with node connection issues<br>
+    - Fixed: Paved/Unpaved feature is now using fully SDK<br>
+    - Fixed: Other minor bug fixes and improvements<br>
+<strong>Version 2.7.0.3 - 2026-07-16:</strong><br>
+    - Added: Validation of segment node connection<br>
+    - Fixed: Paved/Unpaved feature is now using fully SDK<br>
+    - Fixed: Other minor bug fixes and improvements<br>
+<strong>Version 2.6.9.8 - 2026-07-15:</strong><br>
+    - Fixed: Lane update feature now displays added lanes properly before saving<br>
+    - Fixed: Lane update feature now works properly with undo/redo<br>
+    - Fixed: Other minor bug fixes and improvements<br>
+<strong>Version 2.6.9.8 - 2026-07-13:</strong><br>
+    - Added: Road Width (No of Lanes) buttons (0-8) in the edit panel with Multiple chip for mixed selection<br>
+    - Settings checkbox to enable/disable lane count buttons<br>
+    - Tooltip on hover for lane chips<br>
+<strong>Version 2.6.9.7 - 2026-07-11:</strong><br>
+    - Fix: All address properties (streetId, houseNumber, alternateStreetIds, and raw components) are now organized under a single addressData object, keeping the method signatures clean following wmesdk pattern<br>
+    - Road names will now follow localized names if available<br>
+<strong>Version 2.6.9.6 - 2026-07-11:</strong><br>
+    - Fix: All address properties (streetId, houseNumber, alternateStreetIds, and raw components) are now organized under a single addressData object, keeping the method signatures clean following wmesdk pattern<br>
+<strong>Version 2.6.9.5 - 2026-06-11:</strong><br>
     - Fix: Issue with the uturn failed to update when selected.<br>
     - Added: shortcut key option to enable U-turns for segment direction A or B and node.<br>
     - Added: counter and button UI to allow all U-turns at once for a node when selected.<br>

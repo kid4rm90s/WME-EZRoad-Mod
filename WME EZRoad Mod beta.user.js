@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.7.0.6
+// @version      2.7.0.7
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -30,10 +30,11 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.7.0.6 - 2026-07-19:</strong><br>
-    - Added: Validation of segment node connection<br>
-    - Added: Highlight layer for segments with node connection issues<br>
-    - Fixed: Other minor bug fixes and improvements<br>`;
+  const updateMessage = `<strong>Version 2.7.0.7 - 2026-07-23:</strong><br>
+    - Segment & Node Connection: Added validation for segment node connections and introduced a highlight layer for segments with connection issues.<br>
+    - Lane Management: Added road width (0–8 lanes) buttons in the edit panel with a "Multiple" chip, hover tooltips, and a settings toggle. Fixed preview display before saving and resolved undo/redo support.<br>
+    - SDK & Address Architecture: Reorganized address properties under a unified addressData object following WMESDK patterns, and migrated the Paved/Unpaved feature to full SDK support.<br>
+    -Localization & Maintenance: Added support for localized road names, alongside general bug fixes and stability improvements.<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://raw.githubusercontent.com/kid4rm90s/WME-EZRoad-Mod/main/WME%20EZRoad%20Mod%20beta.user.js';
@@ -937,9 +938,9 @@
         },
         {
           handler: 'WME_EZRoad_Mod_UpdateLaneCount',
-          title: 'Update Lane Count',
+          title: 'Enable Road Width (No of Lanes) buttons',
           func: function (arg) {
-            handleToggle('updateLanes', 'Update Lane Count');
+            handleToggle('updateLanes', 'Enable Road Width (No of Lanes) buttons');
           },
           key: -1,
           arg: {},
@@ -4119,44 +4120,6 @@
         }
         log(`City Name: ${city?.name}, City ID: ${city?.id}, Street ID: ${street?.id}`);
       }
-
-      // OLD (commented out): Unpaved handler using DOM chip clicks
-      // ============================================================================
-      // updatePromises.push(
-      //   delayedUpdate(() => {
-      //     const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
-      //     const isPedestrian = isNonDrivableType(seg.roadType);
-      //     if (isPedestrian) {
-      //       const isUnpaved = seg.flagAttributes && seg.flagAttributes.unpaved === true;
-      //       if (isUnpaved) {
-      //         const unpavedIcon = openPanel.querySelector('.w-icon-unpaved-fill');
-      //         if (unpavedIcon) {
-      //           const unpavedChip = unpavedIcon.closest('wz-checkable-chip');
-      //           if (unpavedChip) unpavedChip.click();
-      //         }
-      //       }
-      //     } else if (options.unpaved) {
-      //       const isUnpaved = seg.flagAttributes && seg.flagAttributes.unpaved === true;
-      //       if (!isUnpaved) {
-      //         const unpavedIcon = openPanel.querySelector('.w-icon-unpaved-fill');
-      //         if (unpavedIcon) {
-      //           const unpavedChip = unpavedIcon.closest('wz-checkable-chip');
-      //           if (unpavedChip) unpavedChip.click();
-      //         }
-      //       }
-      //     } else {
-      //       const isUnpaved = seg.flagAttributes && seg.flagAttributes.unpaved === true;
-      //       if (isUnpaved) {
-      //         const unpavedIcon = openPanel.querySelector('.w-icon-unpaved-fill');
-      //         if (unpavedIcon) {
-      //           const unpavedChip = unpavedIcon.closest('wz-checkable-chip');
-      //           if (unpavedChip) unpavedChip.click();
-      //         }
-      //       }
-      //     }
-      //   }, 500)
-      // ); // 500ms delay for unpaved/paved toggle
-      // ============================================================================
 
       // NEW: Updated unpaved handler using WME SDK updateSegment method
       updatePromises.push(
