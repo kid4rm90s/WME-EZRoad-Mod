@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.7.1.1
+// @version      2.7.1.2
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -2223,6 +2223,11 @@
     }
 
     if (triggerSave) {
+      try {
+        WazeToastr.Alerts.success(scriptName, 'Saving keyboard shortcuts for ' + scriptName, false, false, 3000);
+      } catch (e) {
+        console.warn(scriptName + ' WazeToastr.Alerts.success failed:', e);
+      }
       for (var k = 0; k < shortcuts.length; k++) {
         var s = shortcuts[k];
         var matchDef = null;
