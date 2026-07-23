@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.7.1.2
+// @version      2.7.2.2
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -30,7 +30,8 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.7.1.1 - 2026-07-23:</strong><br>
+  const updateMessage = `<strong>Version 2.7.2.2 - 2026-07-24:</strong><br>
+    - starting with SDK v2.359, it is now moved towards grouping related parameters into single objects to streamline updates and reduce the number of individual actions recorded by the ActionManager <br>
     - Migrated legacy keyboard shortcuts to sdk<br>
     - Minor bug fixes and stability improvements<br>`;
   const scriptName = GM_info.script.name;
@@ -3644,6 +3645,7 @@
                       lockRank: connectedSeg.lockRank,
                       elevationLevel: connectedSeg.elevationLevel,
                       direction: getDirectionFromSegment(connectedSeg),
+                      flagAttributes: { unpaved: connectedSeg.flagAttributes?.unpaved === true },
                     });
                   } catch (updateError) {
                     log(`[${scriptName}] updateSegment error (will retry with individual properties): ` + updateError);
@@ -3679,8 +3681,6 @@
                   } catch (addrError) {
                     log(`[${scriptName}] updateAddress error: ` + addrError);
                   }
-                  // Copy all flag attributes
-                  copyFlagAttributes(connectedSeg.id, id);
                   alertMessageParts.push(`[${scriptName}] Copied all attributes from connected segment.`);
                   found = true;
                   break;
@@ -3710,6 +3710,7 @@
                       lockRank: connectedSeg.lockRank,
                       elevationLevel: connectedSeg.elevationLevel,
                       direction: getDirectionFromSegment(connectedSeg),
+                      flagAttributes: { unpaved: connectedSeg.flagAttributes?.unpaved === true },
                     });
                   } catch (updateError) {
                     log(`[${scriptName}] updateSegment error in fallback (will retry with individual properties): ` + updateError);
@@ -3745,8 +3746,6 @@
                   } catch (addrError) {
                     log(`[${scriptName}] updateAddress error in fallback: ` + addrError);
                   }
-                  // Copy all flag attributes
-                  copyFlagAttributes(connectedSeg.id, id);
                   alertMessageParts.push(`[${scriptName}] Copied all attributes from connected segment.`);
                   log(`[${scriptName}] Copied all attributes from connected segment (fallback, no valid street name).`);
                 } else {
@@ -3863,39 +3862,30 @@
         }
       }
 
-      // Road Type
+      // Consolidated: Road Type + Lock + Speed + Unpaved (single atomic SDK call)
       updatePromises.push(
         delayedUpdate(() => {
+          const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+          const updateObj = { segmentId: id };
+          let hasUpdates = false;
+
+          // --- Road Type ---
           if (options.roadType) {
-            const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
             const selectedRoad = roadTypes.find((rt) => rt.value === options.roadType);
-            //alertMessageParts.push(`Road Type: <b>${selectedRoad.name}</b>`);
-            //updatedRoadType = true;
-            log(`[${scriptName}] Segment ID: ${id}, Current Road Type: ${seg.roadType}, Target Road Type: ${options.roadType}, Target Road Name : ${selectedRoad.name}`); // Log current and target road type
+            log(`[${scriptName}] Segment ID: ${id}, Current Road Type: ${seg.roadType}, Target Road Type: ${options.roadType}, Target Road Name : ${selectedRoad.name}`);
             if (seg.roadType === options.roadType) {
               log(`[${scriptName}] Segment ID: ${id} already has the target road type: ${options.roadType}. Skipping update.`);
               alertMessageParts.push(`Road Type: <b>${roadTypeName(selectedRoad)} exists. Skipping update.</b>`);
               updatedRoadType = true;
             } else {
-              try {
-                wmeSDK.DataModel.Segments.updateSegment({
-                  segmentId: id,
-                  roadType: options.roadType,
-                });
-                log(`[${scriptName}] Road type updated successfully.`);
-                alertMessageParts.push(`Road Type: <b>${roadTypeName(selectedRoad)}</b>`);
-                updatedRoadType = true;
-              } catch (error) {
-                console.error(`[${scriptName}] Error updating road type:`, error);
-              }
+              updateObj.roadType = options.roadType;
+              hasUpdates = true;
+              alertMessageParts.push(`Road Type: <b>${roadTypeName(selectedRoad)}</b>`);
+              updatedRoadType = true;
             }
           }
-        }, 200)
-      ); // 200ms delay before road type update
 
-      // Set lock if enabled
-      updatePromises.push(
-        delayedUpdate(() => {
+          // --- Lock Level ---
           if (options.setLock) {
             const rank = wmeSDK.State.getUserInfo().rank;
             const selectedRoad = roadTypes.find((rt) => rt.value === options.roadType);
@@ -3909,97 +3899,104 @@
                   toLock = parseInt(toLock, 10);
                   toLock = Math.max(toLock - 1, 0); // Adjust to 0-based rank, ensuring it does not go below 0
                 }
-
                 if (rank < toLock) toLock = rank;
 
                 log(`[${scriptName}] Lock level to set: ${toLock}`);
-
-                try {
-                  const seg = wmeSDK.DataModel.Segments.getById({
-                    segmentId: id,
-                  });
-                  let displayLockLevel = toLock === 'HRCS' || isNaN(toLock) ? 'HRCS' : `L${toLock + 1}`;
-                  let currentDisplayLockLevel;
-                  if (seg.lockRank === 'HRCS') {
-                    // Should not happen, but for safety
-                    currentDisplayLockLevel = 'HRCS';
-                  } else {
-                    currentDisplayLockLevel = `L${seg.lockRank + 1}`;
-                  }
-                  if (seg.lockRank === toLock || (lockSetting.lock === 'HRCS' && currentDisplayLockLevel === displayLockLevel)) {
-                    // Compare lock levels
-                    log(`[${scriptName}] Segment ID: ${id} already has the target lock level: ${displayLockLevel}. Skipping update.`);
-                    alertMessageParts.push(`Lock Level: <b>${displayLockLevel} exists. Skipping update.</b>`);
-                    updatedLockLevel = true;
-                  } else {
-                    wmeSDK.DataModel.Segments.updateSegment({
-                      segmentId: id,
-                      lockRank: toLock,
-                    });
-                    alertMessageParts.push(`Lock Level: <b>${displayLockLevel}</b>`);
-                    updatedLockLevel = true;
-                  }
-                } catch (error) {
-                  console.error(`[${scriptName}] Error updating segment lock rank:`, error);
+                let displayLockLevel = toLock === 'HRCS' || isNaN(toLock) ? 'HRCS' : `L${toLock + 1}`;
+                let currentDisplayLockLevel;
+                if (seg.lockRank === 'HRCS') {
+                  currentDisplayLockLevel = 'HRCS';
+                } else {
+                  currentDisplayLockLevel = `L${seg.lockRank + 1}`;
+                }
+                if (seg.lockRank === toLock || (lockSetting.lock === 'HRCS' && currentDisplayLockLevel === displayLockLevel)) {
+                  log(`[${scriptName}] Segment ID: ${id} already has the target lock level: ${displayLockLevel}. Skipping update.`);
+                  alertMessageParts.push(`Lock Level: <b>${displayLockLevel} exists. Skipping update.</b>`);
+                  updatedLockLevel = true;
+                } else {
+                  updateObj.lockRank = toLock;
+                  hasUpdates = true;
+                  alertMessageParts.push(`Lock Level: <b>${displayLockLevel}</b>`);
+                  updatedLockLevel = true;
                 }
               }
             }
           }
-        }, 300)
-      ); // 250ms delay before lock rank update
 
-      // Speed Limit - use road-specific speed if updateSpeed is enabled
-      updatePromises.push(
-        delayedUpdate(() => {
+          // --- Speed Limit ---
           if (options.updateSpeed) {
-            // Skip speed limit updates for pedestrian type segments (they don't support it)
-            const seg = wmeSDK.DataModel.Segments.getById({
-              segmentId: id,
-            });
             if (seg && isNonDrivableType(seg.roadType)) {
               log(`Skipping speed limit update for Non-Drivable type segment (roadType: ${seg.roadType})`);
               alertMessageParts.push(`Speed Limit: <b>Skipped (Non-Drivable type)</b>`);
               updatedSpeedLimit = true;
-              return;
-            }
-            const selectedRoad = roadTypes.find((rt) => rt.value === options.roadType);
-            if (selectedRoad) {
-              const speedSetting = options.speeds.find((s) => s.id === selectedRoad.id);
-              log('Selected road for speed: ' + selectedRoad.name);
-              log('Speed setting found: ' + (speedSetting ? 'yes' : 'no'));
-
-              if (speedSetting) {
-                const speedValue = parseInt(speedSetting.speed, 10);
-                log('Speed value to set: ' + speedValue);
-
-                // If speedValue is 0 or less, treat as unset (null for removal)
-                // Use null instead of undefined to properly remove speed limits
-                const speedToSet = !isNaN(speedValue) && speedValue > 0 ? speedValue : null;
-                // Compare using loose equality (==) to treat null and undefined as equivalent
-                // This ensures we don't try to update when segment already has no speed limit
-                const needsUpdate = seg.fwdSpeedLimit != speedToSet || seg.revSpeedLimit != speedToSet;
-                log(`Current fwd speed: ${seg.fwdSpeedLimit}, rev speed: ${seg.revSpeedLimit}, target speed: ${speedToSet}, needs update: ${needsUpdate}`);
-
-                if (needsUpdate) {
-                  wmeSDK.DataModel.Segments.updateSegment({
-                    segmentId: id,
-                    fwdSpeedLimit: speedToSet,
-                    revSpeedLimit: speedToSet,
-                  });
-                  alertMessageParts.push(`Speed Limit: <b>${speedToSet !== null ? speedToSet : 'unset'}</b>`);
-                  updatedSpeedLimit = true;
-                } else {
-                  log(`Segment ID: ${id} already has the target speed limit: ${speedToSet}. Skipping update.`);
-                  alertMessageParts.push(`Speed Limit: <b>${speedToSet !== null ? speedToSet : 'unset'} exists. Skipping update.</b>`);
-                  updatedSpeedLimit = true;
+            } else {
+              const selectedRoad = roadTypes.find((rt) => rt.value === options.roadType);
+              if (selectedRoad) {
+                const speedSetting = options.speeds.find((s) => s.id === selectedRoad.id);
+                if (speedSetting) {
+                  const speedValue = parseInt(speedSetting.speed, 10);
+                  const speedToSet = !isNaN(speedValue) && speedValue > 0 ? speedValue : null;
+                  const needsUpdate = seg.fwdSpeedLimit != speedToSet || seg.revSpeedLimit != speedToSet;
+                  log(`Current fwd speed: ${seg.fwdSpeedLimit}, rev speed: ${seg.revSpeedLimit}, target speed: ${speedToSet}, needs update: ${needsUpdate}`);
+                  if (needsUpdate) {
+                    updateObj.fwdSpeedLimit = speedToSet;
+                    updateObj.revSpeedLimit = speedToSet;
+                    hasUpdates = true;
+                    alertMessageParts.push(`Speed Limit: <b>${speedToSet !== null ? speedToSet : 'unset'}</b>`);
+                    updatedSpeedLimit = true;
+                  } else {
+                    log(`Segment ID: ${id} already has the target speed limit: ${speedToSet}. Skipping update.`);
+                    alertMessageParts.push(`Speed Limit: <b>${speedToSet !== null ? speedToSet : 'unset'} exists. Skipping update.</b>`);
+                    updatedSpeedLimit = true;
+                  }
                 }
               }
             }
           } else {
             log('Speed updates disabled');
           }
-        }, 400)
-      ); // 300ms delay before lock rank update
+
+          // --- Unpaved/Paved ---
+          try {
+            const effectiveRoadType = options.roadType || seg.roadType;
+            const isPedestrian = isNonDrivableType(effectiveRoadType);
+            let unpavedValue = false;
+            let statusMessage = '';
+            if (isPedestrian) {
+              unpavedValue = false;
+              statusMessage = 'Paved (pedestrian type)';
+            } else if (options.unpaved) {
+              unpavedValue = true;
+              statusMessage = 'Unpaved';
+            } else {
+              unpavedValue = false;
+              statusMessage = 'Paved';
+            }
+            const currentUnpaved = seg.flagAttributes?.unpaved === true;
+            if (!isPedestrian && currentUnpaved !== unpavedValue) {
+              updateObj.flagAttributes = { unpaved: unpavedValue };
+              hasUpdates = true;
+              log(`Updated unpaved status via SDK: ${statusMessage} (unpaved=${unpavedValue})`);
+            } else if (!isPedestrian && currentUnpaved === unpavedValue) {
+              log(`Unpaved status already matches: ${statusMessage} — skipping SDK call`);
+            }
+            alertMessageParts.push(`Paved Status: <b>${statusMessage}</b>`);
+            updatedPaved = true;
+          } catch (e) {
+            log('Error updating unpaved status via SDK: ' + e);
+            WazeToastr.Alerts.error(scriptName, `Error updating paved status: ${e.message}`, false, false, 5000);
+          }
+
+          // --- Execute single atomic update ---
+          if (hasUpdates) {
+            try {
+              wmeSDK.DataModel.Segments.updateSegment(updateObj);
+            } catch (error) {
+              console.error(`[${scriptName}] Error updating segment:`, error);
+            }
+          }
+        }, 200)
+      );
 
       // Handling the street
       if (options.setStreet || options.setStreetCity || (!options.setStreet && !options.setStreetCity)) {
@@ -4182,56 +4179,7 @@
         log(`City Name: ${city?.name}, City ID: ${city?.id}, Street ID: ${street?.id}`);
       }
 
-      // NEW: Updated unpaved handler using WME SDK updateSegment method
-      updatePromises.push(
-        delayedUpdate(() => {
-          try {
-            const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
-            const isPedestrian = isNonDrivableType(seg.roadType);
-            
-            // Determine the unpaved value based on segment type and options
-            let unpavedValue = false;
-            let statusMessage = '';
-            
-            if (isPedestrian) {
-              // Always set as paved for pedestrian types, regardless of checkbox
-              unpavedValue = false;
-              statusMessage = 'Paved (pedestrian type)';
-            } else if (options.unpaved) {
-              // Set as unpaved if option is enabled
-              unpavedValue = true;
-              statusMessage = 'Unpaved';
-            } else {
-              // Set as paved
-              unpavedValue = false;
-              statusMessage = 'Paved';
-            }
-            
-            // Check current unpaved state to avoid unnecessary SDK calls
-            const currentUnpaved = seg.flagAttributes?.unpaved === true;
-            
-            // Use WME SDK updateSegment with flagAttributes — only if value actually needs to change
-            // Note: Pedestrian types don't support the unpaved flag, so skip the call
-            if (!isPedestrian && currentUnpaved !== unpavedValue) {
-              wmeSDK.DataModel.Segments.updateSegment({
-                segmentId: id,
-                flagAttributes: {
-                  unpaved: unpavedValue
-                }
-              });
-              log(`Updated unpaved status via SDK: ${statusMessage} (unpaved=${unpavedValue})`);
-            } else if (!isPedestrian && currentUnpaved === unpavedValue) {
-              log(`Unpaved status already matches: ${statusMessage} — skipping SDK call`);
-            }
-            
-            alertMessageParts.push(`Paved Status: <b>${statusMessage}</b>`);
-            updatedPaved = true;
-          } catch (e) {
-            log('Error updating unpaved status via SDK: ' + e);
-            WazeToastr.Alerts.error(scriptName, `Error updating paved status: ${e.message}`, false, false, 5000);
-          }
-        }, 500)
-      ); // 500ms delay for unpaved/paved toggle
+
 
       // 3a. Copy segment name from connected segment if enabled
       // =========================================================================
@@ -5613,6 +5561,10 @@ if (typeof require !== 'undefined') {
 
   /*
 Changelog
+<strong>Version 2.7.2.2 - 2026-07-24:</strong><br>
+    - starting with SDK v2.359, it is now moved towards grouping related parameters into single objects to streamline updates and reduce the number of individual actions recorded by the ActionManager <br>
+    - Migrated legacy keyboard shortcuts to sdk<br>
+    - Minor bug fixes and stability improvements<br>`;
 <strong>Version 2.7.1.1 - 2026-07-23:</strong><br>
     - Migrated legacy keyboard shortcuts to sdk<br>`;
 <strong>Version 2.7.0.7 - 2026-07-23:</strong><br>
