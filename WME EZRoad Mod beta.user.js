@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.7.0.7
+// @version      2.7.1.1
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -30,11 +30,9 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.7.0.7 - 2026-07-23:</strong><br>
-    - Segment & Node Connection: Added validation for segment node connections and introduced a highlight layer for segments with connection issues.<br>
-    - Lane Management: Added road width (0–8 lanes) buttons in the edit panel with a "Multiple" chip, hover tooltips, and a settings toggle. Fixed preview display before saving and resolved undo/redo support.<br>
-    - SDK & Address Architecture: Reorganized address properties under a unified addressData object following WMESDK patterns, and migrated the Paved/Unpaved feature to full SDK support.<br>
-    -Localization & Maintenance: Added support for localized road names, alongside general bug fixes and stability improvements.<br>`;
+  const updateMessage = `<strong>Version 2.7.1.1 - 2026-07-23:</strong><br>
+    - Migrated legacy keyboard shortcuts to sdk<br>
+    - Minor bug fixes and stability improvements<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://raw.githubusercontent.com/kid4rm90s/WME-EZRoad-Mod/main/WME%20EZRoad%20Mod%20beta.user.js';
@@ -43,22 +41,22 @@
   let roadTypeLocalizedNames = {};
   
   const roadTypes = [
-    { id: 1, name: 'Motorway', value: 3, shortcutKey: 'S+1' },
-    { id: 2, name: 'Ramp', value: 4, shortcutKey: 'S+2' },
-    { id: 3, name: 'Major Highway', value: 6, shortcutKey: 'S+3' },
-    { id: 4, name: 'Minor Highway', value: 7, shortcutKey: 'S+4' },
-    { id: 5, name: 'Primary Street', value: 2, shortcutKey: 'S+5' },
-    { id: 6, name: 'Street', value: 1, shortcutKey: 'S+6' },
-    { id: 7, name: 'Narrow Street', value: 22, shortcutKey: 'S+7' },
-    { id: 8, name: 'Offroad', value: 8, shortcutKey: 'S+8' },
-    { id: 9, name: 'Parking Road', value: 20, shortcutKey: 'S+9' },
-    { id: 10, name: 'Private Road', value: 17, shortcutKey: 'S+0' },
-    { id: 11, name: 'Ferry', value: 15, shortcutKey: 'A+1' },
-    { id: 12, name: 'Railway', value: 18, shortcutKey: 'A+2' },
-    { id: 13, name: 'Runway', value: 19, shortcutKey: 'A+3' },
-    { id: 14, name: 'Foothpath', value: 5, shortcutKey: 'A+4' },
-    { id: 15, name: 'Pedestrianised Area', value: 10, shortcutKey: 'A+5' },
-    { id: 16, name: 'Stairway', value: 16, shortcutKey: 'A+6' },
+    { id: 1, name: 'Motorway', value: 3 },
+    { id: 2, name: 'Ramp', value: 4 },
+    { id: 3, name: 'Major Highway', value: 6 },
+    { id: 4, name: 'Minor Highway', value: 7 },
+    { id: 5, name: 'Primary Street', value: 2 },
+    { id: 6, name: 'Street', value: 1 },
+    { id: 7, name: 'Narrow Street', value: 22 },
+    { id: 8, name: 'Offroad', value: 8 },
+    { id: 9, name: 'Parking Road', value: 20 },
+    { id: 10, name: 'Private Road', value: 17 },
+    { id: 11, name: 'Ferry', value: 15 },
+    { id: 12, name: 'Railway', value: 18 },
+    { id: 13, name: 'Runway', value: 19 },
+    { id: 14, name: 'Foothpath', value: 5 },
+    { id: 15, name: 'Pedestrianised Area', value: 10 },
+    { id: 16, name: 'Stairway', value: 16 },
   ];
   const defaultOptions = {
     roadType: 1,
@@ -82,7 +80,7 @@
     enableUTurn: false,
     restrictExceptMotorbike: false,
     updateLanes: false,
-    shortcutKey: 'g',
+    sdkShortcuts: {},
   };
 
   const locks = [
@@ -109,6 +107,338 @@
     }
   };
 
+  // ===== WME SDK SHORTCUT FORMAT CONVERTERS (PIE-style) =====
+  const _KEYCODE_TO_CHAR = {
+    65:'A',66:'B',67:'C',68:'D',69:'E',70:'F',71:'G',72:'H',73:'I',74:'J',75:'K',76:'L',
+    77:'M',78:'N',79:'O',80:'P',81:'Q',82:'R',83:'S',84:'T',85:'U',86:'V',87:'W',88:'X',
+    89:'Y',90:'Z',
+    48:'0',49:'1',50:'2',51:'3',52:'4',53:'5',54:'6',55:'7',56:'8',57:'9',
+    112:'F1',113:'F2',114:'F3',115:'F4',116:'F5',117:'F6',
+    118:'F7',119:'F8',120:'F9',121:'F10',122:'F11',123:'F12',
+    32:'Space',13:'Enter',9:'Tab',27:'Esc',8:'Backspace',46:'Delete',
+    36:'Home',35:'End',33:'PageUp',34:'PageDown',45:'Insert',
+    37:'\u2190',38:'\u2191',39:'\u2192',40:'\u2193',
+    188:',',190:'.',191:'/',186:';',222:"'",219:'[',221:']',220:'\\',189:'-',187:'=',192:'',
+  };
+
+  const _CHAR_TO_KEYCODE = Object.fromEntries(
+    Object.entries(_KEYCODE_TO_CHAR).map(([code, char]) => [char.toUpperCase(), Number(code)])
+  );
+
+  const _MOD_CHAR_TO_VAL = { C: 1, S: 2, A: 4 };
+
+  function _comboToRaw(str) {
+    if (!str || str === '' || str === '-1' || str === 'None') return null;
+    if (/^\d+,-?\d+$/.test(str)) {
+      const keyCode = parseInt(str.split(',')[1], 10);
+      return keyCode < 0 ? null : str;
+    }
+    const upperStr = String(str).toUpperCase();
+    if (/^[A-Z0-9]$/.test(upperStr)) return '0,' + upperStr.charCodeAt(0);
+    if (_CHAR_TO_KEYCODE[upperStr] !== undefined) return '0,' + _CHAR_TO_KEYCODE[upperStr];
+
+    const letterMatch = upperStr.match(/^([ACS]+)\+([A-Z0-9])$/);
+    if (letterMatch) {
+      const modValue = letterMatch[1].split('').reduce((acc, char) => acc | (_MOD_CHAR_TO_VAL[char] || 0), 0);
+      return modValue + ',' + letterMatch[2].charCodeAt(0);
+    }
+    const numericMatch = upperStr.match(/^([ACS]+)\+(\d+)$/);
+    if (numericMatch) {
+      const modValue = numericMatch[1].split('').reduce((acc, char) => acc | (_MOD_CHAR_TO_VAL[char] || 0), 0);
+      return modValue + ',' + numericMatch[2];
+    }
+    const specialMatch = upperStr.match(/^([ACS]+)\+(.+)$/);
+    if (specialMatch && _CHAR_TO_KEYCODE[specialMatch[2]] !== undefined) {
+      const modValue = specialMatch[1].split('').reduce((acc, char) => acc | (_MOD_CHAR_TO_VAL[char] || 0), 0);
+      return modValue + ',' + _CHAR_TO_KEYCODE[specialMatch[2]];
+    }
+    return null;
+  }
+
+  function _rawToCombo(str) {
+    const raw = _comboToRaw(str);
+    if (!raw) return null;
+    const parts = raw.split(',');
+    const modValue = parseInt(parts[0], 10);
+    const keyCode = parseInt(parts[1], 10);
+    const keyChar = _KEYCODE_TO_CHAR[keyCode] || String(keyCode);
+    let modifiers = '';
+    if (modValue & 1) modifiers += 'C';
+    if (modValue & 2) modifiers += 'S';
+    if (modValue & 4) modifiers += 'A';
+    return modifiers ? modifiers + '+' + keyChar : keyChar;
+  }
+
+  function _normalizeShortcut(value) {
+    const src = value && typeof value === 'object' ? (value.raw ?? value.combo) : value;
+    const raw = _comboToRaw(src);
+    const combo = _rawToCombo(raw);
+    return { raw: raw, combo: combo };
+  }
+
+  // ===== LEGACY ACTION ID → SDK SETTINGSKEY MAPPING (for firstCall migration) =====
+  const _LEGACY_ACTION_TO_SETTINGSKEY = {
+    'WME_EZRoad_Mod_SetStreetNameToNone': 'setStreet',
+    'WME_EZRoad_Mod_SetCityAsNone': 'setStreetCity',
+    'WME_EZRoad_Mod_AutosaveOnAction': 'autosave',
+    'WME_EZRoad_Mod_SetAsUnpaved': 'unpaved',
+    'WME_EZRoad_Mod_SetLockLevel': 'setLock',
+    'WME_EZRoad_Mod_UpdateSpeedLimits': 'updateSpeed',
+    'WME_EZRoad_Mod_EnableUTurn': 'enableUTurn',
+    'WME_EZRoad_Mod_AllowNodeUturns': 'AllowNodeUturns',
+    'WME_EZRoad_Mod_DisallowNodeUturns': 'DisallowNodeUturns',
+    'WME_EZRoad_Mod_ToggleSegmentUturnA': 'ToggleSegmentUturnA',
+    'WME_EZRoad_Mod_ToggleSegmentUturnB': 'ToggleSegmentUturnB',
+    'WME_EZRoad_Mod_CopyConnectedSegmentName': 'copySegmentName',
+    'WME_EZRoad_Mod_CopyConnectedSegmentAttribute': 'copySegmentAttributes',
+    'WME_EZRoad_Mod_ShowSegmentLength': 'showSegmentLength',
+    'WME_EZRoad_Mod_CheckGeometryIssues': 'checkGeometryIssues',
+    'WME_EZRoad_Mod_RestrictMotorbikesOnly': 'restrictExceptMotorbike',
+    'WME_EZRoad_Mod_SplitSegment': 'SplitSegment',
+    'WME_EZRoad_Mod_UpdateLaneCount': 'updateLanes',
+    'WME_EZRoad_Mod_validateNodeConnection': 'validateNodeConnection',
+  };
+
+  // ===== SDK SHORTCUT DEFINITIONS (data-driven, no hardcoded keys) =====
+  let _sdkShortcutDefs = null; // Built in initScript after roadTypeName is fully ready
+
+  function buildSDKShortcutDefs() {
+    const defs = [];
+    // Road type selection shortcuts
+    roadTypes.forEach(function(rt) {
+      defs.push({
+        id: 'EZRoad_Mod_SelectRoadType_' + rt.id,
+        description: 'Selected road type - ' + roadTypeName(rt),
+        settingsKey: 'RT_' + rt.id,
+        callback: function() {
+          var opts = getOptions();
+          opts.roadType = rt.value;
+          saveOptions(opts);
+          $('input[name=\"defaultRoad\"]').each(function() {
+            if (parseInt($(this).attr('data-road-value'), 10) === rt.value) {
+              $(this).prop('checked', true);
+            } else {
+              $(this).prop('checked', false);
+            }
+          });
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.success(scriptName, 'Selected road type: <b>' + roadTypeName(rt) + '</b>', false, false, 1500);
+          }
+        },
+      });
+    });
+    // Quick Update shortcut
+    defs.push({
+      id: 'EZRoad_Mod_QuickUpdate',
+      description: 'Quick Update Segments',
+      settingsKey: 'QuickUpdate',
+      callback: handleUpdate,
+    });
+    // Motorcycle restriction shortcut
+    defs.push({
+      id: 'EZRoad_Mod_MotorcycleOnlyRestriction',
+      description: 'Apply Motorbike-Only Restriction',
+      settingsKey: 'MotorcycleOnly',
+      callback: function() {
+        var selection = wmeSDK.Editing.getSelection();
+        if (!selection || selection.objectType !== 'segment' || !selection.ids || selection.ids.length === 0) {
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.warning(scriptName, 'Please select one or more segments first', false, false, 3000);
+          }
+          return;
+        }
+        applyMotorbikeOnlyRestriction(selection.ids[0]).then(function(result) {
+          if (result === true) {
+            if (WazeToastr?.Alerts) {
+              WazeToastr.Alerts.success(scriptName, 'Motorbike-only restriction applied to ' + selection.ids.length + ' segment(s) \u2713', false, false, 3000);
+            }
+          } else if (result === 'not_supported') {
+            if (WazeToastr?.Alerts) {
+              WazeToastr.Alerts.warning(scriptName, 'Segment not found or is pedestrian type, cannot apply motorbike restriction', false, false, 5000);
+            }
+          } else if (result === 'not_supported type') {
+            log(scriptName + ' Segment not supported type, cannot apply motorbike restriction');
+          }
+        }).catch(function(error) {
+          console.error(scriptName + ' Error applying motorbike restriction:', error);
+        });
+      },
+    });
+    // Split segment shortcut
+    defs.push({
+      id: 'EZRoad_Mod_SplitSegment',
+      description: 'Split Segment Mode',
+      settingsKey: 'SplitSegment',
+      callback: toggleSplitMode,
+    });
+    // ===== FEATURE-TOGGLE SHORTCUTS (migrated from legacy W.accelerators) =====
+    defs.push({
+      id: 'EZRoad_Mod_SetStreetToNone',
+      description: 'Set Street Name to None',
+      settingsKey: 'setStreet',
+      callback: function() { handleToggle('setStreet', 'Set Street Name to None'); },
+    });
+    defs.push({
+      id: 'EZRoad_Mod_SetCityAsNone',
+      description: 'Set City as None',
+      settingsKey: 'setStreetCity',
+      callback: function() { handleToggle('setStreetCity', 'Set City as None'); },
+    });
+    defs.push({
+      id: 'EZRoad_Mod_AutosaveOnAction',
+      description: 'Autosave on Action',
+      settingsKey: 'autosave',
+      callback: function() { handleToggle('autosave', 'Autosave on Action'); },
+    });
+    defs.push({
+      id: 'EZRoad_Mod_SetAsUnpaved',
+      description: 'Set as Unpaved',
+      settingsKey: 'unpaved',
+      callback: function() { handleToggle('unpaved', 'Set as Unpaved'); },
+    });
+    defs.push({
+      id: 'EZRoad_Mod_SetLockLevel',
+      description: 'Set Lock Level',
+      settingsKey: 'setLock',
+      callback: function() { handleToggle('setLock', 'Set Lock Level'); },
+    });
+    defs.push({
+      id: 'EZRoad_Mod_UpdateSpeedLimits',
+      description: 'Update Speed Limits',
+      settingsKey: 'updateSpeed',
+      callback: function() { handleToggle('updateSpeed', 'Update Speed Limits'); },
+    });
+    defs.push({
+      id: 'EZRoad_Mod_EnableUTurn',
+      description: 'Enable U-Turn',
+      settingsKey: 'enableUTurn',
+      callback: function() { handleToggle('enableUTurn', 'Enable U-Turn'); },
+    });
+    defs.push({
+      id: 'EZRoad_Mod_AllowNodeUturns',
+      description: 'Allow All U-Turns at Node',
+      settingsKey: 'AllowNodeUturns',
+      callback: function() {
+        const selection = wmeSDK.Editing.getSelection();
+        if (selection && selection.objectType === 'node' && selection.ids && selection.ids.length > 0) {
+          const result = switchNodeUturn(selection.ids[0], true);
+          if (result.success && WazeToastr?.Alerts) {
+            WazeToastr.Alerts.success(scriptName, result.message, false, false, 3000);
+          } else if (!result.success && WazeToastr?.Alerts) {
+            WazeToastr.Alerts.warning(scriptName, result.message, false, false, 3000);
+          }
+        } else {
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.warning(scriptName, 'Please select a node', false, false, 3000);
+          }
+        }
+      },
+    });
+    defs.push({
+      id: 'EZRoad_Mod_DisallowNodeUturns',
+      description: 'Disallow All U-Turns at Node',
+      settingsKey: 'DisallowNodeUturns',
+      callback: function() {
+        const selection = wmeSDK.Editing.getSelection();
+        if (selection && selection.objectType === 'node' && selection.ids && selection.ids.length > 0) {
+          const result = switchNodeUturn(selection.ids[0], false);
+          if (result.success && WazeToastr?.Alerts) {
+            WazeToastr.Alerts.success(scriptName, result.message, false, false, 3000);
+          } else if (!result.success && WazeToastr?.Alerts) {
+            WazeToastr.Alerts.warning(scriptName, result.message, false, false, 3000);
+          }
+        } else {
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.warning(scriptName, 'Please select a node', false, false, 3000);
+          }
+        }
+      },
+    });
+    defs.push({
+      id: 'EZRoad_Mod_ToggleSegmentUturnA',
+      description: 'Toggle U-Turn at Segment Direction A',
+      settingsKey: 'ToggleSegmentUturnA',
+      callback: function() {
+        const selection = wmeSDK.Editing.getSelection();
+        if (selection && selection.objectType === 'segment' && selection.ids && selection.ids.length > 0) {
+          const result = switchSegmentUturn(selection.ids[0], 'A');
+          if (result.success && WazeToastr?.Alerts) {
+            WazeToastr.Alerts.success(scriptName, result.message, false, false, 3000);
+          } else if (!result.success && WazeToastr?.Alerts) {
+            WazeToastr.Alerts.warning(scriptName, result.message, false, false, 3000);
+          }
+        } else {
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.warning(scriptName, 'Please select a segment', false, false, 3000);
+          }
+        }
+      },
+    });
+    defs.push({
+      id: 'EZRoad_Mod_ToggleSegmentUturnB',
+      description: 'Toggle U-Turn at Segment Direction B',
+      settingsKey: 'ToggleSegmentUturnB',
+      callback: function() {
+        const selection = wmeSDK.Editing.getSelection();
+        if (selection && selection.objectType === 'segment' && selection.ids && selection.ids.length > 0) {
+          const result = switchSegmentUturn(selection.ids[0], 'B');
+          if (result.success && WazeToastr?.Alerts) {
+            WazeToastr.Alerts.success(scriptName, result.message, false, false, 3000);
+          } else if (!result.success && WazeToastr?.Alerts) {
+            WazeToastr.Alerts.warning(scriptName, result.message, false, false, 3000);
+          }
+        } else {
+          if (WazeToastr?.Alerts) {
+            WazeToastr.Alerts.warning(scriptName, 'Please select a segment', false, false, 3000);
+          }
+        }
+      },
+    });
+    defs.push({
+      id: 'EZRoad_Mod_CopyConnectedSegmentName',
+      description: 'Copy Connected Segment Name',
+      settingsKey: 'copySegmentName',
+      callback: function() { handleToggle('copySegmentName', 'Copy Connected Segment Name'); },
+    });
+    defs.push({
+      id: 'EZRoad_Mod_CopyConnectedSegmentAttribute',
+      description: 'Copy Connected Segment Attribute',
+      settingsKey: 'copySegmentAttributes',
+      callback: function() { handleToggle('copySegmentAttributes', 'Copy Connected Segment Attribute'); },
+    });
+    defs.push({
+      id: 'EZRoad_Mod_ShowSegmentLength',
+      description: 'Show Segment Length <=20m',
+      settingsKey: 'showSegmentLength',
+      callback: function() { handleToggle('showSegmentLength', 'Show Segment Length <=20m'); },
+    });
+    defs.push({
+      id: 'EZRoad_Mod_CheckGeometryIssues',
+      description: 'Check Geometry Issues',
+      settingsKey: 'checkGeometryIssues',
+      callback: function() { handleToggle('checkGeometryIssues', 'Check Geometry Issues'); },
+    });
+    defs.push({
+      id: 'EZRoad_Mod_RestrictMotorbikesOnly',
+      description: 'Toggle Restrict Except Motorbike',
+      settingsKey: 'restrictExceptMotorbike',
+      callback: function() { handleToggle('restrictExceptMotorbike', 'Restrict Except Motorbike'); },
+    });
+    defs.push({
+      id: 'EZRoad_Mod_UpdateLaneCount',
+      description: 'Enable Road Width (No of Lanes) buttons',
+      settingsKey: 'updateLanes',
+      callback: function() { handleToggle('updateLanes', 'Enable Road Width (No of Lanes) buttons'); },
+    });
+    defs.push({
+      id: 'EZRoad_Mod_ValidateNodeConnection',
+      description: 'Validate Node Connection',
+      settingsKey: 'validateNodeConnection',
+      callback: function() { handleToggle('validateNodeConnection', 'Validate Node Connection'); },
+    });
+    return defs;
+  }
+
   unsafeWindow.SDK_INITIALIZED.then(initScript);
 
   function initScript() {
@@ -123,6 +453,78 @@
     } catch (e) {
         log(`Could not load localized road type names: ${e}`);
     }
+
+    // Build SDK shortcut definitions (after roadTypeLocalizedNames is ready)
+    _sdkShortcutDefs = buildSDKShortcutDefs();
+
+    // Migrate old shortcutKey to new sdkShortcuts format
+    const currentOpts = getOptions();
+    if (currentOpts.sdkShortcuts && !currentOpts.sdkShortcuts.QuickUpdate && currentOpts.shortcutKey) {
+      currentOpts.sdkShortcuts.QuickUpdate = _normalizeShortcut(currentOpts.shortcutKey);
+      delete currentOpts.shortcutKey;
+      saveOptions(currentOpts);
+    }
+
+    // ===== firstCall: Migrate legacy W.accelerators shortcut keys to SDK sdkShortcuts =====
+    // Reads localStorage[scriptName + 'KBS'] (array of { shortcutString: actionId }),
+    // maps each legacy action ID to the SDK settingsKey, and stores the normalized key.
+    // Runs only once per page load; deletes legacy key afterward.
+    (function migrateLegacyShortcuts() {
+      const legacyKey = scriptName + 'KBS';
+      var legacyRaw;
+      try {
+        legacyRaw = JSON.parse(localStorage.getItem(legacyKey));
+        if (!Array.isArray(legacyRaw)) return;
+      } catch (e) {
+        return; // No legacy data or parse error — skip
+      }
+
+      var opts = getOptions();
+      if (!opts.sdkShortcuts) opts.sdkShortcuts = {};
+      var migrated = false;
+
+      for (var i = 0; i < legacyRaw.length; i++) {
+        var entry = legacyRaw[i];
+        // Each entry is { shortcutString: actionId }
+        var keys = Object.keys(entry);
+        if (keys.length === 0) continue;
+        var shortcutString = keys[0]; // e.g. "A+82" or "-1"
+        var actionId = entry[shortcutString];
+        var settingsKey = _LEGACY_ACTION_TO_SETTINGSKEY[actionId];
+        if (!settingsKey) continue; // Unknown action — skip
+
+        // Skip entries with no key assigned ("-1" or null)
+        if (!shortcutString || shortcutString === '-1' || shortcutString === 'None') continue;
+
+        // Skip if this settingsKey already has a non-null combo in new format
+        if (opts.sdkShortcuts[settingsKey] && opts.sdkShortcuts[settingsKey].combo !== null) continue;
+
+        opts.sdkShortcuts[settingsKey] = _normalizeShortcut(shortcutString);
+        migrated = true;
+        log(`Migrated legacy shortcut "${actionId}" (${shortcutString}) → ${settingsKey}: ${opts.sdkShortcuts[settingsKey].combo}`);
+      }
+
+      if (migrated) {
+        saveOptions(opts);
+        localStorage.removeItem(legacyKey);
+        log(`Legacy shortcut migration complete. Removed legacy key "${legacyKey}".`);
+      }
+    })();
+
+    // Register the shortcut group in WME's Keyboard Shortcuts dialog
+    try {
+      if (wmeSDK.Shortcuts && wmeSDK.Shortcuts.addShortcutGroup) {
+        var groups = wmeSDK.Shortcuts.getAllShortcutGroups();
+        var groupExists = groups && groups.some(function(g) { return g.groupName === 'EZRoad Mod - Feature Toggles'; });
+        if (!groupExists) {
+          wmeSDK.Shortcuts.addShortcutGroup({ groupName: 'EZRoad Mod - Feature Toggles' });
+          log('Registered shortcut group: EZRoad Mod - Feature Toggles');
+        }
+      }
+    } catch (e) {
+      log('Could not register shortcut group: ' + e);
+    }
+
       WME_EZRoads_Mod_bootstrap();
   }
 
@@ -596,72 +998,6 @@
     return !(locksMatch && speedsMatch);
   };
 
-  // ***--- Legacy Keyboard Shortcuts System (from WME Street to River PLUS) ---***
-  function WMEKSRegisterKeyboardShortcut(scriptName, shortcutsHeader, newShortcut, shortcutDescription, functionToCall, shortcutKeysObj, arg) {
-    try {
-      I18n.translations[I18n.locale].keyboard_shortcuts.groups[scriptName].members.length;
-    } catch (c) {
-      (W.accelerators.Groups[scriptName] = []),
-        (W.accelerators.Groups[scriptName].members = []),
-        (I18n.translations[I18n.locale].keyboard_shortcuts.groups[scriptName] = []),
-        (I18n.translations[I18n.locale].keyboard_shortcuts.groups[scriptName].description = shortcutsHeader),
-        (I18n.translations[I18n.locale].keyboard_shortcuts.groups[scriptName].members = []);
-    }
-    if (functionToCall && 'function' == typeof functionToCall) {
-      (I18n.translations[I18n.locale].keyboard_shortcuts.groups[scriptName].members[newShortcut] = shortcutDescription),
-        W.accelerators.addAction(newShortcut, {
-          group: scriptName,
-        });
-      var i = '-1',
-        j = {};
-      (j[i] = newShortcut),
-        W.accelerators._registerShortcuts(j),
-        null !== shortcutKeysObj && ((j = {}), (j[shortcutKeysObj] = newShortcut), W.accelerators._registerShortcuts(j)),
-        W.accelerators.events.register(newShortcut, null, function () {
-          functionToCall(arg);
-        });
-    } else alert('The function ' + functionToCall + ' has not been declared');
-  }
-
-  function WMEKSLoadKeyboardShortcuts(scriptName) {
-    console.log(`${scriptName} Loading keyboard shortcuts for ${scriptName}`);
-    if (localStorage[scriptName + 'KBS']) {
-      const shortcuts = JSON.parse(localStorage[scriptName + 'KBS']);
-      for (let i = 0; i < shortcuts.length; i++) {
-        try {
-          W.accelerators._registerShortcuts(shortcuts[i]);
-        } catch (error) {
-          console.error(`${scriptName} Error registering shortcut:`, error);
-        }
-      }
-    }
-  }
-
-  function WMEKSSaveKeyboardShortcuts(scriptName) {
-    console.log(`${scriptName} Saving keyboard shortcuts for ${scriptName}`);
-    try {
-      WazeToastr.Alerts.success(`${scriptName}`, `Saving keyboard shortcuts for ${scriptName}`, false, false, 3000);
-    } catch (e) {
-      console.warn(`${scriptName} WazeToastr.Alerts.success failed:`, e);
-    }
-    const shortcuts = [];
-    for (var actionName in W.accelerators.Actions) {
-      var shortcutString = '';
-      if (W.accelerators.Actions[actionName].group == scriptName) {
-        W.accelerators.Actions[actionName].shortcut
-          ? (W.accelerators.Actions[actionName].shortcut.altKey === !0 && (shortcutString += 'A'),
-            W.accelerators.Actions[actionName].shortcut.shiftKey === !0 && (shortcutString += 'S'),
-            W.accelerators.Actions[actionName].shortcut.ctrlKey === !0 && (shortcutString += 'C'),
-            '' !== shortcutString && (shortcutString += '+'),
-            W.accelerators.Actions[actionName].shortcut.keyCode && (shortcutString += W.accelerators.Actions[actionName].shortcut.keyCode))
-          : (shortcutString = '-1');
-        var shortcutObj = {};
-        (shortcutObj[shortcutString] = W.accelerators.Actions[actionName].id), (shortcuts[shortcuts.length] = shortcutObj);
-      }
-    }
-    localStorage[scriptName + 'KBS'] = JSON.stringify(shortcuts);
-  }
-
   // Helper function to handle toggle logic
   function handleToggle(optionKey, featureName) {
     const options = getOptions();
@@ -730,255 +1066,6 @@
     console.log(`[${scriptName}] [${featureName}] Toggled to: ${options[optionKey]}`);
   }
   
-  // Initialize all action shortcuts using legacy mode (following WME POI Shortcuts pattern)
-  const initializeActionShortcuts = () => {
-    try {
-      // Legacy shortcuts configuration - following POI Shortcuts pattern
-      var shortcutsConfig = [
-        {
-          handler: 'WME_EZRoad_Mod_SetStreetNameToNone',
-          title: 'Set Street Name to None',
-          func: function (arg) {
-            handleToggle('setStreet', 'Set Street Name to None');
-          },
-          key: -1,
-          arg: {},
-        },
-        {
-          handler: 'WME_EZRoad_Mod_SetCityAsNone',
-          title: 'Set City as None',
-          func: function (arg) {
-            handleToggle('setStreetCity', 'Set City as None');
-          },
-          key: -1,
-          arg: {},
-        },
-        {
-          handler: 'WME_EZRoad_Mod_AutosaveOnAction',
-          title: 'Autosave on Action',
-          func: function (arg) {
-            handleToggle('autosave', 'Autosave on Action');
-          },
-          key: -1,
-          arg: {},
-        },
-        {
-          handler: 'WME_EZRoad_Mod_SetAsUnpaved',
-          title: 'Set as Unpaved',
-          func: function (arg) {
-            handleToggle('unpaved', 'Set as Unpaved');
-          },
-          key: -1,
-          arg: {},
-        },
-        {
-          handler: 'WME_EZRoad_Mod_SetLockLevel',
-          title: 'Set Lock Level',
-          func: function (arg) {
-            handleToggle('setLock', 'Set Lock Level');
-          },
-          key: -1,
-          arg: {},
-        },
-        {
-          handler: 'WME_EZRoad_Mod_UpdateSpeedLimits',
-          title: 'Update Speed Limits',
-          func: function (arg) {
-            handleToggle('updateSpeed', 'Update Speed Limits');
-          },
-          key: -1,
-          arg: {},
-        },
-        {
-          handler: 'WME_EZRoad_Mod_EnableUTurn',
-          title: 'Enable U-Turn',
-          func: function (arg) {
-            handleToggle('enableUTurn', 'Enable U-Turn');
-          },
-          key: -1,
-          arg: {},
-        },
-        {
-          handler: 'WME_EZRoad_Mod_AllowNodeUturns',
-          title: 'Allow All U-Turns at Node',
-          func: function (arg) {
-            const selection = wmeSDK.Editing.getSelection();
-            if (selection && selection.objectType === 'node' && selection.ids && selection.ids.length > 0) {
-              const result = switchNodeUturn(selection.ids[0], true);
-              if (result.success && WazeToastr?.Alerts) {
-                WazeToastr.Alerts.success(scriptName, result.message, false, false, 3000);
-              } else if (!result.success && WazeToastr?.Alerts) {
-                WazeToastr.Alerts.warning(scriptName, result.message, false, false, 3000);
-              }
-            } else {
-              if (WazeToastr?.Alerts) {
-                WazeToastr.Alerts.warning(scriptName, 'Please select a node', false, false, 3000);
-              }
-            }
-          },
-          key: -1,
-          arg: {},
-        },
-        {
-          handler: 'WME_EZRoad_Mod_DisallowNodeUturns',
-          title: 'Disallow All U-Turns at Node',
-          func: function (arg) {
-            const selection = wmeSDK.Editing.getSelection();
-            if (selection && selection.objectType === 'node' && selection.ids && selection.ids.length > 0) {
-              const result = switchNodeUturn(selection.ids[0], false);
-              if (result.success && WazeToastr?.Alerts) {
-                WazeToastr.Alerts.success(scriptName, result.message, false, false, 3000);
-              } else if (!result.success && WazeToastr?.Alerts) {
-                WazeToastr.Alerts.warning(scriptName, result.message, false, false, 3000);
-              }
-            } else {
-              if (WazeToastr?.Alerts) {
-                WazeToastr.Alerts.warning(scriptName, 'Please select a node', false, false, 3000);
-              }
-            }
-          },
-          key: -1,
-          arg: {},
-        },
-        {
-          handler: 'WME_EZRoad_Mod_ToggleSegmentUturnA',
-          title: 'Toggle U-Turn at Segment Direction A',
-          func: function (arg) {
-            const selection = wmeSDK.Editing.getSelection();
-            if (selection && selection.objectType === 'segment' && selection.ids && selection.ids.length > 0) {
-              const result = switchSegmentUturn(selection.ids[0], 'A');
-              if (result.success && WazeToastr?.Alerts) {
-                WazeToastr.Alerts.success(scriptName, result.message, false, false, 3000);
-              } else if (!result.success && WazeToastr?.Alerts) {
-                WazeToastr.Alerts.warning(scriptName, result.message, false, false, 3000);
-              }
-            } else {
-              if (WazeToastr?.Alerts) {
-                WazeToastr.Alerts.warning(scriptName, 'Please select a segment', false, false, 3000);
-              }
-            }
-          },
-          key: -1,
-          arg: {},
-        },
-        {
-          handler: 'WME_EZRoad_Mod_ToggleSegmentUturnB',
-          title: 'Toggle U-Turn at Segment Direction B',
-          func: function (arg) {
-            const selection = wmeSDK.Editing.getSelection();
-            if (selection && selection.objectType === 'segment' && selection.ids && selection.ids.length > 0) {
-              const result = switchSegmentUturn(selection.ids[0], 'B');
-              if (result.success && WazeToastr?.Alerts) {
-                WazeToastr.Alerts.success(scriptName, result.message, false, false, 3000);
-              } else if (!result.success && WazeToastr?.Alerts) {
-                WazeToastr.Alerts.warning(scriptName, result.message, false, false, 3000);
-              }
-            } else {
-              if (WazeToastr?.Alerts) {
-                WazeToastr.Alerts.warning(scriptName, 'Please select a segment', false, false, 3000);
-              }
-            }
-          },
-          key: -1,
-          arg: {},
-        },
-        {
-          handler: 'WME_EZRoad_Mod_CopyConnectedSegmentName',
-          title: 'Copy Connected Segment Name',
-          func: function (arg) {
-            handleToggle('copySegmentName', 'Copy Connected Segment Name');
-          },
-          key: -1,
-          arg: {},
-        },
-        {
-          handler: 'WME_EZRoad_Mod_CopyConnectedSegmentAttribute',
-          title: 'Copy Connected Segment Attribute',
-          func: function (arg) {
-            handleToggle('copySegmentAttributes', 'Copy Connected Segment Attribute');
-          },
-          key: -1,
-          arg: {},
-        },
-        {
-          handler: 'WME_EZRoad_Mod_ShowSegmentLength',
-          title: 'Show Segment Length <=20m',
-          func: function (arg) {
-            handleToggle('showSegmentLength', 'Show Segment Length <=20m');
-          },
-          key: -1,
-          arg: {},
-        },
-        {
-          handler: 'WME_EZRoad_Mod_CheckGeometryIssues',
-          title: 'Check Geometry Issues',
-          func: function (arg) {
-            handleToggle('checkGeometryIssues', 'Check Geometry Issues');
-          },
-          key: -1,
-          arg: {},
-        },
-        {
-          handler: 'WME_EZRoad_Mod_RestrictMotorbikesOnly',
-          title: 'Restrict Except Motorbike',
-          func: function (arg) {
-            handleToggle('restrictExceptMotorbike', 'Restrict Except Motorbike');
-          },
-          key: -1,
-          arg: {},
-        },
-        {
-          handler: 'WME_EZRoad_Mod_SplitSegment',
-          title: 'Toggle Split Segment Mode',
-          func: function (arg) {
-            toggleSplitMode();
-          },
-          key: -1,
-          arg: {},
-        },
-        {
-          handler: 'WME_EZRoad_Mod_UpdateLaneCount',
-          title: 'Enable Road Width (No of Lanes) buttons',
-          func: function (arg) {
-            handleToggle('updateLanes', 'Enable Road Width (No of Lanes) buttons');
-          },
-          key: -1,
-          arg: {},
-        },
-        {
-          handler: 'WME_EZRoad_Mod_validateNodeConnection',
-          title: 'Validate Node Connection',
-          func: function (arg) {
-            handleToggle('validateNodeConnection', 'Validate Node Connection');
-          },
-          key: -1,
-          arg: {},
-        },
-      ];
-
-      // Register legacy shortcuts
-      for (var i = 0; i < shortcutsConfig.length; ++i) {
-        WMEKSRegisterKeyboardShortcut(scriptName, 'EZRoad Mod - Feature Toggles', shortcutsConfig[i].handler, shortcutsConfig[i].title, shortcutsConfig[i].func, shortcutsConfig[i].key, shortcutsConfig[i].arg);
-      }
-
-      // Load any previously saved shortcuts
-      WMEKSLoadKeyboardShortcuts(scriptName);
-
-      // Save shortcuts before page unload
-      window.addEventListener(
-        'beforeunload',
-        function () {
-          WMEKSSaveKeyboardShortcuts(scriptName);
-        },
-        false
-      );
-      
-      console.log(`${scriptName} All action shortcuts initialized successfully with legacy mode`);
-    } catch (e) {
-      console.error(`${scriptName} Error initializing action shortcuts:`, e);
-    }
-  };
-  // ***--- End of Legacy Keyboard Shortcuts System but below has initialization ---***
   
   const WME_EZRoads_Mod_bootstrap = () => {
     if (!document.getElementById('edit-panel') || !wmeSDK.DataModel.Countries.getTopCountry()) {
@@ -998,22 +1085,16 @@
   const WME_EZRoads_Mod_init = () => {
     log('Initing');
 
-    const options = getOptions();
-    const shortcutId = 'EZRoad_Mod_QuickUpdate';
-    // Only register if not already present
-    if (!wmeSDK.Shortcuts.isShortcutRegistered({ shortcutId })) {
-      registerShortcut(options.shortcutKey || 'g');
-    }
+    // Initialize all WME SDK shortcuts (feature toggles + actions) using unified PIE-style pattern
+    // Replaces legacy W.accelerators system for all 30+ shortcuts
+    initializeSDKShortcuts();
+    // Auto-save SDK shortcut key changes on page unload + polling
+    window.addEventListener('beforeunload', checkSDKShortcutsChanged);
+    setInterval(checkSDKShortcutsChanged, 5000);
 
-    // Initialize all action shortcuts for the 12 features using the legacy shortcuts system (following WME POI Shortcuts pattern)
-    // WazeToastr is guaranteed to be available at this point (checked during initScript)
-    try {
-      initializeActionShortcuts();
-      console.log(`${scriptName} Action shortcuts initialized`);
-    } catch (e) {
-      console.error(`${scriptName} Error initializing action shortcuts:`, e);
-    }
-    // ***--- End of Legacy Keyboard Shortcuts System initialization ---***
+    // All shortcuts (feature toggles + actions) are now registered via initializeSDKShortcuts()
+    // using the unified PIE-style pattern. Legacy W.accelerators system has been removed.
+    log('All shortcuts initialized via SDK (unified PIE-style pattern)');
     
     // --- ENHANCED: Add event listeners to each road-type chip for direct click handling ---
     // Global flag to suppress attribute copy when chip is clicked
@@ -1111,94 +1192,6 @@
           $(this).prop('checked', false);
         }
       });
-    }
-
-    // Register shortcut for each road type (move here, after handleUpdate is defined)
-    roadTypes.forEach((rt) => {
-      const shortcutId = `EZRoad_Mod_SelectRoadType_${rt.id}`;
-      // Prevent duplicate shortcut registration
-      if (!wmeSDK.Shortcuts.isShortcutRegistered({ shortcutId })) {
-        try {
-          wmeSDK.Shortcuts.createShortcut({
-            callback: () => {
-              const options = getOptions();
-              options.roadType = rt.value;
-              saveOptions(options);
-              updateRoadTypeRadios(rt.value);
-              if (WazeToastr?.Alerts) {
-                WazeToastr.Alerts.success(`${scriptName}`, `Selected road type: <b>${roadTypeName(rt)}</b>`, false, false, 1500);
-              }
-            },
-            description: `Select road type: ${roadTypeName(rt)}`,
-            shortcutId,
-            shortcutKeys: rt.shortcutKey,
-          });
-        } catch (e) {
-          log(`Shortcut registration failed for ${rt.name}: ${e}`);
-        }
-      }
-    });
-
-    // Register shortcut for Motorcycle Only restriction
-    const motorcycleShortcutId = `EZRoad_Mod_MotorcycleOnlyRestriction`;
-    // Prevent duplicate shortcut registration
-    if (!wmeSDK.Shortcuts.isShortcutRegistered({ shortcutId: motorcycleShortcutId })) {
-      try {
-        wmeSDK.Shortcuts.createShortcut({
-          callback: () => {
-            const selection = wmeSDK.Editing.getSelection();
-            if (!selection || selection.objectType !== 'segment' || !selection.ids || selection.ids.length === 0) {
-              if (WazeToastr?.Alerts) {
-                WazeToastr.Alerts.warning(`${scriptName}`, 'Please select one or more segments first', false, false, 3000);
-              }
-              return;
-            }
-
-            // Apply the restriction via UI automation
-            applyMotorbikeOnlyRestriction(selection.ids[0]).then((result) => {
-              if (result === true) {
-                if (WazeToastr?.Alerts) {
-                  WazeToastr.Alerts.success(
-                    `${scriptName}`,
-                    `Motorbike-only restriction applied to ${selection.ids.length} segment(s) ✓`,
-                    false,
-                    false,
-                    3000
-                  );
-                }
-              } else if (result === 'not_supported') {
-                if (WazeToastr?.Alerts) {
-                WazeToastr.Alerts.warning(`${scriptName}`, `Segment not found or is pedestrian type, cannot apply motorbike restriction`, false, false, 5000);
-                }
-              } else if (result === 'not_supported type') {
-                log(`${scriptName} Segment not supported type, cannot apply motorbike restriction`); 
-              }
-            }).catch((error) => {
-              console.error(`${scriptName} Error applying motorbike restriction:`, error);
-            });
-          },
-          description: `Apply Motorbike-Only Restriction to Selected Segments`,
-          shortcutId: motorcycleShortcutId,
-          shortcutKeys: 'A+R',
-        });
-      } catch (e) {
-        log(`Shortcut registration failed for ${motorcycleShortcutId}: ${e}`);
-      }
-    }
-
-    // Register shortcut for Segment Split Mode
-    const splitShortcutId = 'EZRoad_Mod_SplitSegment';
-    if (!wmeSDK.Shortcuts.isShortcutRegistered({ shortcutId: splitShortcutId })) {
-      try {
-        wmeSDK.Shortcuts.createShortcut({
-          callback: () => toggleSplitMode(),
-          description: 'Toggle Split Segment Mode',
-          shortcutId: splitShortcutId,
-          shortcutKeys: 'A+7',
-        });
-      } catch (e) {
-        log(`Shortcut registration failed for ${splitShortcutId}: ${e}`);
-      }
     }
 
     // Initialize segment length display layer
@@ -2151,39 +2144,102 @@
   }
   // ===== End Segment Length Display Functionality =====
 
-  // Helper to register the shortcut, avoids duplicate code
-  function registerShortcut(shortcutKey) {
-    if (!wmeSDK?.Shortcuts) return;
-    const shortcutId = 'EZRoad_Mod_QuickUpdate';
-    // Always delete before creating to avoid duplicates
-    if (wmeSDK.Shortcuts.isShortcutRegistered({ shortcutId })) {
-      wmeSDK.Shortcuts.deleteShortcut({ shortcutId });
+  // ===== Unified SDK Shortcut Registration (PIE-style) =====
+  function initializeSDKShortcuts() {
+    if (!wmeSDK?.Shortcuts || !_sdkShortcutDefs) return;
+
+    // Delete any existing registrations for our shortcuts
+    for (var i = 0; i < _sdkShortcutDefs.length; i++) {
+      var def = _sdkShortcutDefs[i];
+      if (wmeSDK.Shortcuts.isShortcutRegistered({ shortcutId: def.id })) {
+        wmeSDK.Shortcuts.deleteShortcut({ shortcutId: def.id });
+      }
     }
-    try {
-      wmeSDK.Shortcuts.createShortcut({
-        callback: handleUpdate,
-        description: 'Quick Update Segments.',
-        shortcutId,
-        shortcutKeys: shortcutKey,
-      });
-      console.log(`[${scriptName}] Shortcut '${shortcutKey}' for Quick Update Segments enabled.`);
-    } catch (e) {
-      // If shortcut registration fails (e.g., conflict), register with no key so it appears in WME UI
-      console.warn(`[${scriptName}] Shortcut registration failed:`, e);
+
+    // Load saved shortcut keys and register all
+    var opts = getOptions();
+    if (!opts.sdkShortcuts) opts.sdkShortcuts = {};
+
+    for (var j = 0; j < _sdkShortcutDefs.length; j++) {
+      var shortcutDef = _sdkShortcutDefs[j];
+      // Normalize stored value
+      var saved = opts.sdkShortcuts[shortcutDef.settingsKey];
+      opts.sdkShortcuts[shortcutDef.settingsKey] = _normalizeShortcut(saved);
+
       try {
         wmeSDK.Shortcuts.createShortcut({
-          callback: handleUpdate,
-          description: 'Quick Update Segments.',
-          shortcutId,
-          shortcutKeys: null, // Register with no key so it appears in WME UI
+          shortcutId: shortcutDef.id,
+          description: shortcutDef.description,
+          callback: shortcutDef.callback,
+          shortcutKeys: opts.sdkShortcuts[shortcutDef.settingsKey].combo,
         });
-        console.log(`[${scriptName}] Registered shortcut with no key due to conflict.`);
-      } catch (e2) {
-        console.error(`[${scriptName}] Failed to register shortcut with no key:`, e2);
+      } catch (error) {
+        if (String(error).indexOf('already in use') !== -1) {
+          // Key conflict — register without a key; user assigns in WME UI
+          opts.sdkShortcuts[shortcutDef.settingsKey] = { raw: null, combo: null };
+          try {
+            wmeSDK.Shortcuts.createShortcut({
+              shortcutId: shortcutDef.id,
+              description: shortcutDef.description,
+              callback: shortcutDef.callback,
+              shortcutKeys: null,
+            });
+          } catch (error2) {
+            log('Unable to create shortcut: ' + shortcutDef.id + ' - ' + error2);
+          }
+        } else {
+          log('Unable to create shortcut: ' + shortcutDef.id + ' - ' + error);
+        }
       }
-      const options = getOptions();
-      options.shortcutKey = null;
-      saveOptions(options);
+    }
+    saveOptions(opts);
+    log('SDK shortcuts initialized (' + _sdkShortcutDefs.length + ' total)');
+  }
+
+  // ===== SDK Shortcut Persistence (auto-save on beforeunload + polling) =====
+  function checkSDKShortcutsChanged() {
+    if (!wmeSDK?.Shortcuts || !_sdkShortcutDefs) return;
+    var triggerSave = false;
+    var shortcuts = wmeSDK.Shortcuts.getAllShortcuts();
+
+    for (var i = 0; i < shortcuts.length; i++) {
+      var shortcut = shortcuts[i];
+      var matchingDef = null;
+      for (var j = 0; j < _sdkShortcutDefs.length; j++) {
+        if (_sdkShortcutDefs[j].id === shortcut.shortcutId) {
+          matchingDef = _sdkShortcutDefs[j];
+          break;
+        }
+      }
+      if (!matchingDef) continue;
+
+      var normalized = _normalizeShortcut(shortcut.shortcutKeys);
+      var opts = getOptions();
+      if (!opts.sdkShortcuts) opts.sdkShortcuts = {};
+      if (opts.sdkShortcuts[matchingDef.settingsKey]?.combo !== normalized.combo) {
+        triggerSave = true;
+        break;
+      }
+    }
+
+    if (triggerSave) {
+      for (var k = 0; k < shortcuts.length; k++) {
+        var s = shortcuts[k];
+        var matchDef = null;
+        for (var l = 0; l < _sdkShortcutDefs.length; l++) {
+          if (_sdkShortcutDefs[l].id === s.shortcutId) {
+            matchDef = _sdkShortcutDefs[l];
+            break;
+          }
+        }
+        if (matchDef && matchDef.settingsKey) {
+          var opts2 = getOptions();
+          if (!opts2.sdkShortcuts) opts2.sdkShortcuts = {};
+          opts2.sdkShortcuts[matchDef.settingsKey] = _normalizeShortcut(s.shortcutKeys);
+          saveOptions(opts2);
+        }
+      }
+      log('SDK shortcut changes saved.');
     }
   }
 
@@ -4146,22 +4202,28 @@
               statusMessage = 'Paved';
             }
             
-            // Use WME SDK updateSegment with flagAttributes
+            // Check current unpaved state to avoid unnecessary SDK calls
+            const currentUnpaved = seg.flagAttributes?.unpaved === true;
+            
+            // Use WME SDK updateSegment with flagAttributes — only if value actually needs to change
             // Note: Pedestrian types don't support the unpaved flag, so skip the call
-            if (!isPedestrian) {
+            if (!isPedestrian && currentUnpaved !== unpavedValue) {
               wmeSDK.DataModel.Segments.updateSegment({
                 segmentId: id,
                 flagAttributes: {
                   unpaved: unpavedValue
                 }
               });
+              log(`Updated unpaved status via SDK: ${statusMessage} (unpaved=${unpavedValue})`);
+            } else if (!isPedestrian && currentUnpaved === unpavedValue) {
+              log(`Unpaved status already matches: ${statusMessage} — skipping SDK call`);
             }
             
             alertMessageParts.push(`Paved Status: <b>${statusMessage}</b>`);
             updatedPaved = true;
-            log(`Updated unpaved status via SDK: ${statusMessage} (unpaved=${unpavedValue})`);
           } catch (e) {
             log('Error updating unpaved status via SDK: ' + e);
+            WazeToastr.Alerts.error(scriptName, `Error updating paved status: ${e.message}`, false, false, 5000);
           }
         }, 500)
       ); // 500ms delay for unpaved/paved toggle
@@ -4919,13 +4981,13 @@
         id: 'restrictExceptMotorbike',
         text: 'Restrict except Motorbike (Auto)',
         key: 'restrictExceptMotorbike',
-        tooltip: 'Automatically adds motorbike-only vehicle restrictions via UI automation. Applies to entire segment in both directions, all day. Blocks all vehicles except motorcycles. May use shortcut key (Alt+R) or (Quick Update Segment) to apply.',
+        tooltip: 'Automatically adds motorbike-only vehicle restrictions via UI automation. Applies to entire segment in both directions, all day. Blocks all vehicles except motorcycles. May use shortcut key or (Quick Update Segment) to apply.',
       },
       {
         id: 'updateLanes',
         text: 'Enable Road Width (No of Lanes) buttons',
         key: 'updateLanes',
-        tooltip: 'Shows lane count buttons (0-10) in the edit panel. Click a number to set the number of lanes for both directions on selected segments.',
+        tooltip: 'Shows lane count buttons (0-8) in the edit panel. Click a number to set the number of lanes for both directions on selected segments.',
       },
       {
         id: 'validateNodeConnection',
@@ -5546,6 +5608,13 @@ if (typeof require !== 'undefined') {
 
   /*
 Changelog
+<strong>Version 2.7.1.1 - 2026-07-23:</strong><br>
+    - Migrated legacy keyboard shortcuts to sdk<br>`;
+<strong>Version 2.7.0.7 - 2026-07-23:</strong><br>
+    - Segment & Node Connection: Added validation for segment node connections and introduced a highlight layer for segments with connection issues.<br>
+    - Lane Management: Added road width (0–8 lanes) buttons in the edit panel with a "Multiple" chip, hover tooltips, and a settings toggle. Fixed preview display before saving and resolved undo/redo support.<br>
+    - SDK & Address Architecture: Reorganized address properties under a unified addressData object following WMESDK patterns, and migrated the Paved/Unpaved feature to full SDK support.<br>
+    -Localization & Maintenance: Added support for localized road names, alongside general bug fixes and stability improvements.<br>`;
 <strong>Version 2.7.0.6 - 2026-07-19:</strong><br>
     - Added: Validation of segment node connection<br>
     - Added: Highlight layer for segments with node connection issues<br>
