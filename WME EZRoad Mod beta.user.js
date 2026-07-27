@@ -18,7 +18,6 @@
 // @connect      githubusercontent.com
 // @require      https://cdn.jsdelivr.net/npm/@turf/turf@7/turf.min.js
 // @require      https://greasyfork.org/scripts/560385/code/WazeToastr.js
-// @require https://cdn.jsdelivr.net/gh/TheEditorX/wme-sdk-plus@latest/wme-sdk-plus.js
 // @downloadURL https://raw.githubusercontent.com/kid4rm90s/WME-EZRoad-Mod/main/WME%20EZRoad%20Mod%20beta.user.js
 // @updateURL https://raw.githubusercontent.com/kid4rm90s/WME-EZRoad-Mod/main/WME%20EZRoad%20Mod%20beta.user.js
 
@@ -108,7 +107,7 @@
     }
   };
 
-  // ===== WME SDK SHORTCUT FORMAT CONVERTERS (PIE-style) =====
+  // ===== WME SDK SHORTCUT FORMAT CONVERTERS =====
   const _KEYCODE_TO_CHAR = {
     65:'A',66:'B',67:'C',68:'D',69:'E',70:'F',71:'G',72:'H',73:'I',74:'J',75:'K',76:'L',
     77:'M',78:'N',79:'O',80:'P',81:'Q',82:'R',83:'S',84:'T',85:'U',86:'V',87:'W',88:'X',
@@ -1086,7 +1085,7 @@
   const WME_EZRoads_Mod_init = () => {
     log('Initing');
 
-    // Initialize all WME SDK shortcuts (feature toggles + actions) using unified PIE-style pattern
+    // Initialize all WME SDK shortcuts (feature toggles + actions) using unified pattern
     // Replaces legacy W.accelerators system for all 30+ shortcuts
     initializeSDKShortcuts();
     // Auto-save SDK shortcut key changes on page unload + polling
@@ -1094,8 +1093,8 @@
     setInterval(checkSDKShortcutsChanged, 5000);
 
     // All shortcuts (feature toggles + actions) are now registered via initializeSDKShortcuts()
-    // using the unified PIE-style pattern. Legacy W.accelerators system has been removed.
-    log('All shortcuts initialized via SDK (unified PIE-style pattern)');
+    // using the unified pattern. Legacy W.accelerators system has been removed.
+    log('All shortcuts initialized via SDK (unified pattern)');
     
     // --- ENHANCED: Add event listeners to each road-type chip for direct click handling ---
     // Global flag to suppress attribute copy when chip is clicked
@@ -2145,7 +2144,7 @@
   }
   // ===== End Segment Length Display Functionality =====
 
-  // ===== Unified SDK Shortcut Registration (PIE-style) =====
+  // ===== Unified SDK Shortcut Registration =====
   function initializeSDKShortcuts() {
     if (!wmeSDK?.Shortcuts || !_sdkShortcutDefs) return;
 
