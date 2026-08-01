@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.7.2.2
+// @version      2.7.3.0
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -28,9 +28,9 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.7.2.2 - 2026-07-24:</strong><br>
-    - starting with SDK v2.359, it is now moved towards grouping related parameters into single objects to streamline updates and reduce the number of individual actions recorded by the ActionManager <br>
-    - Migrated legacy keyboard shortcuts to sdk<br>
+  const updateMessage = `<strong>Version 2.7.3.0 - 2026-08-01:</strong><br>
+    - Fixed keyboard shortcut conflict handling: reassigning a key now moves it off the previous shortcut instead of silently clearing it (no more lost shortcut settings after reload)<br>
+    - Conflicting saved shortcuts are preserved and a warning is shown instead of being nulled<br>
     - Minor bug fixes and stability improvements<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
@@ -132,6 +132,10 @@
       const keyCode = parseInt(str.split(',')[1], 10);
       return keyCode < 0 ? null : str;
     }
+    // Handle bare numeric key code (legacy format stored just the key code number, e.g. "67" for 'C')
+      if (/^\d+$/.test(str)) {
+        return '0,' + str
+      }
     const upperStr = String(str).toUpperCase();
     if (/^[A-Z0-9]$/.test(upperStr)) return '0,' + upperStr.charCodeAt(0);
     if (_CHAR_TO_KEYCODE[upperStr] !== undefined) return '0,' + _CHAR_TO_KEYCODE[upperStr];
@@ -200,6 +204,11 @@
 
   // ===== SDK SHORTCUT DEFINITIONS (data-driven, no hardcoded keys) =====
   let _sdkShortcutDefs = null; // Built in initScript after roadTypeName is fully ready
+  // Session-level set of settingsKeys whose saved key was preserved but could not
+  // be assigned (legacy duplicate or external conflict). The poll skips these so
+  // it never clobbers the preserved value back to null. Removed when the user
+  // reassigns the shortcut in WME Settings → Keyboard Shortcuts.
+  const _conflictBlockedKeys = new Set();
 
   function buildSDKShortcutDefs() {
     const defs = [];
@@ -509,20 +518,6 @@
         log(`Legacy shortcut migration complete. Removed legacy key "${legacyKey}".`);
       }
     })();
-
-    // Register the shortcut group in WME's Keyboard Shortcuts dialog
-    try {
-      if (wmeSDK.Shortcuts && wmeSDK.Shortcuts.addShortcutGroup) {
-        var groups = wmeSDK.Shortcuts.getAllShortcutGroups();
-        var groupExists = groups && groups.some(function(g) { return g.groupName === 'EZRoad Mod - Feature Toggles'; });
-        if (!groupExists) {
-          wmeSDK.Shortcuts.addShortcutGroup({ groupName: 'EZRoad Mod - Feature Toggles' });
-          log('Registered shortcut group: EZRoad Mod - Feature Toggles');
-        }
-      }
-    } catch (e) {
-      log('Could not register shortcut group: ' + e);
-    }
 
     WME_EZRoads_Mod_bootstrap();
   }
@@ -2144,6 +2139,11 @@
   // ===== End Segment Length Display Functionality =====
 
   // ===== Unified SDK Shortcut Registration =====
+  // Registers every shortcut from the saved {raw, combo} settings. Duplicate
+  // combos among our own saved data (only possible with pre-fix legacy storage)
+  // are preserved — never nulled: the earlier shortcut keeps the key, the later
+  // one is registered keyless and added to _conflictBlockedKeys with a warning.
+  // Keys already in use by WME or another script are handled the same way.
   function initializeSDKShortcuts() {
     if (!wmeSDK?.Shortcuts || !_sdkShortcutDefs) return;
 
@@ -2159,23 +2159,49 @@
     var opts = getOptions();
     if (!opts.sdkShortcuts) opts.sdkShortcuts = {};
 
+    // Normalize all saved values
     for (var j = 0; j < _sdkShortcutDefs.length; j++) {
-      var shortcutDef = _sdkShortcutDefs[j];
-      // Normalize stored value
-      var saved = opts.sdkShortcuts[shortcutDef.settingsKey];
-      opts.sdkShortcuts[shortcutDef.settingsKey] = _normalizeShortcut(saved);
+      var sd = _sdkShortcutDefs[j];
+      opts.sdkShortcuts[sd.settingsKey] = _normalizeShortcut(opts.sdkShortcuts[sd.settingsKey]);
+    }
 
+    // Detect duplicate combos among our own saved shortcuts. Post-fix saves
+    // never produce duplicates (the poll moves keys at save time), so any
+    // duplicate found here is pre-fix data where we can't know which shortcut
+    // was assigned last. Keep the earlier one, PRESERVE the later one (never
+    // null it), register it keyless, and warn the user.
+    var taken = {}; // combo -> settingsKey
+    var conflictMsgs = [];
+    for (var m = 0; m < _sdkShortcutDefs.length; m++) {
+      var defM = _sdkShortcutDefs[m];
+      var comboM = opts.sdkShortcuts[defM.settingsKey]?.combo || null;
+      if (!comboM) continue;
+      if (taken[comboM] !== undefined) {
+        _conflictBlockedKeys.add(defM.settingsKey);
+        conflictMsgs.push(defM.description + ' (' + comboM + ')');
+      } else {
+        taken[comboM] = defM.settingsKey;
+      }
+    }
+
+    for (var k = 0; k < _sdkShortcutDefs.length; k++) {
+      var shortcutDef = _sdkShortcutDefs[k];
+      var keys = _conflictBlockedKeys.has(shortcutDef.settingsKey) ? null : opts.sdkShortcuts[shortcutDef.settingsKey].combo;
     try {
       wmeSDK.Shortcuts.createShortcut({
           shortcutId: shortcutDef.id,
           description: shortcutDef.description,
           callback: shortcutDef.callback,
-          shortcutKeys: opts.sdkShortcuts[shortcutDef.settingsKey].combo,
+          shortcutKeys: keys,
         });
       } catch (error) {
         if (String(error).indexOf('already in use') !== -1) {
-          // Key conflict — register without a key; user assigns in WME UI
-          opts.sdkShortcuts[shortcutDef.settingsKey] = { raw: null, combo: null };
+          // Key taken by WME or another script — preserve the saved value,
+          // register keyless, and block so the poll doesn't clobber it back.
+          if (!_conflictBlockedKeys.has(shortcutDef.settingsKey)) {
+            _conflictBlockedKeys.add(shortcutDef.settingsKey);
+            conflictMsgs.push(shortcutDef.description + ' (' + (opts.sdkShortcuts[shortcutDef.settingsKey].combo || 'key in use') + ')');
+          }
       try {
         wmeSDK.Shortcuts.createShortcut({
               shortcutId: shortcutDef.id,
@@ -2192,15 +2218,31 @@
       }
     }
     saveOptions(opts);
+    if (conflictMsgs.length > 0) {
+      try {
+        WazeToastr.Alerts.warning(scriptName, 'Shortcut conflict: ' + conflictMsgs.join(', ') + ' could not be assigned a key. Resolve it in WME Settings → Keyboard Shortcuts.', false, false, 8000);
+      } catch (e) {
+        console.warn(scriptName + ' WazeToastr.Alerts.warning failed:', e);
+      }
+      log('Shortcut conflicts preserved (key not assigned): ' + conflictMsgs.join(', '));
+    }
     log('SDK shortcuts initialized (' + _sdkShortcutDefs.length + ' total)');
   }
 
-  // ===== SDK Shortcut Persistence (auto-save on beforeunload + polling) =====
+  // ===== SDK Shortcut Persistence + Conflict Resolution (beforeunload + polling) =====
+  // Detects shortcut key changes made in WME Settings → Keyboard Shortcuts and
+  // saves them, MOVING any key that was just assigned to a shortcut off the
+  // displaced one (in both the saved JSON and the live SDK). Blocked keys (see
+  // _conflictBlockedKeys) are skipped so preserved values are never clobbered
+  // back to null.
   function checkSDKShortcutsChanged() {
     if (!wmeSDK?.Shortcuts || !_sdkShortcutDefs) return;
-    var triggerSave = false;
     var shortcuts = wmeSDK.Shortcuts.getAllShortcuts();
+    var opts = getOptions();
+    if (!opts.sdkShortcuts) opts.sdkShortcuts = {};
 
+    // 1) Detect which of our shortcuts changed in the SDK
+    var changedKeys = [];
     for (var i = 0; i < shortcuts.length; i++) {
       var shortcut = shortcuts[i];
       var matchingDef = null;
@@ -2213,37 +2255,123 @@
       if (!matchingDef) continue;
 
       var normalized = _normalizeShortcut(shortcut.shortcutKeys);
-      var opts = getOptions();
-      if (!opts.sdkShortcuts) opts.sdkShortcuts = {};
-      if (opts.sdkShortcuts[matchingDef.settingsKey]?.combo !== normalized.combo) {
-        triggerSave = true;
-        break;
+      var settingsKey = matchingDef.settingsKey;
+
+      // Blocked keys: skip unless the user reassigned them (SDK value non-null)
+      if (_conflictBlockedKeys.has(settingsKey)) {
+        if (normalized.combo === null) continue; // still blocked — preserve saved value
+        _conflictBlockedKeys.delete(settingsKey); // user reassigned — unblock
+      }
+
+      if (opts.sdkShortcuts[settingsKey]?.combo !== normalized.combo) {
+        changedKeys.push(settingsKey);
       }
     }
 
-    if (triggerSave) {
-      try {
+    if (changedKeys.length === 0) return;
+
+    // 2) Apply the changed keys to the saved JSON
+    for (var a = 0; a < shortcuts.length; a++) {
+      var sc = shortcuts[a];
+      var defA = null;
+      for (var b = 0; b < _sdkShortcutDefs.length; b++) {
+        if (_sdkShortcutDefs[b].id === sc.shortcutId) {
+          defA = _sdkShortcutDefs[b];
+        break;
+      }
+    }
+      if (!defA) continue;
+      if (changedKeys.indexOf(defA.settingsKey) === -1) continue;
+      opts.sdkShortcuts[defA.settingsKey] = _normalizeShortcut(sc.shortcutKeys);
+    }
+
+    // 3) Fix the JSON: ensure each key is held by only one shortcut. Changed
+    //    shortcuts get priority (they were just assigned); any other shortcut
+    //    holding the same key is freed in the saved JSON. The live SDK registry
+    //    is rebuilt in def order afterwards (step 4) so freed shortcuts keep
+    //    their position instead of jumping to the bottom of the list.
+    var freed = [];
+    var keptCombos = {}; // combo -> true for changed keys already kept
+    for (var c = 0; c < _sdkShortcutDefs.length; c++) {
+      var defC = _sdkShortcutDefs[c];
+      if (changedKeys.indexOf(defC.settingsKey) === -1) continue;
+      var comboC = opts.sdkShortcuts[defC.settingsKey]?.combo || null;
+      if (!comboC) continue; // key was cleared — nothing to free
+      if (keptCombos[comboC]) {
+        // Two changed shortcuts landed on the same key — free this one too
+        opts.sdkShortcuts[defC.settingsKey] = { raw: null, combo: null };
+        freed.push(defC.description);
+        continue;
+      }
+      keptCombos[comboC] = true;
+      for (var d = 0; d < _sdkShortcutDefs.length; d++) {
+        var defD = _sdkShortcutDefs[d];
+        if (defD.settingsKey === defC.settingsKey) continue;
+        if (opts.sdkShortcuts[defD.settingsKey]?.combo !== comboC) continue;
+        opts.sdkShortcuts[defD.settingsKey] = { raw: null, combo: null };
+        freed.push(defD.description);
+      }
+    }
+
+    // 4) Persist, then rebuild the live SDK registry in canonical order so a
+    //    freed shortcut keeps its position (delete+create alone would push it
+    //    to the bottom of the Keyboard Shortcuts list until the next reload).
+    saveOptions(opts);
+    if (freed.length > 0) {
+      _reRegisterAllShortcutsInOrder(opts);
+    }
+    try {
+      if (freed.length > 0) {
+        WazeToastr.Alerts.warning(scriptName, 'Shortcut key moved: ' + freed.join(', ') + ' unassigned because the key is now used by another EZRoads Mod shortcut.', false, false, 5000);
+      }
         WazeToastr.Alerts.success(scriptName, 'Saving keyboard shortcuts for ' + scriptName, false, false, 3000);
       } catch (e) {
-        console.warn(scriptName + ' WazeToastr.Alerts.success failed:', e);
+      console.warn(scriptName + ' WazeToastr.Alerts failed:', e);
       }
-      for (var k = 0; k < shortcuts.length; k++) {
-        var s = shortcuts[k];
-        var matchDef = null;
-        for (var l = 0; l < _sdkShortcutDefs.length; l++) {
-          if (_sdkShortcutDefs[l].id === s.shortcutId) {
-            matchDef = _sdkShortcutDefs[l];
-            break;
+    log('SDK shortcut changes saved.' + (freed.length > 0 ? ' Moved from: ' + freed.join(', ') : ''));
+  }
+
+  // Re-register every shortcut in _sdkShortcutDefs order. The SDK has no
+  // in-place key update, so freeing a key requires delete+create — which would
+  // otherwise push the recreated shortcut to the bottom of the Keyboard
+  // Shortcuts list. Rebuilding everything in def order restores the canonical
+  // arrangement right away (no need to wait for a page reload).
+  function _reRegisterAllShortcutsInOrder(opts) {
+    for (var i = 0; i < _sdkShortcutDefs.length; i++) {
+      var def = _sdkShortcutDefs[i];
+      if (wmeSDK.Shortcuts.isShortcutRegistered({ shortcutId: def.id })) {
+        wmeSDK.Shortcuts.deleteShortcut({ shortcutId: def.id });
       }
+    }
+    for (var j = 0; j < _sdkShortcutDefs.length; j++) {
+      var def = _sdkShortcutDefs[j];
+      var keys = _conflictBlockedKeys.has(def.settingsKey) ? null : (opts.sdkShortcuts[def.settingsKey]?.combo || null);
+      try {
+        wmeSDK.Shortcuts.createShortcut({
+          shortcutId: def.id,
+          description: def.description,
+          callback: def.callback,
+          shortcutKeys: keys,
+        });
+      } catch (error) {
+        if (String(error).indexOf('already in use') !== -1) {
+          // Key taken by WME or another script — register keyless, preserve
+          // the saved value, and block so the poll doesn't clobber it back.
+          _conflictBlockedKeys.add(def.settingsKey);
+          try {
+            wmeSDK.Shortcuts.createShortcut({
+              shortcutId: def.id,
+              description: def.description,
+              callback: def.callback,
+              shortcutKeys: null,
+            });
+          } catch (error2) {
+            log('Unable to create shortcut: ' + def.id + ' - ' + error2);
         }
-        if (matchDef && matchDef.settingsKey) {
-          var opts2 = getOptions();
-          if (!opts2.sdkShortcuts) opts2.sdkShortcuts = {};
-          opts2.sdkShortcuts[matchDef.settingsKey] = _normalizeShortcut(s.shortcutKeys);
-          saveOptions(opts2);
-        }
+        } else {
+          log('Unable to create shortcut: ' + def.id + ' - ' + error);
       }
-      log('SDK shortcut changes saved.');
+      }
     }
   }
 
@@ -5551,6 +5679,10 @@ if (typeof require !== 'undefined') {
 
   /*
 Changelog
+<strong>Version 2.7.3.0 - 2026-08-01:</strong><br>
+    - Fixed keyboard shortcut conflict handling: reassigning a key now moves it off the previous shortcut instead of silently clearing it (no more lost shortcut settings after reload)<br>
+    - Conflicting saved shortcuts are preserved and a warning is shown instead of being nulled<br>
+    - Minor bug fixes and stability improvements<br>`;
 <strong>Version 2.7.2.2 - 2026-07-24:</strong><br>
     - starting with SDK v2.359, it is now moved towards grouping related parameters into single objects to streamline updates and reduce the number of individual actions recorded by the ActionManager <br>
     - Migrated legacy keyboard shortcuts to sdk<br>
