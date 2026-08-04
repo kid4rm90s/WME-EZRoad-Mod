@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.7.3.3
+// @version      2.7.3.4
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -29,12 +29,8 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.7.3.2 - 2026-08-01:</strong><br>
-    - Workaround for a WME SDK bug: when a shortcut key is reassigned, WME moves it off the previous shortcut but leaves a stale entry (originalShortcut is not cleared), so getAllShortcuts() reports duplicate keys. The script now detects these stale duplicates, clears the displaced shortcut, and keeps the correct holder — shortcut keys now persist correctly across reloads<br>
-    - Note: the root cause is on the WME side (originalShortcut not cleared during conflict resolution); this is a script-side workaround until Waze fixes it upstream<br>
-    - Fixed keyboard shortcut conflict handling: reassigning a key now moves it off the previous shortcut instead of silently clearing it (no more lost shortcut settings after reload)<br>
-    - Conflicting saved shortcuts are preserved and a warning is shown instead of being nulled<br>
-    - Minor bug fixes and stability improvements<br>`;
+  const updateMessage = `<strong>Version 2.7.3.4 - 2026-08-04:</strong><br>
+    - New default lock levels per road type for fresh installs: Motorway L5, Ramp HRCS, Major Highway L4, Minor Highway L3, Primary Street L2, Street L1, Narrow Street L1, Offroad L1, Parking Road L1, Private Road L1, Ferry L1, Railway L3, Runway L3, Footpath L1, Pedestrianised Area L1, Stairway L1 (previously all L1). Existing saved settings are unaffected; Reset restores the new defaults<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://raw.githubusercontent.com/kid4rm90s/WME-EZRoad-Mod/main/WME%20EZRoad%20Mod%20beta.user.js';
@@ -71,7 +67,24 @@
     setLock: false,
     updateSpeed: false,
     copySegmentName: false,
-    locks: roadTypes.map((roadType) => ({ id: roadType.id, lock: String(1) })),
+    locks: [
+      { id: 1, lock: '5' },
+      { id: 2, lock: 'HRCS' },
+      { id: 3, lock: '4' },
+      { id: 4, lock: '3' },
+      { id: 5, lock: '2' },
+      { id: 6, lock: '1' },
+      { id: 7, lock: '1' },
+      { id: 8, lock: '1' },
+      { id: 9, lock: '1' },
+      { id: 10, lock: '1' },
+      { id: 11, lock: '1' },
+      { id: 12, lock: '3' },
+      { id: 13, lock: '3' },
+      { id: 14, lock: '1' },
+      { id: 15, lock: '1' },
+      { id: 16, lock: '1' },
+    ],
     speeds: roadTypes.map((roadType) => ({ id: roadType.id, speed: 40 })),
     copySegmentAttributes: false,
     showSegmentLength: false,
@@ -5700,6 +5713,8 @@ if (typeof require !== 'undefined') {
 
   /*
 Changelog
+<strong>Version 2.7.3.4 - 2026-08-04:</strong><br>
+    - New default lock levels per road type for fresh installs: Motorway L5, Ramp HRCS, Major Highway L4, Minor Highway L3, Primary Street L2, Street L1, Narrow Street L1, Offroad L1, Parking Road L1, Private Road L1, Ferry L1, Railway L3, Runway L3, Footpath L1, Pedestrianised Area L1, Stairway L1 (previously all L1). Existing saved settings are unaffected; Reset restores the new defaults<br>
 <strong>Version 2.7.3.2 - 2026-08-01:</strong><br>
     - Workaround for a WME SDK bug: when a shortcut key is reassigned in WME Settings → Keyboard Shortcuts, WME moves the key off the previous shortcut but fails to clear its originalShortcut, so getAllShortcuts() keeps reporting the old key for the displaced shortcut (stale duplicate). This made shortcuts appear duplicated or revert after reload. The script now detects these stale duplicates, clears the displaced shortcut, and keeps the correct holder — verified to persist correctly across reloads.<br>
     - Note: the root cause is on the WME side (originalShortcut not cleared during conflict resolution); this is a script-side workaround until Waze fixes it upstream.<br>
