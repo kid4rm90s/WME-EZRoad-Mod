@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.7.3.4
+// @version      2.7.4.1
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -28,8 +28,11 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.7.3.4 - 2026-08-04:</strong><br>
-    - New default lock levels per road type for fresh installs: Motorway L5, Ramp HRCS, Major Highway L4, Minor Highway L3, Primary Street L2, Street L1, Narrow Street L1, Offroad L1, Parking Road L1, Private Road L1, Ferry L1, Railway L3, Runway L3, Footpath L1, Pedestrianised Area L1, Stairway L1 (previously all L1). Existing saved settings are unaffected; Reset restores the new defaults<br>`;
+  const updateMessage = `<strong>Version 2.7.4.1 - 2026-09-02:</strong><br>
+    - Motorbike-only restriction now uses the WME SDK natively (updateSegment restrictions) instead of fragile UI automation.<br>
+    - The restriction is a BLOCKED default with a FREE exemption for motorcycles, so only motorcycles are allowed; applies to the whole segment, both directions, all day.<br>
+    - Added an EDIT_PROPERTIES permission check before applying the restriction.<br>
+    - Existing segment restrictions are preserved where the SDK can represent them.<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://greasyfork.org/en/scripts/528552-wme-ezroad-mod/code/WME%20EZRoad%20Mod.user.js';
@@ -286,12 +289,15 @@
             if (WazeToastr?.Alerts) {
               WazeToastr.Alerts.success(scriptName, 'Motorbike-only restriction applied to ' + selection.ids.length + ' segment(s) \u2713', false, false, 3000);
             }
-          } else if (result === 'not_supported') {
-            if (WazeToastr?.Alerts) {
-              WazeToastr.Alerts.warning(scriptName, 'Segment not found or is pedestrian type, cannot apply motorbike restriction', false, false, 5000);
-            }
+          } else if (result === 'no_permission') {
+            // Warning already shown by applyMotorbikeOnlyRestriction.
+            log(scriptName + ' Motorbike restriction skipped: no EDIT_PROPERTIES permission on segment ' + selection.ids[0]);
           } else if (result === 'not_supported type') {
             log(scriptName + ' Segment not supported type, cannot apply motorbike restriction');
+          } else {
+            if (WazeToastr?.Alerts) {
+              WazeToastr.Alerts.warning(scriptName, 'Motorbike-only restriction could not be applied to the selected segment(s).', false, false, 5000);
+            }
           }
         }).catch(function(error) {
           console.error(scriptName + ' Error applying motorbike restriction:', error);
@@ -658,11 +664,83 @@
     }
   }
 
-  // --- NEW: Helper to apply motorbike-only restrictions to a segment via UI automation ---
+  // ===== Motorcycle-Only Restriction (WME SDK) =====
+  // The beta WME SDK (v2.367+) natively supports segment restrictions through
+  // updateSegment({ segmentId, restrictions }). This replaces the old 7-step
+  // DOM-automation approach (the SDK did not expose this API when that was written).
+  //
+  // SDK string enums used below (module-level exports, not on the wmeSDK instance):
+  //   UpdateableRestrictionType             -> 'BLOCKED' | 'FREE' | 'TOLL'
+  //   RestrictionSegmentDirection           -> 'BOTH' | 'FWD' | 'REV'
+  //   UpdateableRestrictionSegmentLaneScope -> 'LEFT_LANE' | 'MIDDLE_LANE' | 'RIGHT_LANE' | 'WHOLE_SEGMENT'
+  //   AddableVehicleType                    -> 'EV' | 'MOTORCYCLE' | 'PRIVATE' | 'PUBLIC_TRANSPORTATION' | 'TAXI'
+  const ADDABLE_VEHICLE_TYPES = ['EV', 'MOTORCYCLE', 'PRIVATE', 'PUBLIC_TRANSPORTATION', 'TAXI'];
+  const UPDATEABLE_RESTRICTION_TYPES = ['BLOCKED', 'FREE', 'TOLL'];
+
+  // Converts a read-model SegmentRestriction into the update-model SegmentRestrictionData
+  // shape accepted by updateSegment. Existing restrictions that rely on non-addable vehicle
+  // types (e.g. BUS, TRUCK) or non-updateable restriction types (e.g. DIFFICULT) cannot be
+  // round-tripped through the SDK, so they are dropped and counted for a warning.
+  function toAddableSegmentRestriction(existing) {
+    try {
+      if (!existing || typeof existing !== 'object') return null;
+      if (!UPDATEABLE_RESTRICTION_TYPES.includes(existing.defaultType)) return null;
+
+      const vehicleRules = {};
+      const sourceRules = existing.vehicleRules || existing.driveProfiles || {};
+      Object.keys(sourceRules).forEach((type) => {
+        if (!UPDATEABLE_RESTRICTION_TYPES.includes(type)) return;
+        const rules = sourceRules[type];
+        if (!Array.isArray(rules) || rules.length === 0) return;
+        const converted = rules
+          .map((rule) => ({
+            vehicleTypes: (rule.vehicleTypes || []).filter((vt) => ADDABLE_VEHICLE_TYPES.includes(vt)),
+            minPassengers:
+              typeof rule.minPassengers === 'number'
+                ? rule.minPassengers
+                : typeof rule.numPassengers === 'number'
+                  ? rule.numPassengers
+                  : 0,
+            subscriptions: Array.isArray(rule.subscriptions) ? rule.subscriptions : [],
+            licensePlateRule: rule.licensePlateRule || rule.licensePlateNumber || null,
+          }))
+          .filter((rule) => rule.vehicleTypes.length > 0);
+        if (converted.length > 0) vehicleRules[type] = converted;
+      });
+
+      if (Object.keys(vehicleRules).length === 0) return null;
+
+      return {
+        defaultType: existing.defaultType,
+        description: existing.description || null,
+        direction: existing.direction || 'BOTH',
+        laneScope: existing.laneScope || 'WHOLE_SEGMENT',
+        laneType: existing.laneType || null,
+        vehicleRules,
+      };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // --- Helper to apply a motorcycle-only restriction to a segment via the WME SDK ---
   function applyMotorbikeOnlyRestriction(segmentId) {
     /**
-     * Applies vehicle restrictions to allow only motorbikes on a segment.
-     * Uses DOM manipulation to automate the WME UI since the SDK doesn't support this yet.
+     * Applies a restriction that allows ONLY motorcycles on a segment.
+     *
+     * Strategy (BLOCKED default with a FREE exemption, so only motorcycles are allowed):
+     *   - defaultType: 'BLOCKED' => everything is blocked by default.
+     *   - vehicleRules.FREE: [MOTORCYCLE] => motorcycles are exempted (allowed).
+     *     NOTE: With a BLOCKED defaultType the SDK only accepts FREE rules (exemptions);
+     *     listing a BLOCKED rule for the other types is rejected by validation.
+     *   - direction 'BOTH' + laneScope 'WHOLE_SEGMENT' + no timeFrames => applies to the
+     *     entire segment, both directions, all day.
+     *
+     * Existing restrictions are preserved (best-effort conversion to the update shape).
+     * Editing permission is checked via hasPermissions({ segmentId, permission: 'EDIT_PROPERTIES' })
+     * before any update is attempted.
+     *
+     * Resolves: true | 'not_supported type' | 'no_permission' | false
      */
     return new Promise((resolve) => {
       try {
@@ -675,245 +753,78 @@
           return;
         }
 
-        log(`Applying motorbike-only restriction to segment ${segmentId} via UI automation`);
+        // Gate: only attempt the update if the current user may edit this segment's properties.
+        if (!wmeSDK.DataModel.Segments.hasPermissions({ segmentId, permission: 'EDIT_PROPERTIES' })) {
+          log(`Segment ${segmentId} does not grant EDIT_PROPERTIES permission; skipping restriction update`);
+          WazeToastr.Alerts.warning(`${scriptName}`, `You do not have permission to edit properties on segment ${segmentId}. Motorbike-only restriction was NOT applied.`, false, false, 5000);
+          resolve('no_permission');
+          return;
+        }
 
-        /* ===== WME SDK APPROACH (NOT YET SUPPORTED - COMMENTED OUT FOR FUTURE USE) =====
-        // Get SDK constants - try different possible locations
-        const RESTRICTION_TYPE = wmeSDK.RESTRICTION_TYPE || wmeSDK.Constants?.RESTRICTION_TYPE || {
-          FREE: 'FREE',
-          BLOCKED: 'BLOCKED',
-          DIFFICULT: 'DIFFICULT',
-          TOLL: 'TOLL'
-        };
+        log(`Applying motorbike-only restriction to segment ${segmentId} via WME SDK`);
 
-        const VEHICLE_TYPE = wmeSDK.VEHICLE_TYPE || wmeSDK.Constants?.VEHICLE_TYPE || {
-          MOTORCYCLE: 'MOTORCYCLE',
-          CAR: 'CAR',
-          TAXI: 'TAXI',
-          BUSES: 'BUSES',
-          TRUCKS: 'TRUCKS',
-          SCOOTERS: 'SCOOTERS'
-        };
-
-        // Create motorcycle-only restriction using SDK constants and structure
-        // Only motorcycles are allowed (FREE restriction), all other vehicles are BLOCKED
+        // Build the BLOCKED restriction that allows only motorcycles.
+        // defaultType 'BLOCKED' blocks everything by default; the FREE rule below
+        // exempts motorcycles so they remain the only allowed vehicle type.
         const motorcycleOnlyRestriction = {
-          driveProfiles: {
-            // FREE: Only motorcycles can pass freely
-            [RESTRICTION_TYPE.FREE]: [
+          defaultType: 'BLOCKED',
+          description: null,
+          direction: 'BOTH',
+          laneScope: 'WHOLE_SEGMENT',
+          laneType: null,
+          vehicleRules: {
+            FREE: [
               {
-                vehicleTypes: [VEHICLE_TYPE.MOTORCYCLE],
-                licensePlateNumber: '',
-                numPassengers: 0,
+                vehicleTypes: ['MOTORCYCLE'],
+                minPassengers: 0,
                 subscriptions: [],
+                licensePlateRule: null,
               },
             ],
-            // BLOCKED: All other vehicle types are blocked
-            [RESTRICTION_TYPE.BLOCKED]: [
-              {
-                vehicleTypes: [
-                  VEHICLE_TYPE.CAR,
-                  VEHICLE_TYPE.TAXI,
-                  VEHICLE_TYPE.BUSES,
-                  VEHICLE_TYPE.TRUCKS,
-                  VEHICLE_TYPE.SCOOTERS,
-                ],
-                licensePlateNumber: '',
-                numPassengers: 0,
-                subscriptions: [],
-              },
-            ],
-            [RESTRICTION_TYPE.DIFFICULT]: [],
-            [RESTRICTION_TYPE.TOLL]: [],
           },
-          isExpired: false,
         };
 
-        // Try applying via SDK (currently not working)
-        // Method 1: Try Segments.addRestriction
-        if (wmeSDK.DataModel.Segments.addRestriction) {
-          wmeSDK.DataModel.Segments.addRestriction({
-            segmentId,
-            restriction: motorcycleOnlyRestriction,
-          });
-        }
-        
-        // Method 2: Try Segments.addSegmentRestriction
-        if (wmeSDK.DataModel.Segments.addSegmentRestriction) {
-          wmeSDK.DataModel.Segments.addSegmentRestriction({
-            segmentId,
-            restriction: motorcycleOnlyRestriction,
-          });
-        }
-        
-        // Method 3: Try updateSegment with restrictions array
-        const currentRestrictions = segment.restrictions || [];
+        // Preserve existing restrictions (best-effort conversion), then add the new one.
+        const preserved = [];
+        let dropped = 0;
+        (segment.restrictions || []).forEach((existing) => {
+          const converted = toAddableSegmentRestriction(existing);
+          if (converted) {
+            preserved.push(converted);
+          } else {
+            dropped++;
+          }
+        });
+        const mergedRestrictions = [...preserved, motorcycleOnlyRestriction];
+
+        try {
         wmeSDK.DataModel.Segments.updateSegment({
           segmentId,
-          restrictions: [...currentRestrictions, motorcycleOnlyRestriction],
-        });
-        
-        // Method 4: Try SegmentRestrictions API if it exists
-        if (wmeSDK.DataModel.SegmentRestrictions?.addRestriction) {
-          wmeSDK.DataModel.SegmentRestrictions.addRestriction({
-            segmentId,
-            restriction: motorcycleOnlyRestriction,
-            direction: 'BOTH',
+            restrictions: mergedRestrictions,
           });
-        }
-        ===== END WME SDK APPROACH ===== */
-
-        // Helper function to wait for element
-        const waitForElement = (selector, timeout = 5000) => {
-          return new Promise((resolve, reject) => {
-            const startTime = Date.now();
-            const checkInterval = setInterval(() => {
-              const element = document.querySelector(selector);
-              if (element) {
-                clearInterval(checkInterval);
-                resolve(element);
-              } else if (Date.now() - startTime > timeout) {
-                clearInterval(checkInterval);
-                reject(new Error(`Timeout waiting for element: ${selector}`));
-              }
-            }, 100);
-          });
-        };
-
-        // Helper to click element
-        const clickElement = (element) => {
-          if (element) {
-            element.click();
-            log(`Clicked: ${element.tagName} ${element.className}`);
-            return true;
-          }
-          return false;
-        };
-
-        // Step 1: Click "Add restrictions" button
-        setTimeout(() => {
-          const addRestrictionsBtn = document.querySelector('wz-button.edit-restrictions');
-          if (!addRestrictionsBtn) {
-            log('Add restrictions button not found');
-            resolve('not_supported');
+        } catch (updateError) {
+          log(`Error applying restriction via updateSegment for segment ${segmentId}: ${updateError}`);
+          resolve(false);
             return;
           }
-          clickElement(addRestrictionsBtn);
 
-          // Step 2: Wait for modal and click "Add new" for bidirectional (2-way)
+        // Optional autosave (consistent with the rest of the script).
+        const options = getOptions();
+        if (options && options.autosave) {
           setTimeout(() => {
-            waitForElement('.bidi-restrictions-summary .do-create')
-              .then((addNewBtn) => {
-                clickElement(addNewBtn);
+            wmeSDK.Editing.save().then(() => {
+              log(`[${scriptName}] Autosave completed after motorbike restriction`);
+            });
+          }, 300);
+        }
 
-                // Step 3: Wait for disposition dropdown and select "Entire Segment" (value="1")
-                setTimeout(() => {
-                  waitForElement('select[name="disposition"]')
-                    .then((dispositionSelect) => {
-                      dispositionSelect.value = '1'; // Entire Segment
-                      dispositionSelect.dispatchEvent(new Event('change', { bubbles: true }));
-                      log('Selected: Entire Segment');
+        if (dropped > 0) {
+          log(`Preserved ${preserved.length} existing restriction(s); dropped ${dropped} that the SDK cannot round-trip`);
+          WazeToastr.Alerts.warning(`${scriptName}`, `Motorbike-only restriction applied. ${dropped} existing restriction(s) could not be preserved via the SDK and were removed.`, false, false, 5000);
+        }
 
-                      // Step 4: Click the plus icon to add restriction type
-                      setTimeout(() => {
-                        const plusIcon = document.querySelector('.fa-plus');
-                        if (plusIcon && clickElement(plusIcon)) {
-                          
-                          // Step 5: Wait for and click "Vehicle type" option
-                          setTimeout(() => {
-                            waitForElement('wz-menu-item')
-                              .then(() => {
-                                const menuItems = document.querySelectorAll('wz-menu-item');
-                                let vehicleTypeItem = null;
-                                menuItems.forEach(item => {
-                                  if (item.textContent.includes('Vehicle type')) {
-                                    vehicleTypeItem = item;
-                                  }
-                                });
-                                
-                                if (vehicleTypeItem && clickElement(vehicleTypeItem)) {
-                                  
-                                  // Step 6: Wait for vehicle type dropdown and select Motorcycle
-                                  setTimeout(() => {
-                                    waitForElement('.do-set-vehicle-type')
-                                      .then(() => {
-                                        const vehicleOptions = document.querySelectorAll('.do-set-vehicle-type');
-                                        let motorcycleOption = null;
-                                        vehicleOptions.forEach(option => {
-                                          if (option.textContent.toLowerCase().includes('motorcycle')) {
-                                            motorcycleOption = option;
-                                          }
-                                        });
-
-                                        if (motorcycleOption && clickElement(motorcycleOption)) {
-                                          log('Selected: Motorcycle');
-
-                                          // Step 7: Click the Add button
-                                          setTimeout(() => {
-                                            waitForElement('button.do-create')
-                                              .then((addBtn) => {
-                                                if (clickElement(addBtn)) {
-                                                  log('Clicked Add button');
-
-                                                  // Click Apply button to save
-                                                  setTimeout(() => {
-                                                    const applyBtn = document.querySelector('button.do-apply');
-                                                    if (applyBtn && clickElement(applyBtn)) {
-                                                      log('Successfully applied motorbike-only restriction via UI automation');
+        log(`Motorbike-only restriction applied to segment ${segmentId} via SDK`);
                                                       resolve(true);
-                                                    } else {
-                                                      log('Apply button not found');
-                                                      resolve('not_supported');
-                                                    }
-                                                  }, 100);
-                                                } else {
-                                                  resolve('not_supported');
-                                                }
-                                              })
-                                              .catch(err => {
-                                                log(`Error finding Add button: ${err}`);
-                                                resolve('not_supported');
-                                              });
-                                          }, 100);
-                                        } else {
-                                          log('Motorcycle option not found');
-                                          resolve('not_supported');
-                                        }
-                                      })
-                                      .catch(err => {
-                                        log(`Error finding vehicle options: ${err}`);
-                                        resolve('not_supported');
-                                      });
-                                  }, 100);
-                                } else {
-                                  log('Vehicle type menu item not found');
-                                  resolve('not_supported');
-                                }
-                              })
-                              .catch(err => {
-                                log(`Error finding menu items: ${err}`);
-                                resolve('not_supported');
-                              });
-                          }, 100);
-                        } else {
-                          log('Plus icon not found');
-                          resolve('not_supported');
-                        }
-                      }, 100);
-                    })
-                    .catch(err => {
-                      log(`Error finding disposition dropdown: ${err}`);
-                      resolve('not_supported');
-                    });
-                }, 100);
-              })
-              .catch(err => {
-                log(`Error finding Add new button: ${err}`);
-                resolve('not_supported');
-              });
-          }, 100);
-        }, 50);
-
       } catch (error) {
         log(`Error in applyMotorbikeOnlyRestriction: ${error}`);
         resolve(false);
@@ -3933,7 +3844,7 @@
     // Apply motorbike restriction ONCE for all selected segments (before individual updates)
     let motorcycleRestrictionApplied = false;
     if (options.restrictExceptMotorbike) {
-      log(`[${scriptName}] Applying motorbike restriction to all selected segments via UI automation...`);
+      log(`[${scriptName}] Applying motorbike restriction to all selected segments via WME SDK...`);
       applyMotorbikeOnlyRestriction(selection.ids[0]).then((result) => {
         if (result === true) {
           if (WazeToastr?.Alerts) {
@@ -3945,21 +3856,17 @@
               3000
             );
           }
-        } else if (result === 'not_supported') {
+        } else if (result === 'no_permission') {
+          // Warning already shown by applyMotorbikeOnlyRestriction.
+          log(`[${scriptName}] Motorbike restriction skipped: no EDIT_PROPERTIES permission on segment ${selection.ids[0]}`);
+        } else {
           if (WazeToastr?.Alerts) {
             WazeToastr.Alerts.warning(
-              `${scriptName} Motorbike Restriction - Automation Failed`,
-              `The UI automation could not complete. Please add manually:<br><br>` +
-              `<b>Steps:</b><br>` +
-              `1. Keep segment(s) selected<br>` +
-              `2. Click "Restrictions" in left panel<br>` +
-              `3. Click "Add new" under "2 way"<br>` +
-              `4. Select "Entire Segment"<br>` +
-              `5. Add "Vehicle type" → "Motorcycle"<br>` +
-              `6. Click "Add" then "Apply"`,
+              `${scriptName}`,
+              `Motorbike-only restriction could not be applied via the WME SDK. It may be locked above your rank or the segment may not support restrictions.`,
               false,
               false,
-              10000
+              6000
             );
           }
         }
@@ -5085,7 +4992,7 @@
         id: 'restrictExceptMotorbike',
         text: 'Restrict except Motorbike (Auto)',
         key: 'restrictExceptMotorbike',
-        tooltip: 'Automatically adds motorbike-only vehicle restrictions via UI automation. Applies to entire segment in both directions, all day. Blocks all vehicles except motorcycles. May use shortcut key or (Quick Update Segment) to apply.',
+        tooltip: 'Automatically adds motorbike-only vehicle restrictions via the WME SDK. Applies to the entire segment in both directions, all day. Uses a BLOCKED restriction with a FREE exemption for motorcycles, so only motorcycles are allowed. May use shortcut key or (Quick Update Segment) to apply.',
       },
       {
         id: 'updateLanes',
@@ -5704,6 +5611,11 @@ if (typeof require !== 'undefined') {
 
   /*
 Changelog
+<strong>Version 2.7.4.1 - 2026-09-02:</strong><br>
+    - Motorbike-only restriction now uses the WME SDK natively (updateSegment restrictions) instead of fragile UI automation.<br>
+    - The restriction is a BLOCKED default with a FREE exemption for motorcycles, so only motorcycles are allowed; applies to the whole segment, both directions, all day.<br>
+    - Added an EDIT_PROPERTIES permission check before applying the restriction.<br>
+    - Existing segment restrictions are preserved where the SDK can represent them.<br>
 <strong>Version 2.7.3.4 - 2026-08-04:</strong><br>
     - New default lock levels per road type for fresh installs: Motorway L5, Ramp HRCS, Major Highway L4, Minor Highway L3, Primary Street L2, Street L1, Narrow Street L1, Offroad L1, Parking Road L1, Private Road L1, Ferry L1, Railway L3, Runway L3, Footpath L1, Pedestrianised Area L1, Stairway L1 (previously all L1). Existing saved settings are unaffected; Reset restores the new defaults<br>
 <strong>Version 2.7.3.2 - 2026-08-01:</strong><br>
@@ -5788,7 +5700,7 @@ Version 2.6.7.7 - 2026-02-09
 - Added direct shortcut key to update motorcycle restriction (Alt+R) 
 Version 2.6.7.6 - 2026-02-08
 - Improved non-routable segment detection: now properly skips "enable uturn" for all non-routable segments (Ferry, Railway, Runway, Footpath, Pedestrianised Area, Stairway) by checking routingRoadType from WME SDK
-- Added restriction to allow only Motorbikes via UI automation for both one way and two way segments. SDK does not support vehicle restrictions yet.
+- Added restriction to allow only Motorbikes for both one way and two way segments (originally via UI automation; now via the WME SDK).
 Version 2.6.7.3 - 2026-01-28
     - Fixed an issue with copying city names or segment names
 2.6.7.2 - 2026-01-23

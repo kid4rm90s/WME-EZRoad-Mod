@@ -29,13 +29,11 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.7.3.5 - 2026-08-26:</strong><br>
+  const updateMessage = `<strong>Version 2.7.4.1 - 2026-09-02:</strong><br>
     - Motorbike-only restriction now uses the WME SDK natively (updateSegment restrictions) instead of fragile UI automation.<br>
     - The restriction is a BLOCKED default with a FREE exemption for motorcycles, so only motorcycles are allowed; applies to the whole segment, both directions, all day.<br>
     - Added an EDIT_PROPERTIES permission check before applying the restriction.<br>
-    - Existing segment restrictions are preserved where the SDK can represent them.<br>
-<strong>Version 2.7.3.4 - 2026-08-04:</strong><br>
-    - New default lock levels per road type for fresh installs: Motorway L5, Ramp HRCS, Major Highway L4, Minor Highway L3, Primary Street L2, Street L1, Narrow Street L1, Offroad L1, Parking Road L1, Private Road L1, Ferry L1, Railway L3, Runway L3, Footpath L1, Pedestrianised Area L1, Stairway L1 (previously all L1). Existing saved settings are unaffected; Reset restores the new defaults<br>`;
+    - Existing segment restrictions are preserved where the SDK can represent them.<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://raw.githubusercontent.com/kid4rm90s/WME-EZRoad-Mod/main/WME%20EZRoad%20Mod%20beta.user.js';
@@ -5622,6 +5620,11 @@ if (typeof require !== 'undefined') {
 
   /*
 Changelog
+<strong>Version 2.7.4.1 - 2026-09-02:</strong><br>
+    - Motorbike-only restriction now uses the WME SDK natively (updateSegment restrictions) instead of fragile UI automation.<br>
+    - The restriction is a BLOCKED default with a FREE exemption for motorcycles, so only motorcycles are allowed; applies to the whole segment, both directions, all day.<br>
+    - Added an EDIT_PROPERTIES permission check before applying the restriction.<br>
+    - Existing segment restrictions are preserved where the SDK can represent them.<br>
 <strong>Version 2.7.3.4 - 2026-08-04:</strong><br>
     - New default lock levels per road type for fresh installs: Motorway L5, Ramp HRCS, Major Highway L4, Minor Highway L3, Primary Street L2, Street L1, Narrow Street L1, Offroad L1, Parking Road L1, Private Road L1, Ferry L1, Railway L3, Runway L3, Footpath L1, Pedestrianised Area L1, Stairway L1 (previously all L1). Existing saved settings are unaffected; Reset restores the new defaults<br>
 <strong>Version 2.7.3.2 - 2026-08-01:</strong><br>
