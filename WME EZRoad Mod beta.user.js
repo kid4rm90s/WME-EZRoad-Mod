@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.7.4.2
+// @version      2.7.5.0
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -29,7 +29,10 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.7.4.2 - 2026-09-26:</strong><br>
+  const updateMessage = `<strong>Version 2.7.5.0 - 2026-09-26:</strong><br>
+    - New keyboard shortcuts: Increase Elevation / Decrease Elevation - steps the selected segment(s) by one level, clamped to the editor's -9 to +9 range since native shortcuts are not reliable.<br>
+    - Assign keys in WME Settings - Keyboard Shortcuts; segments already at the limit are skipped and reported.<br>
+<strong>Version 2.7.4.2 - 2026-09-26:</strong><br>
     - Fixed Split Mode snapping: hover-to-split now finds segments that merely cross the viewport with both endpoints off-screen (previously only segments with a vertex inside the viewport were considered).<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
@@ -308,6 +311,19 @@
       description: 'Split Segment Mode',
       settingsKey: 'SplitSegment',
       callback: toggleSplitMode,
+    });
+    // Elevation shortcuts (implementation: adjustElevation)
+    defs.push({
+      id: 'EZRoad_Mod_IncreaseElevation',
+      description: 'Increase Elevation',
+      settingsKey: 'IncreaseElevation',
+      callback: function() { adjustElevation(1); },
+    });
+    defs.push({
+      id: 'EZRoad_Mod_DecreaseElevation',
+      description: 'Decrease Elevation',
+      settingsKey: 'DecreaseElevation',
+      callback: function() { adjustElevation(-1); },
     });
     // ===== FEATURE-TOGGLE SHORTCUTS (migrated from legacy W.accelerators) =====
     defs.push({
@@ -828,6 +844,107 @@
         resolve(false);
       }
     });
+  }
+
+  // ===== Elevation Adjust Shortcuts =====
+  // WME elevation levels run from -9 (deepest) through 0 (ground) to +9 (top level).
+  // The SDK exposes the value as Segment.elevationLevel (null | number, null = ground)
+  // and applies changes through Segments.updateSegment({ segmentId, elevationLevel }).
+  const ELEVATION_MIN = -9;
+  const ELEVATION_MAX = 9;
+
+  // WME labels level 0 as "Ground" (the default surface); every other level is
+  // shown as its signed number (-9 ... +9).
+  const elevationLabel = (level) => (level === 0 ? 'Ground' : String(level));
+
+  /**
+   * Steps the elevation level of every selected segment by one level, clamped to the
+   * editor's -9 ... +9 range.
+   *
+   * The stored level is read back after the write so the notification reports what WME
+   * actually applied. Segments already sitting on the requested limit are reported as
+   * such rather than being written as a no-op edit, and segments the SDK refuses
+   * (locked above the user's rank, deleted, etc.) are counted separately.
+   *
+   * @param {number} delta - +1 to raise one level, -1 to lower one level.
+   */
+  function adjustElevation(delta) {
+    const selection = wmeSDK.Editing.getSelection();
+    if (selection?.objectType !== 'segment' || !selection.ids?.length) {
+      if (WazeToastr?.Alerts) {
+        WazeToastr.Alerts.warning(scriptName, 'Please select one or more segments first', false, false, 3000);
+      }
+      return;
+    }
+
+    const raising = delta > 0;
+    const appliedLevels = [];
+    let atLimit = 0;
+    let failed = 0;
+
+    selection.ids.forEach((segmentId) => {
+      const segment = wmeSDK.DataModel.Segments.getById({ segmentId });
+      if (!segment) {
+        failed++;
+        return;
+      }
+
+      const from = typeof segment.elevationLevel === 'number' ? segment.elevationLevel : 0;
+      const to = Math.max(ELEVATION_MIN, Math.min(ELEVATION_MAX, from + delta));
+
+      // Already on the limit: nothing to change, and no reason to record an edit.
+      if (to === from) {
+        atLimit++;
+        return;
+      }
+
+      try {
+        wmeSDK.DataModel.Segments.updateSegment({ segmentId, elevationLevel: to });
+
+        // Read back: only trust the level the data model actually holds.
+        const stored = wmeSDK.DataModel.Segments.getById({ segmentId });
+        appliedLevels.push(typeof stored?.elevationLevel === 'number' ? stored.elevationLevel : to);
+      } catch (error) {
+        failed++;
+        log(`[Elevation] Segment ${segmentId}: ${from} -> ${to} rejected (${error})`);
+      }
+    });
+
+    const verb = raising ? 'increased' : 'decreased';
+    const limit = raising ? ELEVATION_MAX : ELEVATION_MIN;
+
+    if (appliedLevels.length === 0) {
+      const reason = atLimit === selection.ids.length
+        ? `already at the ${raising ? 'maximum' : 'minimum'} elevation (${limit})`
+        : 'segment not editable';
+      if (WazeToastr?.Alerts) {
+        WazeToastr.Alerts.warning(scriptName, `Elevation not ${verb} \u2014 ${reason}.`, false, false, 4000);
+      }
+      log(`[Elevation] Nothing applied (${selection.ids.length} selected; ${atLimit} at limit, ${failed} failed)`);
+      return;
+    }
+
+    const levels = [...new Set(appliedLevels)];
+    const levelSuffix = levels.length === 1 ? ` to ${elevationLabel(levels[0])}` : '';
+    const notes = [];
+    if (atLimit > 0) notes.push(`${atLimit} already at the ${raising ? 'maximum' : 'minimum'}`);
+    if (failed > 0) notes.push(`${failed} not editable`);
+
+    const summary = `Elevation ${verb}${levelSuffix} for ${appliedLevels.length} segment(s)`
+      + (notes.length > 0 ? ` (${notes.join(', ')})` : ' \u2713');
+
+    if (notes.length > 0) {
+      if (WazeToastr?.Alerts) WazeToastr.Alerts.warning(scriptName, summary, false, false, 4000);
+    } else if (WazeToastr?.Alerts) {
+      WazeToastr.Alerts.success(scriptName, summary, false, false, 3000);
+    }
+    log(`[Elevation] ${summary}`);
+
+    // Honour the script-wide "Autosave on Action" option, as the other action
+    // shortcuts (e.g. motorbike restriction) do.
+    if (getOptions()?.autosave) {
+      wmeSDK.Editing.save().then(() => log('[Elevation] Autosave completed'));
+    }
   }
 
   const saveOptions = (options) => {
@@ -5633,6 +5750,11 @@ if (typeof require !== 'undefined') {
 
   /*
 Changelog
+<strong>Version 2.7.5.0 - 2026-09-26:</strong><br>
+    - Added "Increase Elevation" and "Decrease Elevation" keyboard shortcuts: steps the elevation level of the selected segment(s) by one level using the WME SDK (updateSegment elevationLevel).<br>
+    - Levels are clamped to the editor's -9 to +9 range; segments already sitting on the requested limit are skipped without recording a no-op edit.<br>
+    - The stored elevation is read back after the write so the toast reports the value WME actually applied (level 0 is shown as "Ground"), and partial results (locked/uneditable segments) are summarised in a single notification.<br>
+    - The shortcuts honour the "Autosave on Action" option, consistent with the other action shortcuts.<br>
 <strong>Version 2.7.4.2 - 2026-09-26:</strong><br>
     - Fixed Split Mode snapping: hover-to-split now finds segments that merely cross the viewport with both endpoints off-screen (previously only segments with a vertex inside the viewport were considered).<br>
     - The segment-length / geometry-issue / connection-validation overlays now use the same viewport test, so they also detect segments crossing the viewport.<br>
