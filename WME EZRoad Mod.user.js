@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.7.4.1
+// @version      2.7.4.2
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -28,11 +28,8 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.7.4.1 - 2026-09-02:</strong><br>
-    - Motorbike-only restriction now uses the WME SDK natively (updateSegment restrictions) instead of fragile UI automation.<br>
-    - The restriction is a BLOCKED default with a FREE exemption for motorcycles, so only motorcycles are allowed; applies to the whole segment, both directions, all day.<br>
-    - Added an EDIT_PROPERTIES permission check before applying the restriction.<br>
-    - Existing segment restrictions are preserved where the SDK can represent them.<br>`;
+  const updateMessage = `<strong>Version 2.7.4.2 - 2026-09-26:</strong><br>
+    - Fixed Split Mode snapping: hover-to-split now finds segments that merely cross the viewport with both endpoints off-screen (previously only segments with a vertex inside the viewport were considered).<br>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = 'https://greasyfork.org/en/scripts/528552-wme-ezroad-mod/code/WME%20EZRoad%20Mod.user.js';
@@ -1530,12 +1527,11 @@
       // Pre-filter segments to only those overlapping the viewport.
       // This is essential for the connection check to avoid checking
       // segments across the entire map (potentially 10,000s).
-      const viewportSegments = allSegments.filter((seg) => {
-        if (!seg.geometry || !seg.geometry.coordinates || seg.geometry.coordinates.length < 2) return false;
-        return seg.geometry.coordinates.some(
-          ([lon, lat]) => lon >= mapBounds.west && lon <= mapBounds.east && lat >= mapBounds.south && lat <= mapBounds.north
-        );
-      });
+      // Uses a bounding-box overlap test so segments that merely cross the
+      // viewport (all vertices outside) are still included.
+      const viewportSegments = allSegments.filter((seg) =>
+        segmentOverlapsBounds(seg, mapBounds.west, mapBounds.south, mapBounds.east, mapBounds.north)
+      );
 
       // Use a DocumentFragment to batch DOM insertions (Performance optimization)
       const fragment = document.createDocumentFragment();
@@ -2503,19 +2499,39 @@
   let splitPreviewFrameRequest = null;
   let splitVisibleSegments = null; // cached per zoom/pan — rebuilt only when map extent changes
 
-  function rebuildSplitSegmentCache() {
+  // True if the segment's bounding box overlaps the given map bounds.
+  // Unlike a per-vertex test, this also catches segments that merely cross the
+  // viewport with all their vertices (including both endpoints) outside it.
+  function segmentOverlapsBounds(seg, west, south, east, north) {
+    const coords = seg?.geometry?.coordinates;
+    if (!coords || coords.length < 2) return false;
     try {
-      const [west, south, east, north] = wmeSDK.Map.getMapExtent();
-      splitVisibleSegments = wmeSDK.DataModel.Segments.getAll().filter(seg => {
-        if (!seg?.geometry?.coordinates) return false;
+      const [minLon, minLat, maxLon, maxLat] = turf.bbox(seg.geometry);
+      return !(maxLon < west || minLon > east || maxLat < south || minLat > north);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Shared guard for both split paths (interactive cache + auto-split).
+  // Cheap checks first; hasPermissions is expensive so it runs last.
+  function isSplittableSegment(seg) {
+    const coords = seg?.geometry?.coordinates;
+    if (!coords || coords.length < 2) return false;
         if (seg.hasClosures) return false;
         // Skip segments with null nodes — these are newly split unsaved segments whose
         // nodes haven't been committed yet; calling splitSegment on them throws
         // "node null does not exist" from WME's SplitSegments.getSegmentNodes.
         if (seg.fromNodeId == null || seg.toNodeId == null) return false;
-        try { if (!wmeSDK.DataModel.Segments.hasPermissions({ segmentId: seg.id })) return false; } catch (ex) { return false; }
-        return seg.geometry.coordinates.some(([lon, lat]) => lon >= west && lon <= east && lat >= south && lat <= north);
-      });
+    try { return wmeSDK.DataModel.Segments.hasPermissions({ segmentId: seg.id }); } catch (ex) { return false; }
+  }
+
+  function rebuildSplitSegmentCache() {
+    try {
+      const [west, south, east, north] = wmeSDK.Map.getMapExtent();
+      splitVisibleSegments = wmeSDK.DataModel.Segments.getAll().filter(
+        seg => isSplittableSegment(seg) && segmentOverlapsBounds(seg, west, south, east, north)
+      );
     } catch (ex) { splitVisibleSegments = []; }
   }
 
@@ -2699,13 +2715,10 @@
       let cutCount = 0;
       sel.ids.forEach(segId => {
         const seg = wmeSDK.DataModel.Segments.getById({ segmentId: segId });
-        if (!seg || seg.junctionId) return;
-        // Skip segments with null nodes (newly split unsaved segments) to prevent
-        // "node null does not exist" on a second split without saving.
-        if (seg.fromNodeId == null || seg.toNodeId == null) return;
-        try { if (!wmeSDK.DataModel.Segments.hasPermissions({ segmentId: segId })) return; } catch (ex) { return; }
+        // Skip roundabouts (junctionId) and anything not splittable (closures,
+        // null nodes on newly split unsaved segments, or no edit permission).
+        if (!seg || seg.junctionId || !isSplittableSegment(seg)) return;
         const geo = seg.geometry;
-        if (geo.coordinates.length < 2) return;
         let splitCoord;
         if (geo.coordinates.length === 2) {
           splitCoord = [
@@ -5611,6 +5624,10 @@ if (typeof require !== 'undefined') {
 
   /*
 Changelog
+<strong>Version 2.7.4.2 - 2026-09-26:</strong><br>
+    - Fixed Split Mode snapping: hover-to-split now finds segments that merely cross the viewport with both endpoints off-screen (previously only segments with a vertex inside the viewport were considered).<br>
+    - The segment-length / geometry-issue / connection-validation overlays now use the same viewport test, so they also detect segments crossing the viewport.<br>
+    - Internal cleanup: the viewport-overlap test and the splittable-segment guard are now shared helpers (less duplicated code, unchanged behaviour).<br>
 <strong>Version 2.7.4.1 - 2026-09-02:</strong><br>
     - Motorbike-only restriction now uses the WME SDK natively (updateSegment restrictions) instead of fragile UI automation.<br>
     - The restriction is a BLOCKED default with a FREE exemption for motorcycles, so only motorcycles are allowed; applies to the whole segment, both directions, all day.<br>
