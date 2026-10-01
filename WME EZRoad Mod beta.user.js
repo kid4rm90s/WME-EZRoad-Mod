@@ -313,13 +313,13 @@
     // Elevation shortcuts (implementation: adjustElevation)
     defs.push({
       id: 'EZRoad_Mod_IncreaseElevation',
-      description: 'Increase Elevation',
+      description: 'Increase Segment Elevation',
       settingsKey: 'IncreaseElevation',
       callback: function() { adjustElevation(1).catch(e => log('[Elevation] ' + e)); },
     });
     defs.push({
       id: 'EZRoad_Mod_DecreaseElevation',
-      description: 'Decrease Elevation',
+      description: 'Decrease Segment Elevation',
       settingsKey: 'DecreaseElevation',
       callback: function() { adjustElevation(-1).catch(e => log('[Elevation] ' + e)); },
     });
