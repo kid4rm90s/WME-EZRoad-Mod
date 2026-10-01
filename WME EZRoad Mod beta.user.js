@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.7.6.2
+// @version      2.7.7.1
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -30,8 +30,14 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.7.6.2 - 2026-09-27:</strong><br>
-    - Bug fixes and performance improvements.<br>
+  const updateMessage = `<strong>Version 2.7.7.1 - 2026-10-01:</strong><br>
+    - Fixed regressions from the async migration: the cached map projection was built from un-awaited SDK getters, so the disconnected-node / geometry / length side icons were never positioned and the Split Mode hover line did not meet the mouse crosshair. The projection is now snapshotted with awaited getMapExtent()/getZoomLevel() and derived from the SDK's own getMapPixelFromLonLat() corners (exact Web-Mercator transform).<br>
+    - Fixed two more un-awaited SDK getters: the auto-fix geometry button's rank check (State.getUserInfo) and the non-drivable road-type test (Segments.isRoadTypeDrivable), which had disabled the rank gate and the footpath/pedestrian/etc. exclusion.<br>
+<strong>Version 2.7.7.0 - 2026-10-01:</strong><br>
+    - Migrated the script to WME SDK 'async' mode (getWmeSdk mode: 'async'). Sync mode is deprecated by WME and will be removed, so every SDK getter/mutation is now awaited.<br>
+    - The map overlay no longer calls the SDK per animation frame: the viewport is snapshotted once per map move/zoom change and labels are projected with local arithmetic, which also removes a per-frame SDK round trip.<br>
+    - Fixed an init bug where State.isReady was tested as a value instead of called, and the wme-ready handler was invoked immediately instead of being passed as a callback.<br>
+    - Added re-entrancy guards to the shortcut persistence poll and the overlay rebuild poll so overlapping async runs cannot corrupt state.<br>
 `;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
@@ -228,6 +234,8 @@
   // actually changes them (a different combo), so the stale value is never
   // written back to localStorage.
   const _conflictStaleKeys = new Map();
+  // Re-entrancy guard for the async shortcut persistence poll (see below).
+  let checkSDKShortcutsRunning = false;
 
   function buildSDKShortcutDefs() {
     const defs = [];
@@ -266,15 +274,16 @@
       id: 'EZRoad_Mod_MotorcycleOnlyRestriction',
       description: 'Apply Motorbike-Only Restriction',
       settingsKey: 'MotorcycleOnly',
-      callback: function() {
-        var selection = wmeSDK.Editing.getSelection();
+      callback: async function() {
+        var selection = await wmeSDK.Editing.getSelection();
         if (!selection || selection.objectType !== 'segment' || !selection.ids || selection.ids.length === 0) {
           if (WazeToastr?.Alerts) {
             WazeToastr.Alerts.warning(scriptName, 'Please select one or more segments first', false, false, 3000);
           }
           return;
         }
-        applyMotorbikeOnlyRestriction(selection.ids[0]).then(function(result) {
+        try {
+          const result = await applyMotorbikeOnlyRestriction(selection.ids[0]);
           if (result === true) {
             if (WazeToastr?.Alerts) {
               WazeToastr.Alerts.success(scriptName, 'Motorbike-only restriction applied to ' + selection.ids.length + ' segment(s) \u2713', false, false, 3000);
@@ -289,9 +298,9 @@
               WazeToastr.Alerts.warning(scriptName, 'Motorbike-only restriction could not be applied to the selected segment(s).', false, false, 5000);
             }
           }
-        }).catch(function(error) {
+        } catch (error) {
           console.error(scriptName + ' Error applying motorbike restriction:', error);
-        });
+        }
       },
     });
     // Split segment shortcut
@@ -306,65 +315,65 @@
       id: 'EZRoad_Mod_IncreaseElevation',
       description: 'Increase Elevation',
       settingsKey: 'IncreaseElevation',
-      callback: function() { adjustElevation(1); },
+      callback: function() { adjustElevation(1).catch(e => log('[Elevation] ' + e)); },
     });
     defs.push({
       id: 'EZRoad_Mod_DecreaseElevation',
       description: 'Decrease Elevation',
       settingsKey: 'DecreaseElevation',
-      callback: function() { adjustElevation(-1); },
+      callback: function() { adjustElevation(-1).catch(e => log('[Elevation] ' + e)); },
     });
     // ===== FEATURE-TOGGLE SHORTCUTS (migrated from legacy W.accelerators) =====
     defs.push({
       id: 'EZRoad_Mod_SetStreetToNone',
       description: 'Set Street Name to None',
       settingsKey: 'setStreet',
-      callback: function() { handleToggle('setStreet', 'Set Street Name to None'); },
+      callback: function() { handleToggle('setStreet', 'Set Street Name to None').catch(e => log(e)); },
     });
     defs.push({
       id: 'EZRoad_Mod_SetCityAsNone',
       description: 'Set City as None',
       settingsKey: 'setStreetCity',
-      callback: function() { handleToggle('setStreetCity', 'Set City as None'); },
+      callback: function() { handleToggle('setStreetCity', 'Set City as None').catch(e => log(e)); },
     });
     defs.push({
       id: 'EZRoad_Mod_AutosaveOnAction',
       description: 'Autosave on Action',
       settingsKey: 'autosave',
-      callback: function() { handleToggle('autosave', 'Autosave on Action'); },
+      callback: function() { handleToggle('autosave', 'Autosave on Action').catch(e => log(e)); },
     });
     defs.push({
       id: 'EZRoad_Mod_SetAsUnpaved',
       description: 'Set as Unpaved',
       settingsKey: 'unpaved',
-      callback: function() { handleToggle('unpaved', 'Set as Unpaved'); },
+      callback: function() { handleToggle('unpaved', 'Set as Unpaved').catch(e => log(e)); },
     });
     defs.push({
       id: 'EZRoad_Mod_SetLockLevel',
       description: 'Set Lock Level',
       settingsKey: 'setLock',
-      callback: function() { handleToggle('setLock', 'Set Lock Level'); },
+      callback: function() { handleToggle('setLock', 'Set Lock Level').catch(e => log(e)); },
     });
     defs.push({
       id: 'EZRoad_Mod_UpdateSpeedLimits',
       description: 'Update Speed Limits',
       settingsKey: 'updateSpeed',
-      callback: function() { handleToggle('updateSpeed', 'Update Speed Limits'); },
+      callback: function() { handleToggle('updateSpeed', 'Update Speed Limits').catch(e => log(e)); },
     });
     defs.push({
       id: 'EZRoad_Mod_EnableUTurn',
       description: 'Enable U-Turn',
       settingsKey: 'enableUTurn',
-      callback: function() { handleToggle('enableUTurn', 'Enable U-Turn'); },
+      callback: function() { handleToggle('enableUTurn', 'Enable U-Turn').catch(e => log(e)); },
     });
     defs.push({
       id: 'EZRoad_Mod_AllowNodeUturns',
       description: 'Allow All U-Turns at Node',
       settingsKey: 'AllowNodeUturns',
-      callback: function() {
-        const selection = wmeSDK.Editing.getSelection();
+      callback: async function() {
+        const selection = await wmeSDK.Editing.getSelection();
         if (selection && selection.objectType === 'node' && selection.ids && selection.ids.length > 0) {
-          const result = switchNodeUturn(selection.ids[0], true);
+          const result = await switchNodeUturn(selection.ids[0], true);
           if (result.success && WazeToastr?.Alerts) {
             WazeToastr.Alerts.success(scriptName, result.message, false, false, 3000);
           } else if (!result.success && WazeToastr?.Alerts) {
@@ -381,10 +390,10 @@
       id: 'EZRoad_Mod_DisallowNodeUturns',
       description: 'Disallow All U-Turns at Node',
       settingsKey: 'DisallowNodeUturns',
-      callback: function() {
-        const selection = wmeSDK.Editing.getSelection();
+      callback: async function() {
+        const selection = await wmeSDK.Editing.getSelection();
         if (selection && selection.objectType === 'node' && selection.ids && selection.ids.length > 0) {
-          const result = switchNodeUturn(selection.ids[0], false);
+          const result = await switchNodeUturn(selection.ids[0], false);
           if (result.success && WazeToastr?.Alerts) {
             WazeToastr.Alerts.success(scriptName, result.message, false, false, 3000);
           } else if (!result.success && WazeToastr?.Alerts) {
@@ -401,10 +410,10 @@
       id: 'EZRoad_Mod_ToggleSegmentUturnA',
       description: 'Toggle U-Turn at Segment Direction A',
       settingsKey: 'ToggleSegmentUturnA',
-      callback: function() {
-        const selection = wmeSDK.Editing.getSelection();
+      callback: async function() {
+        const selection = await wmeSDK.Editing.getSelection();
         if (selection && selection.objectType === 'segment' && selection.ids && selection.ids.length > 0) {
-          const result = switchSegmentUturn(selection.ids[0], 'A');
+          const result = await switchSegmentUturn(selection.ids[0], 'A');
           if (result.success && WazeToastr?.Alerts) {
             WazeToastr.Alerts.success(scriptName, result.message, false, false, 3000);
           } else if (!result.success && WazeToastr?.Alerts) {
@@ -421,10 +430,10 @@
       id: 'EZRoad_Mod_ToggleSegmentUturnB',
       description: 'Toggle U-Turn at Segment Direction B',
       settingsKey: 'ToggleSegmentUturnB',
-      callback: function() {
-        const selection = wmeSDK.Editing.getSelection();
+      callback: async function() {
+        const selection = await wmeSDK.Editing.getSelection();
         if (selection && selection.objectType === 'segment' && selection.ids && selection.ids.length > 0) {
-          const result = switchSegmentUturn(selection.ids[0], 'B');
+          const result = await switchSegmentUturn(selection.ids[0], 'B');
           if (result.success && WazeToastr?.Alerts) {
             WazeToastr.Alerts.success(scriptName, result.message, false, false, 3000);
           } else if (!result.success && WazeToastr?.Alerts) {
@@ -441,60 +450,62 @@
       id: 'EZRoad_Mod_CopyConnectedSegmentName',
       description: 'Copy Connected Segment Name',
       settingsKey: 'copySegmentName',
-      callback: function() { handleToggle('copySegmentName', 'Copy Connected Segment Name'); },
+      callback: function() { handleToggle('copySegmentName', 'Copy Connected Segment Name').catch(e => log(e)); },
     });
     defs.push({
       id: 'EZRoad_Mod_CopyConnectedSegmentAttribute',
       description: 'Copy Connected Segment Attribute',
       settingsKey: 'copySegmentAttributes',
-      callback: function() { handleToggle('copySegmentAttributes', 'Copy Connected Segment Attribute'); },
+      callback: function() { handleToggle('copySegmentAttributes', 'Copy Connected Segment Attribute').catch(e => log(e)); },
     });
     defs.push({
       id: 'EZRoad_Mod_ShowSegmentLength',
       description: 'Show Segment Length <=20m',
       settingsKey: 'showSegmentLength',
-      callback: function() { handleToggle('showSegmentLength', 'Show Segment Length <=20m'); },
+      callback: function() { handleToggle('showSegmentLength', 'Show Segment Length <=20m').catch(e => log(e)); },
     });
     defs.push({
       id: 'EZRoad_Mod_CheckGeometryIssues',
       description: 'Check Geometry Issues',
       settingsKey: 'checkGeometryIssues',
-      callback: function() { handleToggle('checkGeometryIssues', 'Check Geometry Issues'); },
+      callback: function() { handleToggle('checkGeometryIssues', 'Check Geometry Issues').catch(e => log(e)); },
     });
     defs.push({
       id: 'EZRoad_Mod_RestrictMotorbikesOnly',
       description: 'Toggle Restrict Except Motorbike',
       settingsKey: 'restrictExceptMotorbike',
-      callback: function() { handleToggle('restrictExceptMotorbike', 'Restrict Except Motorbike'); },
+      callback: function() { handleToggle('restrictExceptMotorbike', 'Restrict Except Motorbike').catch(e => log(e)); },
     });
     defs.push({
       id: 'EZRoad_Mod_UpdateLaneCount',
       description: 'Enable Road Width (No of Lanes) buttons',
       settingsKey: 'updateLanes',
-      callback: function() { handleToggle('updateLanes', 'Enable Road Width (No of Lanes) buttons'); },
+      callback: function() { handleToggle('updateLanes', 'Enable Road Width (No of Lanes) buttons').catch(e => log(e)); },
     });
     defs.push({
       id: 'EZRoad_Mod_ValidateNodeConnection',
       description: 'Validate Node Connection',
       settingsKey: 'validateNodeConnection',
-      callback: function() { handleToggle('validateNodeConnection', 'Validate Node Connection'); },
+      callback: function() { handleToggle('validateNodeConnection', 'Validate Node Connection').catch(e => log(e)); },
     });
     return defs;
   }
 
   unsafeWindow.SDK_INITIALIZED.then(initScript);
 
-  function initScript() {
+  async function initScript() {
     wmeSDK = getWmeSdk({
       scriptId: 'wme-ez-roads-mod',
       scriptName: 'EZ Roads Mod',
+      mode: 'async',
     });
-      try {
-        wmeSDK.DataModel.Segments.getRoadTypes().forEach(rt => {
-            roadTypeLocalizedNames[rt.id] = rt.localizedName || rt.name;
-        });
+    try {
+      const roadTypes = await wmeSDK.DataModel.Segments.getRoadTypes();
+      roadTypes.forEach(rt => {
+        roadTypeLocalizedNames[rt.id] = rt.localizedName || rt.name;
+      });
     } catch (e) {
-        log(`Could not load localized road type names: ${e}`);
+      log(`Could not load localized road type names: ${e}`);
     }
 
     // Build SDK shortcut definitions (after roadTypeLocalizedNames is ready)
@@ -575,24 +586,26 @@
   };
 
   // --- NEW: Helper to get all connected segment IDs ---
-  function getConnectedSegmentIDs(segmentId) {
+  async function getConnectedSegmentIDs(segmentId) {
     // Returns unique IDs of all segments connected to the given segment
-    const segs = [...wmeSDK.DataModel.Segments.getConnectedSegments({ segmentId, reverseDirection: false }), ...wmeSDK.DataModel.Segments.getConnectedSegments({ segmentId, reverseDirection: true })];
+    const forward = await wmeSDK.DataModel.Segments.getConnectedSegments({ segmentId, reverseDirection: false });
+    const reverse = await wmeSDK.DataModel.Segments.getConnectedSegments({ segmentId, reverseDirection: true });
+    const segs = [...forward, ...reverse];
     const ids = segs.map((segment) => segment.id);
     // Remove duplicates
     return [...new Set(ids)];
   }
 
   // --- NEW: Helper to get the first connected segment's address (recursively) ---
-  function getFirstConnectedSegmentAddress(segmentId) {
+  async function getFirstConnectedSegmentAddress(segmentId) {
     const nonMatches = [];
     const segmentIDsToSearch = [segmentId];
-    const hasValidCity = (id) => {
+    const hasValidCity = async (id) => {
       try {
-        const addr = wmeSDK.DataModel.Segments.getAddress({ segmentId: id });
+        const addr = await wmeSDK.DataModel.Segments.getAddress({ segmentId: id });
         // Check if address has a city and the city is not empty
         if (addr && addr.city && addr.city.id) {
-          const city = wmeSDK.DataModel.Cities.getById({ cityId: addr.city.id });
+          const city = await wmeSDK.DataModel.Cities.getById({ cityId: addr.city.id });
           // Ensure city object is fully loaded with name property
           return city && !city.isEmpty && city.name !== undefined;
         }
@@ -603,12 +616,18 @@
     };
     while (segmentIDsToSearch.length > 0) {
       const startSegmentID = segmentIDsToSearch.pop();
-      const connectedSegmentIDs = getConnectedSegmentIDs(startSegmentID);
+      const connectedSegmentIDs = await getConnectedSegmentIDs(startSegmentID);
       log(`Checking connected segments for segment ${startSegmentID}: ${connectedSegmentIDs.join(', ')}`);
 
-      const hasValidCitySegmentId = connectedSegmentIDs.find(hasValidCity);
+      let hasValidCitySegmentId = null;
+      for (const candidateId of connectedSegmentIDs) {
+        if (await hasValidCity(candidateId)) {
+          hasValidCitySegmentId = candidateId;
+          break;
+        }
+      }
       if (hasValidCitySegmentId) {
-        const addr = wmeSDK.DataModel.Segments.getAddress({ segmentId: hasValidCitySegmentId });
+        const addr = await wmeSDK.DataModel.Segments.getAddress({ segmentId: hasValidCitySegmentId });
         log(`Found valid city in connected segment ${hasValidCitySegmentId}`);
         return addr;
       }
@@ -692,7 +711,7 @@
   }
 
   // --- Helper to apply a motorcycle-only restriction to a segment via the WME SDK ---
-  function applyMotorbikeOnlyRestriction(segmentId) {
+  async function applyMotorbikeOnlyRestriction(segmentId) {
     /**
      * Applies a restriction that allows ONLY motorcycles on a segment.
      *
@@ -710,94 +729,88 @@
      *
      * Resolves: true | 'not_supported type' | 'no_permission' | false
      */
-    return new Promise((resolve) => {
-      try {
-        const segment = wmeSDK.DataModel.Segments.getById({ segmentId });
-        if (!segment || isNonDrivableType(segment.roadType)) {
-          const roadTypeName = segment ? roadTypes.find(rt => rt.value === segment.roadType)?.name || 'Unknown' : 'N/A';
-          log(`Segment ${segmentId} not found or pedestrian type ${roadTypeName} (${segment?.roadType || 'N/A'}), cannot apply motorbike restriction`);
-          WazeToastr.Alerts.warning(`${scriptName}`, `Segment not found or "${roadTypeName}" is not supported type, cannot apply motorbike restriction`, false, false, 5000);
-          resolve('not_supported type');
-          return;
-        }
-
-        // Gate: only attempt the update if the current user may edit this segment's properties.
-        if (!wmeSDK.DataModel.Segments.hasPermissions({ segmentId, permission: 'EDIT_PROPERTIES' })) {
-          log(`Segment ${segmentId} does not grant EDIT_PROPERTIES permission; skipping restriction update`);
-          WazeToastr.Alerts.warning(`${scriptName}`, `You do not have permission to edit properties on segment ${segmentId}. Motorbike-only restriction was NOT applied.`, false, false, 5000);
-          resolve('no_permission');
-          return;
-        }
-
-        log(`Applying motorbike-only restriction to segment ${segmentId} via WME SDK`);
-
-        // Build the BLOCKED restriction that allows only motorcycles.
-        // defaultType 'BLOCKED' blocks everything by default; the FREE rule below
-        // exempts motorcycles so they remain the only allowed vehicle type.
-        const motorcycleOnlyRestriction = {
-          defaultType: 'BLOCKED',
-          description: null,
-          direction: 'BOTH',
-          laneScope: 'WHOLE_SEGMENT',
-          laneType: null,
-          vehicleRules: {
-            FREE: [
-              {
-                vehicleTypes: ['MOTORCYCLE'],
-                minPassengers: 0,
-                subscriptions: [],
-                licensePlateRule: null,
-              },
-            ],
-          },
-        };
-
-        // Preserve existing restrictions (best-effort conversion), then add the new one.
-        const preserved = [];
-        let dropped = 0;
-        (segment.restrictions || []).forEach((existing) => {
-          const converted = toAddableSegmentRestriction(existing);
-          if (converted) {
-            preserved.push(converted);
-          } else {
-            dropped++;
-          }
-        });
-        const mergedRestrictions = [...preserved, motorcycleOnlyRestriction];
-
-        try {
-          wmeSDK.DataModel.Segments.updateSegment({
-            segmentId,
-            restrictions: mergedRestrictions,
-          });
-        } catch (updateError) {
-          log(`Error applying restriction via updateSegment for segment ${segmentId}: ${updateError}`);
-          resolve(false);
-          return;
-        }
-
-        // Optional autosave (consistent with the rest of the script).
-        const options = getOptions();
-        if (options && options.autosave) {
-          setTimeout(() => {
-            wmeSDK.Editing.save().then(() => {
-              log(`[${scriptName}] Autosave completed after motorbike restriction`);
-            });
-          }, 300);
-        }
-
-        if (dropped > 0) {
-          log(`Preserved ${preserved.length} existing restriction(s); dropped ${dropped} that the SDK cannot round-trip`);
-          WazeToastr.Alerts.warning(`${scriptName}`, `Motorbike-only restriction applied. ${dropped} existing restriction(s) could not be preserved via the SDK and were removed.`, false, false, 5000);
-        }
-
-        log(`Motorbike-only restriction applied to segment ${segmentId} via SDK`);
-        resolve(true);
-      } catch (error) {
-        log(`Error in applyMotorbikeOnlyRestriction: ${error}`);
-        resolve(false);
+    try {
+      const segment = await wmeSDK.DataModel.Segments.getById({ segmentId });
+      if (!segment || isNonDrivableType(segment.roadType)) {
+        const roadTypeName = segment ? roadTypes.find(rt => rt.value === segment.roadType)?.name || 'Unknown' : 'N/A';
+        log(`Segment ${segmentId} not found or pedestrian type ${roadTypeName} (${segment?.roadType || 'N/A'}), cannot apply motorbike restriction`);
+        WazeToastr.Alerts.warning(`${scriptName}`, `Segment not found or "${roadTypeName}" is not supported type, cannot apply motorbike restriction`, false, false, 5000);
+        return 'not_supported type';
       }
-    });
+
+      // Gate: only attempt the update if the current user may edit this segment's properties.
+      if (!(await wmeSDK.DataModel.Segments.hasPermissions({ segmentId, permission: 'EDIT_PROPERTIES' }))) {
+        log(`Segment ${segmentId} does not grant EDIT_PROPERTIES permission; skipping restriction update`);
+        WazeToastr.Alerts.warning(`${scriptName}`, `You do not have permission to edit properties on segment ${segmentId}. Motorbike-only restriction was NOT applied.`, false, false, 5000);
+        return 'no_permission';
+      }
+
+      log(`Applying motorbike-only restriction to segment ${segmentId} via WME SDK`);
+
+      // Build the BLOCKED restriction that allows only motorcycles.
+      // defaultType 'BLOCKED' blocks everything by default; the FREE rule below
+      // exempts motorcycles so they remain the only allowed vehicle type.
+      const motorcycleOnlyRestriction = {
+        defaultType: 'BLOCKED',
+        description: null,
+        direction: 'BOTH',
+        laneScope: 'WHOLE_SEGMENT',
+        laneType: null,
+        vehicleRules: {
+          FREE: [
+            {
+              vehicleTypes: ['MOTORCYCLE'],
+              minPassengers: 0,
+              subscriptions: [],
+              licensePlateRule: null,
+            },
+          ],
+        },
+      };
+
+      // Preserve existing restrictions (best-effort conversion), then add the new one.
+      const preserved = [];
+      let dropped = 0;
+      (segment.restrictions || []).forEach((existing) => {
+        const converted = toAddableSegmentRestriction(existing);
+        if (converted) {
+          preserved.push(converted);
+        } else {
+          dropped++;
+        }
+      });
+      const mergedRestrictions = [...preserved, motorcycleOnlyRestriction];
+
+      try {
+        await wmeSDK.DataModel.Segments.updateSegment({
+          segmentId,
+          restrictions: mergedRestrictions,
+        });
+      } catch (updateError) {
+        log(`Error applying restriction via updateSegment for segment ${segmentId}: ${updateError}`);
+        return false;
+      }
+
+      // Optional autosave (consistent with the rest of the script).
+      const options = getOptions();
+      if (options && options.autosave) {
+        setTimeout(async () => {
+          await wmeSDK.Editing.save();
+          log(`[${scriptName}] Autosave completed after motorbike restriction`);
+        }, 300);
+      }
+
+      if (dropped > 0) {
+        log(`Preserved ${preserved.length} existing restriction(s); dropped ${dropped} that the SDK cannot round-trip`);
+        WazeToastr.Alerts.warning(`${scriptName}`, `Motorbike-only restriction applied. ${dropped} existing restriction(s) could not be preserved via the SDK and were removed.`, false, false, 5000);
+      }
+
+      log(`Motorbike-only restriction applied to segment ${segmentId} via SDK`);
+      return true;
+    } catch (error) {
+      log(`Error in applyMotorbikeOnlyRestriction: ${error}`);
+      return false;
+    }
   }
 
   // ===== Elevation Adjust Shortcuts =====
@@ -822,8 +835,8 @@
    *
    * @param {number} delta - +1 to raise one level, -1 to lower one level.
    */
-  function adjustElevation(delta) {
-    const selection = wmeSDK.Editing.getSelection();
+  async function adjustElevation(delta) {
+    const selection = await wmeSDK.Editing.getSelection();
     if (selection?.objectType !== 'segment' || !selection.ids?.length) {
       if (WazeToastr?.Alerts) {
         WazeToastr.Alerts.warning(scriptName, 'Please select one or more segments first', false, false, 3000);
@@ -836,11 +849,11 @@
     let atLimit = 0;
     let failed = 0;
 
-    selection.ids.forEach((segmentId) => {
-      const segment = wmeSDK.DataModel.Segments.getById({ segmentId });
+    for (const segmentId of selection.ids) {
+      const segment = await wmeSDK.DataModel.Segments.getById({ segmentId });
       if (!segment) {
         failed++;
-        return;
+        continue;
       }
 
       const from = typeof segment.elevationLevel === 'number' ? segment.elevationLevel : 0;
@@ -849,20 +862,20 @@
       // Already on the limit: nothing to change, and no reason to record an edit.
       if (to === from) {
         atLimit++;
-        return;
+        continue;
       }
 
       try {
-        wmeSDK.DataModel.Segments.updateSegment({ segmentId, elevationLevel: to });
+        await wmeSDK.DataModel.Segments.updateSegment({ segmentId, elevationLevel: to });
 
         // Read back: only trust the level the data model actually holds.
-        const stored = wmeSDK.DataModel.Segments.getById({ segmentId });
+        const stored = await wmeSDK.DataModel.Segments.getById({ segmentId });
         appliedLevels.push(typeof stored?.elevationLevel === 'number' ? stored.elevationLevel : to);
       } catch (error) {
         failed++;
         log(`[Elevation] Segment ${segmentId}: ${from} -> ${to} rejected (${error})`);
       }
-    });
+    }
 
     const verb = raising ? 'increased' : 'decreased';
     const limit = raising ? ELEVATION_MAX : ELEVATION_MIN;
@@ -897,7 +910,8 @@
     // Honour the script-wide "Autosave on Action" option, as the other action
     // shortcuts (e.g. motorbike restriction) do.
     if (getOptions()?.autosave) {
-      wmeSDK.Editing.save().then(() => log('[Elevation] Autosave completed'));
+      await wmeSDK.Editing.save();
+      log('[Elevation] Autosave completed');
     }
   }
 
@@ -1008,7 +1022,7 @@
   };
 
   // Helper function to handle toggle logic
-  function handleToggle(optionKey, featureName) {
+  async function handleToggle(optionKey, featureName) {
     const options = getOptions();
     options[optionKey] = !options[optionKey];
     saveOptions(options);
@@ -1062,7 +1076,7 @@
       // Handle Segment Length / Geometry Check / Segment Connection toggle
       if (optionKey === 'showSegmentLength' || optionKey === 'checkGeometryIssues' || optionKey === 'validateNodeConnection' || optionKey === 'copySegmentAttributes') {
         if (typeof handleSegmentLengthToggle === 'function') {
-          handleSegmentLengthToggle();
+          await handleSegmentLengthToggle();
         }
       }
     }
@@ -1076,31 +1090,47 @@
   }
   
   
-  const WME_EZRoads_Mod_bootstrap = () => {
-    if (!document.getElementById('edit-panel') || !wmeSDK.DataModel.Countries.getTopCountry()) {
+  const WME_EZRoads_Mod_bootstrap = async () => {
+    if (!wmeSDK?.State) {
       setTimeout(WME_EZRoads_Mod_bootstrap, 250);
       return;
     }
 
-    if (wmeSDK.State.isReady) {
-      WME_EZRoads_Mod_init();
+    // In async mode every getter returns a Promise, so the readiness probe below
+    // must be awaited rather than used as a truthy value.
+    let topCountry = null;
+    let editPanelMissing = !document.getElementById('edit-panel');
+    try {
+      topCountry = await wmeSDK.DataModel.Countries.getTopCountry();
+    } catch (e) { /* transient during init */ }
+
+    if (editPanelMissing || !topCountry) {
+      setTimeout(WME_EZRoads_Mod_bootstrap, 250);
+      return;
+    }
+
+    if (await wmeSDK.State.isReady()) {
+      await WME_EZRoads_Mod_init();
     } else {
-      wmeSDK.Events.once({ eventName: 'wme-ready' }).then(WME_EZRoads_Mod_init());
+      await wmeSDK.Events.once({ eventName: 'wme-ready' });
+      await WME_EZRoads_Mod_init();
     }
   };
 
   let openPanel;
 
-  const WME_EZRoads_Mod_init = () => {
+  const WME_EZRoads_Mod_init = async () => {
     log('Initing');
 
     // Initialize all WME SDK shortcuts (feature toggles + actions) using unified pattern
     // Replaces legacy W.accelerators system for all 30+ shortcuts
-    initializeSDKShortcuts();
+    await initializeSDKShortcuts();
+    // Resolve the non-drivable road-type set once (isRoadTypeDrivable is async in
+    // async mode) so isNonDrivableType() can stay synchronous in hot loops.
+    await initNonDrivableRoadTypes();
     // Auto-save SDK shortcut key changes on page unload + polling
     window.addEventListener('beforeunload', checkSDKShortcutsChanged);
     setInterval(checkSDKShortcutsChanged, 5000);
-
     // All shortcuts (feature toggles + actions) are now registered via initializeSDKShortcuts()
     // using the unified pattern. Legacy W.accelerators system has been removed.
     log('All shortcuts initialized via SDK (unified pattern)');
@@ -1118,7 +1148,7 @@
           chip.addEventListener('click', function () {
             // Log every chip click for debugging
             log(`${scriptName} Chip clicked: value=` + chip.getAttribute('value') + ', checked=' + chip.getAttribute('checked'));
-            setTimeout(() => {
+            setTimeout(async () => {
               // Only act if this chip is now the selected one (checked="")
               if (chip.getAttribute('checked') === '') {
                 const rtValue = parseInt(chip.getAttribute('value'), 10);
@@ -1130,9 +1160,9 @@
                 if (typeof updateRoadTypeRadios === 'function') {
                   updateRoadTypeRadios(rtValue);
                 }
-                const selection = wmeSDK.Editing.getSelection();
+                const selection = await wmeSDK.Editing.getSelection();
                 if (selection && selection.objectType === 'segment') {
-                  wmeSDK.Editing.setSelection({ selection });
+                  await wmeSDK.Editing.setSelection({ selection });
                 }
                 setTimeout(() => {
                   log(`${scriptName} Calling handleUpdate() after chip click for roadType value: ` + rtValue);
@@ -1149,8 +1179,7 @@
     }
 
     // Call after panel is available and after any UI changes that might re-render the chips
-    setTimeout(addRoadTypeChipListeners, 1200);
-    // Also call after every edit panel mutation to re-attach listeners
+    setTimeout(addRoadTypeChipListeners, 1200);    // Also call after every edit panel mutation to re-attach listeners
     // Observe the edit panel for segment changes and add the quick update button
     const roadObserver = new MutationObserver((mutations) => {
       mutations.forEach((mutation) => {
@@ -1204,7 +1233,7 @@
     }
 
     // Initialize segment length display layer
-    initSegmentLengthLayer();
+    await initSegmentLengthLayer();
 
     // Inject Dashboard Buttons
     setInterval(addGeometryFixButton, 2000);
@@ -1298,7 +1327,7 @@
    * @param {Array} allSegments - Array of all segments for proximity check
    * @returns {Object} { hasIssue: boolean, details: Array }
    */
-  function checkSegmentConnection(segment, radiusMeters = 5, allSegments = []) {
+  async function checkSegmentConnection(segment, radiusMeters = 5, allSegments = []) {
     if (!segment || !segment.geometry || !segment.geometry.coordinates) {
       return { hasIssue: false, details: [] };
     }
@@ -1347,7 +1376,7 @@
      * Applies elevation and drivability filters (matching WME Validator 107/108).
      * Cached per nodeId to avoid redundant O(n) scans.
      */
-    function getNodeClosestDistance(nodeId) {
+    async function getNodeClosestDistance(nodeId) {
       if (_nodeDistanceCache.has(nodeId)) {
         return _nodeDistanceCache.get(nodeId);
       }
@@ -1355,7 +1384,7 @@
       let distance = null;
       let coords = null;
       try {
-        const node = wmeSDK.DataModel.Nodes.getById({ nodeId });
+        const node = await wmeSDK.DataModel.Nodes.getById({ nodeId });
         if (node && node.geometry && node.geometry.coordinates) {
           coords = node.geometry.coordinates;
           const nodePoint = turf.point(coords);
@@ -1388,7 +1417,7 @@
     if (segment.fromNodeId != null) {
       const nodeId = segment.fromNodeId;
       if (!isNodePartial(nodeId) && isNodeDangling(nodeId)) {
-        const cached = getNodeClosestDistance(nodeId);
+        const cached = await getNodeClosestDistance(nodeId);
         if (cached.distance !== null && cached.distance <= radiusMeters && cached.coordinates) {
           issues.push({
             side: 'A',
@@ -1406,7 +1435,7 @@
     if (segment.toNodeId != null) {
       const nodeId = segment.toNodeId;
       if (!isNodePartial(nodeId) && isNodeDangling(nodeId)) {
-        const cached = getNodeClosestDistance(nodeId);
+        const cached = await getNodeClosestDistance(nodeId);
         if (cached.distance !== null && cached.distance <= radiusMeters && cached.coordinates) {
           issues.push({
             side: 'B',
@@ -1513,6 +1542,95 @@
   let isMapMoving = false;
   let updateFrameRequest = null;
   let moveEndTimer = null;
+  let checkAndUpdateRunning = false;
+
+  // ===== Cached map projection (async-mode safe) =====
+  // The label overlay repositions every label on each animation frame, and the
+  // split-mode mouse handlers must convert pixels to geo instantly. In async mode
+  // Map.getMapPixelFromLonLat()/getLonLatFromMapPixel() return Promises, which
+  // cannot be awaited inside RAF / mousemove callbacks. So we snapshot the
+  // viewport ONCE per map event and do the projection with plain arithmetic in the
+  // hot path — no SDK call per frame.
+  //
+  // Map pixels are linear in (lon, mercator-Y), so two projected corners fully
+  // determine the transform. We derive it from the SDK itself (projecting the SW
+  // and NE extent corners) so the cached projection reproduces the SDK's own
+  // projection exactly instead of approximating it.
+  // { west, south, east, north, zoom, width, height, lon0, merc0, swX, swY, scaleX, scaleY }
+  let mapProjection = null;
+
+  // The viewport element is resolved once (async) at init and cached here.
+  let mapViewportEl = null;
+
+  // Web-Mercator Y for a latitude in degrees. WME/OpenLayers use EPSG:3857, where
+  // screen Y is linear in this value (NOT in the latitude itself).
+  function mercY(latDeg) {
+    return Math.log(Math.tan(Math.PI / 4 + (latDeg * Math.PI) / 360));
+  }
+  function invMercY(y) {
+    return (2 * Math.atan(Math.exp(y)) - Math.PI / 2) * (180 / Math.PI);
+  }
+
+  // Resolves the SDK viewport element, falling back to the legacy selectors.
+  async function resolveMapViewportElement() {
+    try {
+      const el = await wmeSDK.Map.getMapViewportElement();
+      if (el && typeof el.appendChild === 'function') return el;
+    } catch (e) {
+      log('SDK getMapViewportElement failed, trying fallbacks');
+    }
+    return document.querySelector('.ol-viewport') || document.querySelector('#WazeMap') || document.querySelector('#map');
+  }
+
+  // Snapshots the viewport + projection. Async because every SDK getter is
+  // Promise-wrapped in async mode. Callers that cannot await (onMapMove) may
+  // fire-and-forget; the next frame uses the refreshed snapshot.
+  async function refreshMapProjection() {
+    try {
+      const vp = mapViewportEl;
+      if (!vp) { mapProjection = null; return; }
+      const extent = await wmeSDK.Map.getMapExtent();
+      const zoom = await wmeSDK.Map.getZoomLevel();
+      if (!extent) { mapProjection = null; return; }
+      const [west, south, east, north] = extent;
+      if (!(east > west) || !(north > south)) { mapProjection = null; return; }
+      const sw = await wmeSDK.Map.getMapPixelFromLonLat({ lonLat: { lon: west, lat: south } });
+      const ne = await wmeSDK.Map.getMapPixelFromLonLat({ lonLat: { lon: east, lat: north } });
+      if (!sw || !ne) { mapProjection = null; return; }
+      const merc0 = mercY(south);
+      const scaleX = (ne.x - sw.x) / (east - west);
+      const scaleY = (ne.y - sw.y) / (mercY(north) - merc0);
+      if (!Number.isFinite(scaleX) || !Number.isFinite(scaleY) || scaleX === 0 || scaleY === 0) {
+        mapProjection = null;
+        return;
+      }
+      const rect = vp.getBoundingClientRect();
+      mapProjection = {
+        west, south, east, north, zoom,
+        width: rect.width,
+        height: rect.height,
+        lon0: west,
+        merc0,
+        swX: sw.x,
+        swY: sw.y,
+        scaleX,
+        scaleY,
+      };
+    } catch (e) {
+      mapProjection = null;
+    }
+  }
+
+  // Synchronous geo -> pixel using the cached snapshot. Returns null when the
+  // snapshot is missing (before first map event) — callers skip the update.
+  function projectLonLatToPixel(lon, lat) {
+    if (!mapProjection) return null;
+    const { lon0, merc0, swX, swY, scaleX, scaleY } = mapProjection;
+    const x = swX + (lon - lon0) * scaleX;
+    const y = swY + (mercY(lat) - merc0) * scaleY;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x, y };
+  }
 
   // Define helper functions first
   function clearSegmentLengthDisplay() {
@@ -1523,7 +1641,7 @@
   }
 
   // Rebuild segment data and create new labels (expensive - only on zoom/data changes)
-  function rebuildSegmentLengthDisplay() {
+  async function rebuildSegmentLengthDisplay() {
     const options = getOptions();
 
     // Update dashboard count if exists (even if hidden)
@@ -1551,7 +1669,7 @@
     // Maps each nodeId to the count of segments connected to it.
     try {
       _nodeConnectionMap = new Map();
-      const allSegments = wmeSDK.DataModel.Segments.getAll();
+      const allSegments = await wmeSDK.DataModel.Segments.getAll();
       for (const seg of allSegments) {
         if (seg.fromNodeId != null) {
           _nodeConnectionMap.set(seg.fromNodeId, (_nodeConnectionMap.get(seg.fromNodeId) || 0) + 1);
@@ -1571,7 +1689,7 @@
     const segmentsWithConnectionIssues = new Set(); // Track unique segments with connection issues
 
     try {
-      const currentZoom = wmeSDK.Map.getZoomLevel();
+      const currentZoom = await wmeSDK.Map.getZoomLevel();
       // Check if any feature can be shown at this zoom level
       const canShowGeometry = options.checkGeometryIssues && currentZoom >= 18;
       const canShowLength = options.showSegmentLength && currentZoom >= 18;
@@ -1581,8 +1699,8 @@
         return;
       }
 
-      const allSegments = wmeSDK.DataModel.Segments.getAll();
-      let extent = wmeSDK.Map.getMapExtent();
+      const allSegments = await wmeSDK.DataModel.Segments.getAll();
+      let extent = await wmeSDK.Map.getMapExtent();
 
       if (!extent || !allSegments || allSegments.length === 0) {
         if (countBadge) countBadge.style.display = 'none';
@@ -1608,10 +1726,9 @@
       // Use a DocumentFragment to batch DOM insertions (Performance optimization)
       const fragment = document.createDocumentFragment();
 
-      viewportSegments.forEach((segment) => {
+      for (const segment of viewportSegments) {
         try {
-          const geometry = segment.geometry;
-          if (!geometry || !geometry.coordinates || geometry.coordinates.length < 2) {
+          const geometry = segment.geometry;          if (!geometry || !geometry.coordinates || geometry.coordinates.length < 2) {
             return;
           }
 
@@ -1671,7 +1788,7 @@
             // Use allSegments (not viewportSegments) for proximity check to match
             // WME Validator's approach (getAll()), ensuring nearby segments just outside
             // the viewport are still detected.
-            const connResult = checkSegmentConnection(segment, options.connectionCheckRadius, allSegments);
+            const connResult = await checkSegmentConnection(segment, options.connectionCheckRadius, allSegments);
             if (connResult.hasIssue) {
               // Always mark the segment for highlight — the segment itself is visible
               // (it passed the viewportSegments filter), even if the problematic node
@@ -1753,12 +1870,14 @@
         } catch (err) {
           // Silent error handling
         }
-      });
+      }
 
       // Batch append all elements to the DOM
       segmentLengthContainer.appendChild(fragment);
 
-      // Update positions after creating labels
+      // Snapshot the viewport before positioning, then place the labels from the
+      // cache so the first paint does not wait for an SDK round trip.
+      await refreshMapProjection();
       updateSegmentLabelPositions();
 
       // Get final counts
@@ -1797,13 +1916,20 @@
       }
       // Highlight segments with connection issues on the map
       try {
-        wmeSDK.Map.removeAllFeaturesFromLayer({ layerName: CONNECTION_HIGHLIGHT_LAYER });
+        await wmeSDK.Map.removeAllFeaturesFromLayer({ layerName: CONNECTION_HIGHLIGHT_LAYER });
       } catch (e) { /* layer may not exist yet */ }
 
       if (connectionIssueCount > 0 && options.validateNodeConnection) {
+        // Resolve all the highlighted geometries in one batch rather than
+        // one awaited round trip per segment.
+        const resolved = await Promise.all(
+          [...segmentsWithConnectionIssues].map(async (segId) => ({
+            segId,
+            seg: await wmeSDK.DataModel.Segments.getById({ segmentId: segId }),
+          }))
+        );
         const highlightFeatures = [];
-        segmentsWithConnectionIssues.forEach((segId) => {
-          const seg = wmeSDK.DataModel.Segments.getById({ segmentId: segId });
+        resolved.forEach(({ segId, seg }) => {
           if (seg && seg.geometry) {
             highlightFeatures.push({
               type: 'Feature',
@@ -1815,7 +1941,7 @@
         });
         if (highlightFeatures.length > 0) {
           try {
-            wmeSDK.Map.addFeaturesToLayer({
+            await wmeSDK.Map.addFeaturesToLayer({
               layerName: CONNECTION_HIGHLIGHT_LAYER,
               features: highlightFeatures,
             });
@@ -1838,9 +1964,7 @@
 
     try {
       segmentLabelCache.forEach((cached) => {
-        const pixel = wmeSDK.Map.getMapPixelFromLonLat({
-          lonLat: { lon: cached.lon, lat: cached.lat },
-        });
+        const pixel = projectLonLatToPixel(cached.lon, cached.lat);
 
         if (pixel && typeof pixel.x === 'number' && typeof pixel.y === 'number') {
           let offX = cached.offsetX || 15;
@@ -1853,8 +1977,7 @@
             // Geo y is inverted in screen (y-down), so negate the geo angle.
             const screenAngle = -cached.angle + Math.PI / 2; // 90° clockwise
             // Dynamic offset based on zoom level — further out at higher zooms
-            let zoom;
-            try { zoom = wmeSDK.Map.getZoomLevel(); } catch (e) { zoom = 19; }
+            const zoom = mapProjection?.zoom ?? 19;
             const perpDist = zoom >= 22 ? 40 :
                             zoom === 21 ? 35 :
                             zoom === 20 ? 30 :
@@ -1878,25 +2001,29 @@
   }
 
   // Poll for map changes and update display
-  function checkAndUpdate() {
+  async function checkAndUpdate() {
     // Do not update if map is currently moving
     if (typeof isMapMoving !== 'undefined' && isMapMoving) return;
-
-    const options = getOptions();
-    if (!options.showSegmentLength && !options.checkGeometryIssues && !options.validateNodeConnection) {
-      if (segmentLengthContainer) segmentLengthContainer.style.display = 'none';
-      return;
-    } else {
-      if (segmentLengthContainer) segmentLengthContainer.style.display = 'block';
-    }
+    // Re-entrancy guard: in async mode the awaits below can outlast the 500 ms
+    // interval, and two overlapping rebuilds would fight over the label cache.
+    if (checkAndUpdateRunning) return;
+    checkAndUpdateRunning = true;
 
     try {
+      const options = getOptions();
+      if (!options.showSegmentLength && !options.checkGeometryIssues && !options.validateNodeConnection) {
+        if (segmentLengthContainer) segmentLengthContainer.style.display = 'none';
+        return;
+      } else {
+        if (segmentLengthContainer) segmentLengthContainer.style.display = 'block';
+      }
+
       let extent;
       let currentZoom;
 
       try {
-        extent = wmeSDK.Map.getMapExtent();
-        currentZoom = wmeSDK.Map.getZoomLevel();
+        extent = await wmeSDK.Map.getMapExtent();
+        currentZoom = await wmeSDK.Map.getZoomLevel();
       } catch (e) {
         return;
       }
@@ -1912,16 +2039,20 @@
       if (!lastBounds || lastBounds.north !== currentBounds.north || lastBounds.south !== currentBounds.south || lastBounds.east !== currentBounds.east || lastBounds.west !== currentBounds.west || lastZoom !== currentZoom) {
         lastBounds = currentBounds;
         lastZoom = currentZoom;
-        rebuildSegmentLengthDisplay();
+        await refreshMapProjection();
+        await rebuildSegmentLengthDisplay();
       }
-    } catch (e) {}
+    } catch (e) {
+    } finally {
+      checkAndUpdateRunning = false;
+    }
   }
 
-  function handleSegmentLengthToggle() {
+  async function handleSegmentLengthToggle() {
     const options = getOptions();
 
     // Update button visibility immediately on toggle
-    addGeometryFixButton();
+    await addGeometryFixButton();
     addConnectionCheckButton();
 
     if (options.showSegmentLength || options.checkGeometryIssues || options.validateNodeConnection) {
@@ -1931,7 +2062,7 @@
       if (!updateInterval) {
         updateInterval = setInterval(checkAndUpdate, 500);
       }
-      rebuildSegmentLengthDisplay();
+      await rebuildSegmentLengthDisplay();
     } else {
       if (segmentLengthContainer) segmentLengthContainer.style.display = 'none';
       clearSegmentLengthDisplay();
@@ -1944,27 +2075,16 @@
     }
   }
 
-  function initSegmentLengthLayer() {
+  async function initSegmentLengthLayer() {
     log('Initializing segment length display layer');
 
-    // Find viewport div - prefer standard class or ID
-    // Try SDK method first if possible, though getMapViewportElement might not be exposed on all versions?
-    // Docs say getMapViewportElement() returns HTMLElement.
-    let viewportDiv;
-    try {
-      viewportDiv = wmeSDK.Map.getMapViewportElement();
-    } catch (e) {
-      log('SDK getMapViewportElement failed, trying fallbacks');
-    }
-
-    if (!viewportDiv) {
-      viewportDiv = document.querySelector('.ol-viewport') || document.querySelector('#WazeMap') || document.querySelector('#map');
-    }
-
-    if (!viewportDiv) {
+    // Resolve (and cache for the sync projection path) the viewport element.
+    const viewportDiv = await resolveMapViewportElement();
+    if (!viewportDiv || typeof viewportDiv.appendChild !== 'function') {
       log('Map viewport not found');
       return;
     }
+    mapViewportEl = viewportDiv;
 
     // Create div container for length labels
     segmentLengthContainer = document.createElement('div');
@@ -1987,6 +2107,10 @@
     // Event handlers for map movement using SDK events
     const onMapMove = function () {
       isMapMoving = true;
+      // Snapshot the viewport once per move tick so the RAF projection below stays
+      // synchronous (see mapProjection comment). Guarded by the RAF flag so we do
+      // not re-read the SDK for every mousemove event WME emits.
+      if (!updateFrameRequest) refreshMapProjection();
       // Use requestAnimationFrame to throttle position updates during map movement
       if (updateFrameRequest) {
         return; // Already scheduled
@@ -2005,43 +2129,39 @@
       isMapMoving = false;
       // Debounce rebuild to let SDK populate node/segment data after panning
       if (moveEndTimer) clearTimeout(moveEndTimer);
-      moveEndTimer = setTimeout(() => {
+      moveEndTimer = setTimeout(async () => {
         moveEndTimer = null;
         // Rebuild labels after movement ends (checks if segments entered/left viewport)
         const options = getOptions();
         if ((options.showSegmentLength || options.checkGeometryIssues || options.validateNodeConnection) && segmentLengthContainer) {
           segmentLengthContainer.style.display = 'block';
-          rebuildSegmentLengthDisplay();
-
+          await refreshMapProjection();
+          await rebuildSegmentLengthDisplay();
           // Update lastBounds/Zoom to prevent redundant update from interval
-          try {
-            let extent = wmeSDK.Map.getMapExtent();
+          if (mapProjection) {
             lastBounds = {
-              west: extent[0],
-              south: extent[1],
-              east: extent[2],
-              north: extent[3],
+              west: mapProjection.west,
+              south: mapProjection.south,
+              east: mapProjection.east,
+              north: mapProjection.north,
             };
-            lastZoom = wmeSDK.Map.getZoomLevel();
-          } catch (e) {}
+            lastZoom = mapProjection.zoom;
+          }
         }
       }, 150);
     };
 
-    const onZoomChanged = function () {
+    const onZoomChanged = async function () {
       const options = getOptions();
       if ((options.showSegmentLength || options.checkGeometryIssues || options.validateNodeConnection) && segmentLengthContainer) {
-        rebuildSegmentLengthDisplay(); // Full rebuild on zoom
-        try {
-          let extent = wmeSDK.Map.getMapExtent();
-          lastBounds = {
-            west: extent[0],
-            south: extent[1],
-            east: extent[2],
-            north: extent[3],
-          };
-          lastZoom = wmeSDK.Map.getZoomLevel();
-        } catch (e) {}
+        await refreshMapProjection();
+        // Update lastBounds/Zoom up front so the poll does not immediately
+        // trigger a second rebuild for the same change.
+        if (mapProjection) {
+          lastBounds = { west: mapProjection.west, south: mapProjection.south, east: mapProjection.east, north: mapProjection.north };
+          lastZoom = mapProjection.zoom;
+        }
+        await rebuildSegmentLengthDisplay(); // Full rebuild on zoom
       }
     };
 
@@ -2064,9 +2184,9 @@
     // U-turn panel: Monitor node selection using native SDK event (wme-selection-changed)
     wmeSDK.Events.on({
       eventName: 'wme-selection-changed',
-      eventHandler: () => {
+      eventHandler: async () => {
         try {
-          const selection = wmeSDK.Editing.getSelection();
+          const selection = await wmeSDK.Editing.getSelection();
           
           // Check if a node is selected
           if (selection && selection.objectType === 'node' && selection.ids.length > 0) {
@@ -2079,7 +2199,7 @@
           
           // Update lane chip highlight when selection changes
           if (typeof updateLaneChipHighlight === 'function') {
-            updateLaneChipHighlight();
+            await updateLaneChipHighlight();
           }
         } catch (e) {
           log(`[EZRoad] Error in selection changed handler: ${e.message}`);
@@ -2090,21 +2210,21 @@
     // Update U-turn panel when turns change
     wmeSDK.Events.on({
       eventName: 'wme-after-undo',
-      eventHandler: () => {
+      eventHandler: async () => {
         updateUTurnPanel();
         // Refresh lane chip highlight after undo — segment lanes may have reverted
         if (typeof updateLaneChipHighlight === 'function') {
-          updateLaneChipHighlight();
+          await updateLaneChipHighlight();
         }
       },
     });
 
     wmeSDK.Events.on({
       eventName: 'wme-after-redo-clear',
-      eventHandler: () => {
+      eventHandler: async () => {
         updateUTurnPanel();
         if (typeof updateLaneChipHighlight === 'function') {
-          updateLaneChipHighlight();
+          await updateLaneChipHighlight();
         }
       },
     });
@@ -2113,14 +2233,14 @@
     // scripts, undo of lane changes) to auto-refresh the chip highlight.
     wmeSDK.Events.on({
       eventName: 'wme-data-model-objects-changed',
-      eventHandler: (data) => {
+      eventHandler: async (data) => {
         if (data && data.dataModelName === 'Segment' && data.objectIds && data.objectIds.length > 0) {
           // Only refresh if the changed segments match the current selection
-          const selection = wmeSDK.Editing.getSelection();
+          const selection = await wmeSDK.Editing.getSelection();
           if (selection && selection.objectType === 'segment' && selection.ids) {
             const hasMatch = data.objectIds.some((id) => selection.ids.includes(Number(id)));
             if (hasMatch && typeof updateLaneChipHighlight === 'function') {
-              updateLaneChipHighlight();
+              await updateLaneChipHighlight();
             }
           }
         }
@@ -2129,7 +2249,7 @@
 
     // Initialize the connection highlight layer (even if not enabled yet — segments are drawn when issues found)
     try {
-      wmeSDK.Map.addLayer({
+      await wmeSDK.Map.addLayer({
         layerName: CONNECTION_HIGHLIGHT_LAYER,
         styleRules: [
           {
@@ -2145,7 +2265,7 @@
     // Initialize polling if already enabled
     const options = getOptions();
     if (options.showSegmentLength || options.checkGeometryIssues || options.validateNodeConnection) {
-      handleSegmentLengthToggle();
+      await handleSegmentLengthToggle();
     }
 
     log('Segment length layer initialized');
@@ -2160,12 +2280,14 @@
   // warning. Keys already in use by WME or another script are handled the same way.
 
   /** Registers one shortcut with one candidate key string. Returns 'ok' | 'conflict' | 'error'. */
-  function registerShortcutWithKeys(def, keyString) {
-    if (wmeSDK.Shortcuts.isShortcutRegistered({ shortcutId: def.id })) {
-      try { wmeSDK.Shortcuts.deleteShortcut({ shortcutId: def.id }); } catch (e) { /* wasn't registered */ }
-    }
+  async function registerShortcutWithKeys(def, keyString) {
     try {
-      wmeSDK.Shortcuts.createShortcut({
+      if (await wmeSDK.Shortcuts.isShortcutRegistered({ shortcutId: def.id })) {
+        try { await wmeSDK.Shortcuts.deleteShortcut({ shortcutId: def.id }); } catch (e) { /* wasn't registered */ }
+      }
+    } catch (e) { /* registration store not ready */ }
+    try {
+      await wmeSDK.Shortcuts.createShortcut({
         shortcutId: def.id,
         description: def.description,
         callback: def.callback,
@@ -2180,9 +2302,9 @@
   }
 
   /** The key WME currently holds for one of our shortcuts (null when keyless). */
-  function registeredKeysFor(shortcutId) {
+  async function registeredKeysFor(shortcutId) {
     try {
-      var all = wmeSDK.Shortcuts.getAllShortcuts();
+      var all = await wmeSDK.Shortcuts.getAllShortcuts();
       for (var i = 0; i < all.length; i++) {
         if (all[i].shortcutId === shortcutId) return all[i].shortcutKeys || null;
       }
@@ -2196,8 +2318,8 @@
    * equality. A non-null value we cannot canonicalise still counts as bound —
    * overwriting a working binding would be worse than a stray log line.
    */
-  function keyWasBound(shortcutId, keyString) {
-    var held = registeredKeysFor(shortcutId);
+  async function keyWasBound(shortcutId, keyString) {
+    var held = await registeredKeysFor(shortcutId);
     if (!held) return false;
     if (!_KC) return true;
     var want = _KC.toRaw(keyString);
@@ -2206,7 +2328,7 @@
     return got === want;
   }
 
-  function initializeSDKShortcuts() {
+  async function initializeSDKShortcuts() {
     if (!wmeSDK?.Shortcuts || !_sdkShortcutDefs) return;
 
     // Existing registrations are deliberately NOT deleted up front, and a shortcut
@@ -2262,7 +2384,7 @@
 
       // Keys we preserved but could not assign last time stay unassigned.
       if (_conflictBlockedKeys.has(shortcutDef.settingsKey)) {
-        registerShortcutWithKeys(shortcutDef, null);
+        await registerShortcutWithKeys(shortcutDef, null);
         blockedCount++;
         continue;
       }
@@ -2270,8 +2392,8 @@
       // Already registered by a previous session with the key we want? Then leave the
       // registration completely untouched and just re-attach nothing — WME's own
       // shortcut store stays authoritative, so its key dispatch is not disturbed.
-      if (_isAssignableKeyString(saved.combo) && wmeSDK.Shortcuts.isShortcutRegistered({ shortcutId: shortcutDef.id })) {
-        var held = registeredKeysFor(shortcutDef.id);
+      if (_isAssignableKeyString(saved.combo) && await wmeSDK.Shortcuts.isShortcutRegistered({ shortcutId: shortcutDef.id })) {
+        var held = await registeredKeysFor(shortcutDef.id);
         if (held && (_KC ? _KC.equals(held, saved.combo) : held === saved.combo)) {
           keptCount++;
           continue;
@@ -2288,23 +2410,23 @@
       var candidates = _shortcutKeyCandidates(saved);
 
       if (candidates.length === 0) {
-        registerShortcutWithKeys(shortcutDef, null); // never assigned a key
+        await registerShortcutWithKeys(shortcutDef, null); // never assigned a key
         unassignedCount++;
         continue;
       }
 
       var boundWith = null;
       for (var c = 0; c < candidates.length && boundWith === null; c++) {
-        var outcome = registerShortcutWithKeys(shortcutDef, candidates[c]);
+        var outcome = await registerShortcutWithKeys(shortcutDef, candidates[c]);
         if (outcome === 'conflict') {
           // Key taken by WME or another script — preserve the saved value,
           // register keyless, and block so the poll doesn't clobber it back.
           _conflictBlockedKeys.add(shortcutDef.settingsKey);
           conflictMsgs.push(shortcutDef.description + ' (' + saved.combo + ')');
-          registerShortcutWithKeys(shortcutDef, null);
+          await registerShortcutWithKeys(shortcutDef, null);
           break;
         }
-        if (outcome === 'ok' && keyWasBound(shortcutDef.id, candidates[c])) boundWith = candidates[c];
+        if (outcome === 'ok' && await keyWasBound(shortcutDef.id, candidates[c])) boundWith = candidates[c];
       }
 
       if (boundWith !== null) {
@@ -2318,9 +2440,9 @@
       } else {
         // Nothing bound. Register keyless so the shortcut still appears in WME's
         // list, and leave the saved value intact so the next reload retries.
-        registerShortcutWithKeys(shortcutDef, null);
+        await registerShortcutWithKeys(shortcutDef, null);
         failedToBind.push(shortcutDef.settingsKey + ' (tried ' + JSON.stringify(candidates)
-          + ', SDK reports ' + JSON.stringify(registeredKeysFor(shortcutDef.id)) + ')');
+          + ', SDK reports ' + JSON.stringify(await registeredKeysFor(shortcutDef.id)) + ')');
       }
     }
 
@@ -2358,11 +2480,17 @@
   // the member that did NOT change (saved value == SDK value) as the stale one:
   // clear it and remember it in _conflictStaleKeys so the poll ignores the
   // stale value on later runs instead of writing it back.
-  function checkSDKShortcutsChanged() {
+  async function checkSDKShortcutsChanged() {
     if (!wmeSDK?.Shortcuts || !_sdkShortcutDefs) return;
-    var shortcuts = wmeSDK.Shortcuts.getAllShortcuts();
-    var opts = getOptions();
-    if (!opts.sdkShortcuts) opts.sdkShortcuts = {};
+    // Re-entrancy guard: the 5 s interval and the beforeunload handler both call
+    // this, and in async mode a slow run could otherwise overlap the next one and
+    // write a half-resolved shortcut state back to localStorage.
+    if (checkSDKShortcutsRunning) return;
+    checkSDKShortcutsRunning = true;
+    try {
+      var shortcuts = await wmeSDK.Shortcuts.getAllShortcuts();
+      var opts = getOptions();
+      if (!opts.sdkShortcuts) opts.sdkShortcuts = {};
 
     // Pass 1: our shortcuts' SDK-reported state + combo index (for stale dupes)
     var sdkState = {};  // settingsKey -> { combo, shortcutKeys }
@@ -2478,6 +2606,9 @@
       console.warn(scriptName + ' WazeToastr.Alerts failed:', e);
     }
     log('SDK shortcut changes saved.');
+    } finally {
+      checkSDKShortcutsRunning = false;
+    }
   }
 
   // ===== New Feature: One-click Geometry Fix =====
@@ -2490,8 +2621,8 @@
       return;
     }
 
-    const allSegments = wmeSDK.DataModel.Segments.getAll();
-    let extent = wmeSDK.Map.getMapExtent();
+    const allSegments = await wmeSDK.DataModel.Segments.getAll();
+    let extent = await wmeSDK.Map.getMapExtent();
     if (!extent) return;
     const mapBounds = { west: extent[0], south: extent[1], east: extent[2], north: extent[3] };
 
@@ -2559,10 +2690,8 @@
       else alert(msg);
 
       // Refresh display
-      rebuildSegmentLengthDisplay();
-    };
-
-    const confirmMsg = totalIssueCount === segmentsToFix.length ? `Found ${segmentsToFix.length} segments with geometry issues. Fix them now?` : `Found ${segmentsToFix.length} segments with ${totalIssueCount} geometry node issues. Fix them now?`;
+      await rebuildSegmentLengthDisplay();
+    };    const confirmMsg = totalIssueCount === segmentsToFix.length ? `Found ${segmentsToFix.length} segments with geometry issues. Fix them now?` : `Found ${segmentsToFix.length} segments with ${totalIssueCount} geometry node issues. Fix them now?`;
 
     if (WazeToastr?.Alerts?.confirm) {
       WazeToastr.Alerts.confirm(`${scriptName}`, confirmMsg, performFix, null, 'Fix', 'Cancel');
@@ -2571,13 +2700,13 @@
     }
   }
 
-  function addGeometryFixButton() {
+  async function addGeometryFixButton() {
     const options = getOptions();
 
     // Check user rank - only show for L3 and above (rank >= 2 in SDK)
-    const userInfo = wmeSDK.State.getUserInfo();
-    if (!userInfo || userInfo.rank < UserRankRequiredForGeometryFix - 1) {
-      // Remove wrapper (and button inside it) if user doesn't have permission
+    // State.getUserInfo() is Promise-wrapped in async mode.
+    const userInfo = await wmeSDK.State.getUserInfo();
+    if (!userInfo || userInfo.rank < UserRankRequiredForGeometryFix - 1) {      // Remove wrapper (and button inside it) if user doesn't have permission
       const existingWrapper = document.getElementById('ezroad-geometry-wrapper');
       if (existingWrapper) existingWrapper.remove();
       return;
@@ -2657,7 +2786,7 @@
   // ===== Segment Splitter Feature =====
   // Uses only official WME SDK APIs:
   //   - Editing.lockEditing() / releaseEditingLock() for exclusive edit mode
-  //   - Map.getMapViewportElement() + getLonLatFromMapPixel() for mouse → geo coords
+  //   - resolveMapViewportElement() + unprojectPixelToLonLat() for mouse → geo coords
   //   - Map.addLayer() / addFeaturesToLayer() / removeAllFeaturesFromLayer() / removeLayer()
   //   - DataModel.Segments.splitSegment({ segmentId, splitPoint: Point })
   //   - Events.on() returns an unsubscribe fn (stored and called on exit)
@@ -2688,7 +2817,7 @@
 
   // Shared guard for both split paths (interactive cache + auto-split).
   // Cheap checks first; hasPermissions is expensive so it runs last.
-  function isSplittableSegment(seg) {
+  async function isSplittableSegment(seg) {
     const coords = seg?.geometry?.coordinates;
     if (!coords || coords.length < 2) return false;
     if (seg.hasClosures) return false;
@@ -2696,26 +2825,42 @@
     // nodes haven't been committed yet; calling splitSegment on them throws
     // "node null does not exist" from WME's SplitSegments.getSegmentNodes.
     if (seg.fromNodeId == null || seg.toNodeId == null) return false;
-    try { return wmeSDK.DataModel.Segments.hasPermissions({ segmentId: seg.id }); } catch (ex) { return false; }
+    try { return await wmeSDK.DataModel.Segments.hasPermissions({ segmentId: seg.id }); } catch (ex) { return false; }
   }
 
-  function rebuildSplitSegmentCache() {
+  async function rebuildSplitSegmentCache() {
     try {
-      const [west, south, east, north] = wmeSDK.Map.getMapExtent();
-      splitVisibleSegments = wmeSDK.DataModel.Segments.getAll().filter(
-        seg => isSplittableSegment(seg) && segmentOverlapsBounds(seg, west, south, east, north)
-      );
+      const extent = await wmeSDK.Map.getMapExtent();
+      const [west, south, east, north] = extent;
+      const all = await wmeSDK.DataModel.Segments.getAll();
+      const candidates = all.filter(seg => segmentOverlapsBounds(seg, west, south, east, north));
+      // hasPermissions is the expensive call — resolve those in parallel.
+      const allowed = await Promise.all(candidates.map(seg => isSplittableSegment(seg)));
+      splitVisibleSegments = candidates.filter((_, i) => allowed[i]);
     } catch (ex) { splitVisibleSegments = []; }
   }
 
   // Stored as named arrow functions so addEventListener / removeEventListener work correctly
+  // Inverse of projectLonLatToPixel — synchronous, from the cached snapshot.
+  // The SDK's getLonLatFromMapPixel() is Promise-wrapped in async mode and cannot
+  // be used inside mouse handlers that must return immediately.
+  function unprojectPixelToLonLat(x, y) {
+    if (!mapProjection) return null;
+    const { lon0, merc0, swX, swY, scaleX, scaleY } = mapProjection;
+    const lon = lon0 + (x - swX) / scaleX;
+    const lat = invMercY(merc0 + (y - swY) / scaleY);
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+    return { lon, lat };
+  }
+
   const splitKeyDown = (e) => { if (e.key === 'Escape') exitSplitMode(); };
 
   const splitOnMouseMove = (e) => {
     try {
-      const vp = wmeSDK.Map.getMapViewportElement();
+      const vp = mapViewportEl;
+      if (!vp) return;
       const rect = vp.getBoundingClientRect();
-      const lonLat = wmeSDK.Map.getLonLatFromMapPixel({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+      const lonLat = unprojectPixelToLonLat(e.clientX - rect.left, e.clientY - rect.top);
       if (!lonLat) return;
       splitLastMouseMovePoint = lonLat;
       // Throttle to one preview draw per animation frame to eliminate lag
@@ -2729,20 +2874,22 @@
 
   const splitOnMouseDown = (e) => {
     try {
-      const vp = wmeSDK.Map.getMapViewportElement();
+      const vp = mapViewportEl;
+      if (!vp) return;
       const rect = vp.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
-      const lonLat = wmeSDK.Map.getLonLatFromMapPixel({ x, y });
+      const lonLat = unprojectPixelToLonLat(x, y);
       if (!lonLat) return;
       splitMouseDownPoint = { lon: lonLat.lon, lat: lonLat.lat, x, y };
     } catch (ex) {}
   };
 
-  const splitOnMouseUp = (e) => {
+  const splitOnMouseUp = async (e) => {
     if (!splitSegmentToSplit || !splitMouseDownPoint) return;
     try {
-      const vp = wmeSDK.Map.getMapViewportElement();
+      const vp = mapViewportEl;
+      if (!vp) return;
       const rect = vp.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
@@ -2750,25 +2897,26 @@
       if (Math.abs(splitMouseDownPoint.x - x) + Math.abs(splitMouseDownPoint.y - y) > 5) return;
       const segToSplit = splitSegmentToSplit;
       const clickPoint = splitMouseDownPoint;
-      exitSplitMode();
-      performSplit(segToSplit, clickPoint);
+      await exitSplitMode();
+      await performSplit(segToSplit, clickPoint);
     } catch (ex) {}
   };
 
-  const splitOnZoomChanged = () => {
-    rebuildSplitSegmentCache();
-    try { wmeSDK.Map.removeAllFeaturesFromLayer({ layerName: SPLIT_LAYER_NAME }); } catch (ex) {}
-    if (splitLastMouseMovePoint) drawSplitPreview(splitLastMouseMovePoint);
+  const splitOnZoomChanged = async () => {
+    await refreshMapProjection();
+    await rebuildSplitSegmentCache();
+    try { await wmeSDK.Map.removeAllFeaturesFromLayer({ layerName: SPLIT_LAYER_NAME }); } catch (ex) {}
+    if (splitLastMouseMovePoint) await drawSplitPreview(splitLastMouseMovePoint);
   };
 
-  const splitOnMoveEnd = () => {
-    rebuildSplitSegmentCache();
+  const splitOnMoveEnd = async () => {
+    await refreshMapProjection();
+    await rebuildSplitSegmentCache();
   };
 
-  function drawSplitPreview(lonLat) {
+  async function drawSplitPreview(lonLat) {
     if (!lonLat) return;
-    const mousePoint = turf.point([lonLat.lon, lonLat.lat]);
-    let closest = { segment: null, details: null };
+    const mousePoint = turf.point([lonLat.lon, lonLat.lat]);    let closest = { segment: null, details: null };
     let shortest = Infinity;
     // Use the pre-built cache — no getAll() or hasPermissions() on every frame
     const segments = splitVisibleSegments || [];
@@ -2781,12 +2929,12 @@
         }
       } catch (ex) {}
     });
-    try { wmeSDK.Map.removeAllFeaturesFromLayer({ layerName: SPLIT_LAYER_NAME }); } catch (ex) {}
+    try { await wmeSDK.Map.removeAllFeaturesFromLayer({ layerName: SPLIT_LAYER_NAME }); } catch (ex) {}
     if (!closest.segment) return;
     splitSegmentToSplit = closest.segment;
     const pointOnLine = closest.details;
     try {
-      wmeSDK.Map.addFeaturesToLayer({
+      await wmeSDK.Map.addFeaturesToLayer({
         layerName: SPLIT_LAYER_NAME,
         features: [
           {
@@ -2806,12 +2954,12 @@
     } catch (ex) {}
   }
 
-  function enterSplitMode() {
+  async function enterSplitMode() {
     if (splitEditingLock) return;
-    wmeSDK.Editing.clearSelection();
-    splitEditingLock = wmeSDK.Editing.lockEditing();
+    await wmeSDK.Editing.clearSelection();
+    splitEditingLock = await wmeSDK.Editing.lockEditing();
     try {
-      wmeSDK.Map.addLayer({
+      await wmeSDK.Map.addLayer({
         layerName: SPLIT_LAYER_NAME,
         styleRules: [
           {
@@ -2825,7 +2973,9 @@
         ],
       });
     } catch (ex) { log('[Split] addLayer error: ' + ex); }
-    const vp = wmeSDK.Map.getMapViewportElement();
+    const vp = mapViewportEl || await resolveMapViewportElement();
+    mapViewportEl = vp;
+    await refreshMapProjection();
     vp.style.cursor = 'crosshair';
     vp.addEventListener('mousemove', splitOnMouseMove);
     vp.addEventListener('mousedown', splitOnMouseDown);
@@ -2833,30 +2983,32 @@
     splitUnsubZoom = wmeSDK.Events.on({ eventName: 'wme-map-zoom-changed', eventHandler: splitOnZoomChanged });
     splitUnsubMoveEnd = wmeSDK.Events.on({ eventName: 'wme-map-move-end', eventHandler: splitOnMoveEnd });
     document.body.addEventListener('keydown', splitKeyDown);
-    rebuildSplitSegmentCache();
+    await rebuildSplitSegmentCache();
     if (WazeToastr?.Alerts) {
       WazeToastr.Alerts.info(scriptName, 'Split Mode: hover over a segment to preview, click to split. Press <b>Esc</b> to cancel.', false, false, 4000);
     }
   }
 
-  function exitSplitMode() {
+  async function exitSplitMode() {
     if (!splitEditingLock) return;
     try {
-      const vp = wmeSDK.Map.getMapViewportElement();
-      vp.style.cursor = '';
-      vp.removeEventListener('mousemove', splitOnMouseMove);
-      vp.removeEventListener('mousedown', splitOnMouseDown);
-      vp.removeEventListener('mouseup', splitOnMouseUp);
+      const vp = mapViewportEl;
+      if (vp) {
+        vp.style.cursor = '';
+        vp.removeEventListener('mousemove', splitOnMouseMove);
+        vp.removeEventListener('mousedown', splitOnMouseDown);
+        vp.removeEventListener('mouseup', splitOnMouseUp);
+      }
     } catch (ex) {}
     if (splitUnsubZoom) { splitUnsubZoom(); splitUnsubZoom = null; }
     if (splitUnsubMoveEnd) { splitUnsubMoveEnd(); splitUnsubMoveEnd = null; }
     if (splitPreviewFrameRequest) { cancelAnimationFrame(splitPreviewFrameRequest); splitPreviewFrameRequest = null; }
     document.body.removeEventListener('keydown', splitKeyDown);
-    wmeSDK.Editing.releaseEditingLock({ lockId: splitEditingLock });
+    await wmeSDK.Editing.releaseEditingLock({ lockId: splitEditingLock });
     splitEditingLock = null;
     try {
-      wmeSDK.Map.removeAllFeaturesFromLayer({ layerName: SPLIT_LAYER_NAME });
-      wmeSDK.Map.removeLayer({ layerName: SPLIT_LAYER_NAME });
+      await wmeSDK.Map.removeAllFeaturesFromLayer({ layerName: SPLIT_LAYER_NAME });
+      await wmeSDK.Map.removeLayer({ layerName: SPLIT_LAYER_NAME });
     } catch (ex) {}
     splitSegmentToSplit = null;
     splitMouseDownPoint = null;
@@ -2864,12 +3016,12 @@
     splitVisibleSegments = null;
   }
 
-  function performSplit(segment, mapPoint) {
+  async function performSplit(segment, mapPoint) {
     if (!segment) return;
     try {
       const mousePoint = turf.point([mapPoint.lon, mapPoint.lat]);
       const splitPoint = turf.nearestPointOnLine(segment.geometry, mousePoint, { units: 'meters' }).geometry;
-      wmeSDK.DataModel.Segments.splitSegment({ segmentId: segment.id, splitPoint });
+      await wmeSDK.DataModel.Segments.splitSegment({ segmentId: segment.id, splitPoint });
       if (WazeToastr?.Alerts) WazeToastr.Alerts.success(scriptName, 'Segment split!', false, false, 2000);
     } catch (ex) {
       console.error(`[${scriptName}] Split failed:`, ex);
@@ -2877,20 +3029,20 @@
     }
   }
 
-  function toggleSplitMode() {
+  async function toggleSplitMode() {
     if (splitEditingLock) {
       exitSplitMode();
       return;
     }
-    const sel = wmeSDK.Editing.getSelection();
+    const sel = await wmeSDK.Editing.getSelection();
     if (sel?.objectType === 'segment' && sel.ids.length > 0) {
       // Segments selected — auto-split each at its midpoint / middle geometry node
       let cutCount = 0;
-      sel.ids.forEach(segId => {
-        const seg = wmeSDK.DataModel.Segments.getById({ segmentId: segId });
+      for (const segId of sel.ids) {
+        const seg = await wmeSDK.DataModel.Segments.getById({ segmentId: segId });
         // Skip roundabouts (junctionId) and anything not splittable (closures,
         // null nodes on newly split unsaved segments, or no edit permission).
-        if (!seg || seg.junctionId || !isSplittableSegment(seg)) return;
+        if (!seg || seg.junctionId || !(await isSplittableSegment(seg))) continue;
         const geo = seg.geometry;
         let splitCoord;
         if (geo.coordinates.length === 2) {
@@ -2902,13 +3054,13 @@
           splitCoord = geo.coordinates[Math.ceil(geo.coordinates.length / 2 - 1)];
         }
         try {
-          const result = wmeSDK.DataModel.Segments.splitSegment({
+          const result = await wmeSDK.DataModel.Segments.splitSegment({
             segmentId: seg.id,
             splitPoint: turf.point(splitCoord).geometry,
           });
           if (result) cutCount++;
         } catch (ex) { console.error(`[${scriptName}] Auto-split failed for ${seg.id}:`, ex); }
-      });
+      }
       if (cutCount > 0) {
         if (WazeToastr?.Alerts) WazeToastr.Alerts.success(scriptName, `${cutCount} segment${cutCount === 1 ? '' : 's'} split`, false, false, 2500);
       } else {
@@ -2927,7 +3079,7 @@
    * Updates the number of lanes (road width) for all given segment IDs.
    * Sets both fromLanesInfo and toLanesInfo to the specified count.
    */
-  function handleLaneCountUpdate(segmentIds, laneCount) {
+  async function handleLaneCountUpdate(segmentIds, laneCount) {
     if (!segmentIds || segmentIds.length === 0) {
       log('[LaneCount] No segments to update');
       return;
@@ -2936,15 +3088,15 @@
     let successCount = 0;
     const totalCount = segmentIds.length;
     
-    segmentIds.forEach((id) => {
+    for (const id of segmentIds) {
       try {
-        const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+        const seg = await wmeSDK.DataModel.Segments.getById({ segmentId: id });
         if (!seg) {
           log(`[LaneCount] Segment ${id} not found`);
-          return;
+          continue;
         }
         // Pass null to clear both directions when laneCount is 0
-        wmeSDK.DataModel.Segments.updateSegment({
+        await wmeSDK.DataModel.Segments.updateSegment({
           segmentId: id,
           fromLanesInfo: laneCount > 0 ? { numberOfLanes: laneCount, laneWidth: null } : null,
           toLanesInfo: laneCount > 0 ? { numberOfLanes: laneCount, laneWidth: null } : null,
@@ -2954,7 +3106,7 @@
       } catch (e) {
         log(`[LaneCount] Error updating segment ${id}: ${e.message}`);
       }
-    });
+    }
     
     if (WazeToastr?.Alerts) {
       if (successCount === totalCount) {
@@ -3021,26 +3173,26 @@
       chip.setAttribute('value', String(i));
       chip.setAttribute('title', 'No of Lane Road width');
       
-      chip.addEventListener('click', () => {
-        const selection = wmeSDK.Editing.getSelection();
+      chip.addEventListener('click', async () => {
+        const selection = await wmeSDK.Editing.getSelection();
         if (!selection || selection.objectType !== 'segment' || !selection.ids || selection.ids.length === 0) {
           if (WazeToastr?.Alerts) {
             WazeToastr.Alerts.warning(`${scriptName}`, 'No segments selected.', false, false, 2000);
           }
           return;
         }
-        handleLaneCountUpdate(selection.ids, i);
+        await handleLaneCountUpdate(selection.ids, i);
         
         // Programmatic reselect (clearSelection → setSelection) triggers the
         // wme-selection-changed event, which calls updateLaneChipHighlight()
         // automatically — same as manually deselecting and reselecting.
         // A small delay ensures the SDK has processed the updateSegment call.
-        setTimeout(() => {
+        setTimeout(async () => {
           try {
-            const currentSelection = wmeSDK.Editing.getSelection();
+            const currentSelection = await wmeSDK.Editing.getSelection();
             if (currentSelection && currentSelection.objectType === 'segment') {
-              wmeSDK.Editing.clearSelection();
-              wmeSDK.Editing.setSelection({ selection: currentSelection });
+              await wmeSDK.Editing.clearSelection();
+              await wmeSDK.Editing.setSelection({ selection: currentSelection });
             }
           } catch (e) {
             log(`[LaneCount] Reselect error: ${e.message}`);
@@ -3063,11 +3215,11 @@
   /**
    * Updates the chip highlight to reflect the currently selected segment's lane width.
    */
-  function updateLaneChipHighlight() {
+  async function updateLaneChipHighlight() {
     const container = document.getElementById('ezroad-lane-buttons');
     if (!container) return;
     
-    const selection = wmeSDK.Editing.getSelection();
+    const selection = await wmeSDK.Editing.getSelection();
     if (!selection || selection.objectType !== 'segment' || !selection.ids || selection.ids.length === 0) {
       return;
     }
@@ -3089,7 +3241,7 @@
     let isMixed = false;
     
     for (let id of selection.ids) {
-      const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+      const seg = await wmeSDK.DataModel.Segments.getById({ segmentId: id });
       if (!seg) continue;
       const count = getLaneCount(seg);
       uniqueCounts.add(count);
@@ -3126,14 +3278,20 @@
   const delayedUpdate = (updateFn, delay) => {
     return new Promise((resolve) => {
       setTimeout(() => {
-        updateFn();
-        resolve();
+        // Resolve with the callback's own promise so callers awaiting
+        // Promise.all(updatePromises) wait for the async SDK work inside it,
+        // not just for the timer to fire.
+        try {
+          resolve(updateFn());
+        } catch (e) {
+          resolve();
+        }
       }, delay);
     });
   };
 
-  function getHighestSegLock(segID) {
-    const segObj = wmeSDK.DataModel.Segments.getById({ segmentId: segID });
+  async function getHighestSegLock(segID) {
+    const segObj = await wmeSDK.DataModel.Segments.getById({ segmentId: segID });
     if (!segObj) {
       console.warn(`[${scriptName}] Segment object with ID ${segID} not found in DataModel.Segments.`);
       return 1; // Default lock level if segment not found
@@ -3142,31 +3300,40 @@
     const checkedSegs = [];
     let forwardLock = null;
     let reverseLock = null;
+    // getAll() is the same array for the whole walk — read it once, not per node.
+    const allSegs = await wmeSDK.DataModel.Segments.getAll();
+    // Cache of id -> segment so the recursive walk does not re-fetch the same
+    // segment once per neighbouring node.
+    const segCache = new Map();
 
-    function processForNode(forwardID) {
+    async function getSeg(id) {
+      if (segCache.has(id)) return segCache.get(id);
+      const s = await wmeSDK.DataModel.Segments.getById({ segmentId: id });
+      segCache.set(id, s);
+      return s;
+    }
+
+    async function processForNode(forwardID) {
       checkedSegs.push(forwardID);
-      const seg = wmeSDK.DataModel.Segments.getById({ segmentId: forwardID });
+      const seg = await getSeg(forwardID);
       if (!seg) return forwardLock;
       const forNodeId = seg.toNodeId;
       if (!forNodeId) return forwardLock;
 
       // Get all segments connected to this node
-      const allSegs = wmeSDK.DataModel.Segments.getAll();
       const forNodeSegs = allSegs.filter((s) => s.fromNodeId === forNodeId || s.toNodeId === forNodeId).map((s) => s.id);
 
       // Remove the current segment from the list
       const filteredSegs = forNodeSegs.filter((id) => id !== forwardID);
 
       for (let i = 0; i < filteredSegs.length; i++) {
-        const conSegObj = wmeSDK.DataModel.Segments.getById({
-          segmentId: filteredSegs[i],
-        });
+        const conSegObj = await getSeg(filteredSegs[i]);
         if (!conSegObj) continue;
         if (conSegObj.roadType !== segType) {
           forwardLock = Math.max(conSegObj.lockRank ?? 0, forwardLock ?? 0);
         } else {
           if (!checkedSegs.includes(conSegObj.id)) {
-            const tempRank = processForNode(conSegObj.id);
+            const tempRank = await processForNode(conSegObj.id);
             forwardLock = Math.max(tempRank ?? 0, forwardLock ?? 0);
           }
         }
@@ -3174,24 +3341,21 @@
       return forwardLock ?? 0;
     }
 
-    function processRevNode(reverseID) {
+    async function processRevNode(reverseID) {
       checkedSegs.push(reverseID);
-      const seg = wmeSDK.DataModel.Segments.getById({ segmentId: reverseID });
+      const seg = await getSeg(reverseID);
       if (!seg) return reverseLock;
       const revNodeId = seg.fromNodeId;
       if (!revNodeId) return reverseLock;
 
       // Get all segments connected to this node
-      const allSegs = wmeSDK.DataModel.Segments.getAll();
       const revNodeSegs = allSegs.filter((s) => s.fromNodeId === revNodeId || s.toNodeId === revNodeId).map((s) => s.id);
 
       // Remove the current segment from the list
       const filteredSegs = revNodeSegs.filter((id) => id !== reverseID);
 
       for (let i = 0; i < filteredSegs.length; i++) {
-        const conSegObj = wmeSDK.DataModel.Segments.getById({
-          segmentId: filteredSegs[i],
-        });
+        const conSegObj = await getSeg(filteredSegs[i]);
         if (!conSegObj) continue;
         if (conSegObj.roadType !== segType) {
           reverseLock = Math.max(conSegObj.lockRank ?? 0, reverseLock ?? 0);
@@ -3209,11 +3373,11 @@
     return Math.min(calculatedLock, 6); // Limit to L6
   }
 
-  function pushCityNameAlert(cityId, alertMessageParts) {
+  async function pushCityNameAlert(cityId, alertMessageParts) {
     let cityName = '';
     if (cityId) {
       try {
-        const city = wmeSDK.DataModel.Cities.getById({ cityId });
+        const city = await wmeSDK.DataModel.Cities.getById({ cityId });
         // Ensure city is fully loaded before accessing name
         cityName = city && city.name !== undefined ? city.name : '';
       } catch (e) {
@@ -3224,21 +3388,39 @@
     alertMessageParts.push(`City Name: <b>${cityName || 'None'}</b>`);
   }
 
-  // Helper: Returns true if the roadType is non-drivable (Footpath, Pedestrianised Area, Stairway, Ferry, Railway, Runway)
-  // Uses the WME SDK's isRoadTypeDrivable method which is more reliable and future-proof
-  function isNonDrivableType(roadType) {
+  // Helper: Returns true if the roadType is non-drivable (Footpath, Pedestrianised Area, Stairway, Ferry, Railway, Runway).
+  // WME SDK's isRoadTypeDrivable() is Promise-wrapped in async mode, so the set of
+  // non-drivable types is resolved once at init (see initNonDrivableRoadTypes) and
+  // isNonDrivableType() stays synchronous for use in hot loops.
+  const NON_DRIVABLE_FALLBACK = [5, 10, 16, 15, 18, 19];
+  let nonDrivableRoadTypes = null; // Set<number>, populated once at init
+
+  async function initNonDrivableRoadTypes() {
+    const set = new Set();
     try {
-      return !wmeSDK.DataModel.Segments.isRoadTypeDrivable({ roadType });
+      const values = [...new Set(roadTypes.map((rt) => rt.value))];
+      const results = await Promise.all(values.map(async (value) => {
+        let drivable = wmeSDK.DataModel.Segments.isRoadTypeDrivable({ roadType: value });
+        if (drivable && typeof drivable.then === 'function') drivable = await drivable;
+        return drivable ? null : value;
+      }));
+      results.forEach((value) => { if (value !== null) set.add(value); });
+      nonDrivableRoadTypes = set;
     } catch (e) {
-      // Fallback: hardcoded list if SDK method fails (e.g., during early init)
-      return [5, 10, 16, 15, 18, 19].includes(roadType);
+      // Leave nonDrivableRoadTypes null → the fallback list is used.
+      nonDrivableRoadTypes = null;
     }
   }
 
+  function isNonDrivableType(roadType) {
+    if (nonDrivableRoadTypes) return nonDrivableRoadTypes.has(roadType);
+    return NON_DRIVABLE_FALLBACK.includes(roadType);
+  }
+
   // Helper: Enable all turns at both nodes of a segment for routable road types
-  function enableAllTurnsForSegment(segmentId) {
+  async function enableAllTurnsForSegment(segmentId) {
     try {
-      const seg = wmeSDK.DataModel.Segments.getById({ segmentId });
+      const seg = await wmeSDK.DataModel.Segments.getById({ segmentId });
       if (!seg || isNonDrivableType(seg.roadType)) {
         log(`[${scriptName}] Skipping turn enablement for non-routable segment ${segmentId}`);
         return;
@@ -3246,22 +3428,22 @@
 
       const nodes = [seg.fromNodeId, seg.toNodeId].filter(nodeId => nodeId !== null);
       
-      nodes.forEach(nodeId => {
+      for (const nodeId of nodes) {
         try {
           // Check if we can edit turns at this node
-          if (!wmeSDK.DataModel.Turns.canEditTurnsThroughNode({ nodeId })) {
+          if (!(await wmeSDK.DataModel.Turns.canEditTurnsThroughNode({ nodeId }))) {
             log(`[${scriptName}] Cannot edit turns at node ${nodeId}`);
-            return;
+            continue;
           }
 
           // Get all turns through the node
-          const turns = wmeSDK.DataModel.Turns.getTurnsThroughNode({ nodeId });
+          const turns = await wmeSDK.DataModel.Turns.getTurnsThroughNode({ nodeId });
           
           // Enable all turns that aren't already allowed
-          turns.forEach(turn => {
+          for (const turn of turns) {
             try {
               if (!turn.isAllowed) {
-                wmeSDK.DataModel.Turns.updateTurn({ 
+                await wmeSDK.DataModel.Turns.updateTurn({ 
                   turnId: turn.id, 
                   isAllowed: true 
                 });
@@ -3270,11 +3452,11 @@
             } catch (turnError) {
               log(`[${scriptName}] Could not enable turn ${turn.id}: ${turnError.message}`);
             }
-          });
+          }
         } catch (nodeError) {
           log(`[${scriptName}] Error processing turns at node ${nodeId}: ${nodeError.message}`);
         }
-      });
+      }
       
       log(`[${scriptName}] Completed turn enablement for segment ${segmentId}`);
     } catch (error) {
@@ -3283,8 +3465,8 @@
   }
 
   // Helper: If switching between pedestrian and non-pedestrian types, delete and recreate the segment
-  function recreateSegmentIfNeeded(segmentId, targetRoadType, copyConnectedNameData) {
-    const seg = wmeSDK.DataModel.Segments.getById({ segmentId });
+  async function recreateSegmentIfNeeded(segmentId, targetRoadType, copyConnectedNameData) {
+    const seg = await wmeSDK.DataModel.Segments.getById({ segmentId });
     if (!seg) {
       log(`[${scriptName}] Segment ${segmentId} not found`);
       return segmentId;
@@ -3300,7 +3482,7 @@
         : 'You are about to convert a regular street segment to a Pedestrian type (Footpath, Pedestrianised Area, or Stairway). This will delete and recreate the segment. Continue?';
       
       // Define the recreation logic as a function to avoid duplication
-      const performRecreation = () => {
+      const performRecreation = async () => {
         try {
         // Save geometry and address
         const geometry = seg.geometry;
@@ -3311,7 +3493,7 @@
         
         // Delete old segment
         try {
-          wmeSDK.DataModel.Segments.deleteSegment({ segmentId });
+          await wmeSDK.DataModel.Segments.deleteSegment({ segmentId });
         } catch (ex) {
           const errorMsg = 'Segment could not be deleted. Please check for restrictions or junctions.';
           log(`[${scriptName}] Delete failed: ${ex.message}`);
@@ -3325,7 +3507,7 @@
 
         // Create new segment
         log(`[${scriptName}] Creating new segment with road type ${targetRoadType}`);
-        const newSegmentId = wmeSDK.DataModel.Segments.addSegment({ geometry, roadType: targetRoadType });
+        const newSegmentId = await wmeSDK.DataModel.Segments.addSegment({ geometry, roadType: targetRoadType });
         
         if (!newSegmentId) {
           log(`[${scriptName}] Failed to create new segment`);
@@ -3339,17 +3521,19 @@
         let validPrimaryStreetId = oldPrimaryStreetId;
         if (!validPrimaryStreetId) {
           // Use a blank street in the current city
-          let segCityId = getTopCity()?.id;
+          let segCityId = (await getTopCity())?.id;
           if (!segCityId) {
             // fallback to country if city is not available
-            segCityId = getCurrentCountry()?.id;
+            segCityId = (await getCurrentCountry())?.id;
           }
-          let blankStreet = wmeSDK.DataModel.Streets.getStreet({
+          // getStreet() returns a Promise in async mode — it is always truthy, so
+          // the `||` idiom this used before would never fall through to addStreet().
+          let blankStreet = await wmeSDK.DataModel.Streets.getStreet({
             cityId: segCityId,
             streetName: '',
           });
           if (!blankStreet) {
-            blankStreet = wmeSDK.DataModel.Streets.addStreet({
+            blankStreet = await wmeSDK.DataModel.Streets.addStreet({
               streetName: '',
               cityId: segCityId,
             });
@@ -3359,7 +3543,7 @@
 
         // Restore address with valid primaryStreetId
         log(`[${scriptName}] Restoring address for new segment ${newSegmentId}`);
-        wmeSDK.DataModel.Segments.updateAddress({
+        await wmeSDK.DataModel.Segments.updateAddress({
           segmentId: newSegmentId,
           addressData: {
             primaryStreetId: validPrimaryStreetId,
@@ -3370,7 +3554,7 @@
         // If we have connected segment name data to copy, apply it now
         if (copyConnectedNameData && copyConnectedNameData.primaryStreetId) {
           log(`[${scriptName}] Applying connected segment name data`);
-          wmeSDK.DataModel.Segments.updateAddress({
+          await wmeSDK.DataModel.Segments.updateAddress({
             segmentId: newSegmentId,
             addressData: {
               primaryStreetId: copyConnectedNameData.primaryStreetId,
@@ -3380,7 +3564,7 @@
         }
 
         // Reselect new segment
-        wmeSDK.Editing.setSelection({ selection: { ids: [newSegmentId], objectType: 'segment' } });
+        await wmeSDK.Editing.setSelection({ selection: { ids: [newSegmentId], objectType: 'segment' } });
 
         // If converting from pedestrian to routable, enable all turns
         if (currentIsPed && !targetIsPed) {
@@ -3462,8 +3646,8 @@
   // Helper: Count U-turns at a specific node
   // @param {number} nodeId - The node ID
   // @return {{allowed: number, disallowed: number}}
-  function countNodeUturns(nodeId) {
-    let turns = wmeSDK.DataModel.Turns.getTurnsThroughNode({ nodeId });
+  async function countNodeUturns(nodeId) {
+    let turns = await wmeSDK.DataModel.Turns.getTurnsThroughNode({ nodeId });
     turns = turns.filter((turn) => turn.isUTurn);
     return {
       allowed: turns.filter((turn) => turn.isAllowed).length,
@@ -3483,7 +3667,7 @@
   // turns"): turns whose state is UNKNOWN come back with isAllowed === false, so
   // `disallowed` below includes turns that are not explicitly disallowed yet.
   // @return {{nodes: number, allowed: number, disallowed: number}}
-  function countAllUturns() {
+  async function countAllUturns() {
     const counters = {
       nodes: 0,
       allowed: 0,
@@ -3492,14 +3676,14 @@
 
     try {
       // Nodes.getAll() returns a Node[] (each Node: { id, geometry, connectedSegmentIds }).
-      const nodes = wmeSDK.DataModel.Nodes.getAll();
+      const nodes = await wmeSDK.DataModel.Nodes.getAll();
 
       for (const node of nodes) {
         if (!node || !node.connectedSegmentIds || node.connectedSegmentIds.length < 2) continue;
 
         // Guard per node: one bad turn record must not discard the whole tally.
         try {
-          const counter = countNodeUturns(node.id);
+          const counter = await countNodeUturns(node.id);
           if (counter.allowed > 0 || counter.disallowed > 0) {
             counters.nodes++;
             counters.allowed += counter.allowed;
@@ -3517,9 +3701,9 @@
   }
 
   // Helper: Get the currently selected node using SDK selection API
-  function getSelectedNode() {
+  async function getSelectedNode() {
     try {
-      const selection = wmeSDK.Editing.getSelection();
+      const selection = await wmeSDK.Editing.getSelection();
       
       // Check if exactly one node is selected
       if (selection && selection.objectType === 'node' && selection.ids.length === 1) {
@@ -3596,9 +3780,9 @@
       allowBtn.style.marginBottom = '4px';
       allowBtn.style.display = 'none';
       allowBtn.style.width = '100%';
-      allowBtn.addEventListener('click', () => {
-        const node = getSelectedNode();
-        if (node) switchNodeUturn(node.id, true);
+      allowBtn.addEventListener('click', async () => {
+        const node = await getSelectedNode();
+        if (node) await switchNodeUturn(node.id, true);
       });
       container.appendChild(allowBtn);
       
@@ -3610,9 +3794,9 @@
       disallowBtn.innerHTML = 'Disallow All U-Turns';
       disallowBtn.style.display = 'none';
       disallowBtn.style.width = '100%';
-      disallowBtn.addEventListener('click', () => {
-        const node = getSelectedNode();
-        if (node) switchNodeUturn(node.id, false);
+      disallowBtn.addEventListener('click', async () => {
+        const node = await getSelectedNode();
+        if (node) await switchNodeUturn(node.id, false);
       });
       container.appendChild(disallowBtn);
       
@@ -3642,12 +3826,12 @@
   }
 
   // Helper: Update U-turn panel counter and button visibility
-  function updateUTurnPanel() {
+  async function updateUTurnPanel() {
     try {
-      const node = getSelectedNode();
+      const node = await getSelectedNode();
       if (!node || !uTurnPanelContainer) return;
       
-      const counter = countNodeUturns(node.id);
+      const counter = await countNodeUturns(node.id);
       const counterText = document.getElementById('ezroad-uturns-counter-text');
       const allowBtn = document.getElementById('ezroad-uturns-allow-btn');
       const disallowBtn = document.getElementById('ezroad-uturns-disallow-btn');
@@ -3666,7 +3850,7 @@
   }
 
   // Helper: Allow/Disallow all U-turns at a selected node
-  function switchNodeUturn(nodeId, status) {
+  async function switchNodeUturn(nodeId, status) {
     if (!nodeId) {
       log('[EZRoad] switchNodeUturn: No nodeId provided');
       return { success: false, message: 'No node selected' };
@@ -3678,12 +3862,12 @@
       return { success: false, message: 'WazeActionSetTurn not available. Please wait for WME to fully load and try again.' };
     }
     
-    if (!wmeSDK.DataModel.Turns.canEditTurnsThroughNode({ nodeId })) {
+    if (!(await wmeSDK.DataModel.Turns.canEditTurnsThroughNode({ nodeId }))) {
       log(`[EZRoad] switchNodeUturn: Cannot edit turns at node ${nodeId}`);
       return { success: false, message: 'Cannot edit turns at this node' };
     }
     
-    let turns = wmeSDK.DataModel.Turns.getTurnsThroughNode({ nodeId });
+    let turns = await wmeSDK.DataModel.Turns.getTurnsThroughNode({ nodeId });
     turns = turns.filter((turn) => turn.isUTurn);
     turns = turns.filter((turn) => turn.isAllowed !== status);
     
@@ -3724,17 +3908,17 @@
         }
       }
       
-      updateUTurnPanel();
+      await updateUTurnPanel();
       return { success: true, message: `${successCount} U-turns ${status ? 'allowed' : 'disallowed'}`, count: successCount };
     } catch (e) {
       log(`[EZRoad] Error switching node U-turns: ${e.message}`);
-      updateUTurnPanel();
+      await updateUTurnPanel();
       return { success: false, message: `Error: ${e.message}` };
     }
   }
 
   // Helper: Toggle U-turn for a specific segment direction (checks current state, then flips)
-  function switchSegmentUturn(segmentId, direction = 'A') {
+  async function switchSegmentUturn(segmentId, direction = 'A') {
     if (!segmentId) {
       log('[EZRoad] switchSegmentUturn: No segmentId provided');
       return { success: false, message: 'No segment provided' };
@@ -3746,7 +3930,7 @@
       return { success: false, message: 'WazeActionSetTurn not available. Please wait for WME to fully load and try again.' };
     }
     
-    const segment = wmeSDK.DataModel.Segments.getById({ segmentId });
+    const segment = await wmeSDK.DataModel.Segments.getById({ segmentId });
     if (!segment) {
       log(`[EZRoad] switchSegmentUturn: Segment ${segmentId} not found`);
       return { success: false, message: 'Segment not found' };
@@ -3763,16 +3947,16 @@
       return { success: false, message: `No node at direction ${direction}` };
     }
     
-    if (!wmeSDK.DataModel.Turns.canEditTurnsThroughNode({ nodeId })) {
+    if (!(await wmeSDK.DataModel.Turns.canEditTurnsThroughNode({ nodeId }))) {
       log(`[EZRoad] switchSegmentUturn: Cannot edit turns at node ${nodeId}`);
       return { success: false, message: 'Cannot edit turns at this node' };
     }
     
     // Get current state
-    let isCurrentlyAllowed = wmeSDK.DataModel.Turns.isTurnAllowed({ fromSegmentId: segmentId, nodeId: nodeId, toSegmentId: segmentId });
+    let isCurrentlyAllowed = await wmeSDK.DataModel.Turns.isTurnAllowed({ fromSegmentId: segmentId, nodeId: nodeId, toSegmentId: segmentId });
     let newStatus = !isCurrentlyAllowed; // Toggle
     
-    let turns = wmeSDK.DataModel.Turns.getTurnsThroughNode({ nodeId });
+    let turns = await wmeSDK.DataModel.Turns.getTurnsThroughNode({ nodeId });
     turns = turns.filter((turn) => turn.isUTurn);
     turns = turns.filter((turn) => turn.fromSegmentId === segmentId && turn.toSegmentId === segmentId);
     
@@ -3810,17 +3994,17 @@
       );
       
       log(`[EZRoad] U-turn at segment ${segmentId} direction ${direction} toggled to ${newStatus ? 'ALLOW' : 'DISALLOW'}`);
-      updateUTurnPanel();
+      await updateUTurnPanel();
       return { success: true, message: `U-turn toggled to ${newStatus ? 'allowed' : 'disallowed'}`, count: 1 };
     } catch (e) {
       log(`[EZRoad] Error toggling segment U-turn: ${e.message}`);
-      updateUTurnPanel();
+      await updateUTurnPanel();
       return { success: false, message: `Error: ${e.message}` };
     }
   }
 
-  const handleUpdate = () => {
-    const selection = wmeSDK.Editing.getSelection();
+  const handleUpdate = async () => {
+    const selection = await wmeSDK.Editing.getSelection();
 
     if (!selection || selection.objectType !== 'segment') return;
 
@@ -3828,7 +4012,7 @@
     try {
       // Validate that segments exist and are accessible
       for (let id of selection.ids) {
-        const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+        const seg = await wmeSDK.DataModel.Segments.getById({ segmentId: id });
         if (!seg) {
           log(`Segment ${id} not fully loaded, waiting...`);
           // Retry after a short delay
@@ -3857,20 +4041,24 @@
     if (options.copySegmentAttributes && !window.suppressCopySegmentAttributes) {
       selection.ids.forEach((id) => {
         updatePromises.push(
-          delayedUpdate(() => {
+          delayedUpdate(async () => {
             try {
-              const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+              const seg = await wmeSDK.DataModel.Segments.getById({ segmentId: id });
               const fromNode = seg.fromNodeId;
               const toNode = seg.toNodeId;
-              const connectedSegIds = getConnectedSegmentIDs(id);
+              const connectedSegIds = await getConnectedSegmentIDs(id);
               // Gather all segments connected to both nodes (excluding self)
-              const fromNodeSegs = connectedSegIds.map((sid) => wmeSDK.DataModel.Segments.getById({ segmentId: sid })).filter((s) => s && (s.fromNodeId === fromNode || s.fromNodeId === toNode || s.toNodeId === fromNode || s.toNodeId === toNode) && s.id !== id);
+              const resolvedFromNodeSegs = await Promise.all(
+                connectedSegIds.map((sid) => wmeSDK.DataModel.Segments.getById({ segmentId: sid }))
+              );
+              const fromNodeSegs = resolvedFromNodeSegs.filter((s) => s && (s.fromNodeId === fromNode || s.fromNodeId === toNode || s.toNodeId === fromNode || s.toNodeId === toNode) && s.id !== id);
               // Prefer the first fromNode segment with a valid primary street name (and optionally other attributes)
-              let preferredSeg = fromNodeSegs.find((s) => {
-                if (!s) return false;
-                const street = wmeSDK.DataModel.Streets.getById({ streetId: s.primaryStreetId });
-                return street && street.name;
-              });
+              let preferredSeg = null;
+              for (const s of fromNodeSegs) {
+                if (!s) continue;
+                const street = await wmeSDK.DataModel.Streets.getById({ streetId: s.primaryStreetId });
+                if (street && street.name) { preferredSeg = s; break; }
+              }
               let segsToTry = [];
               if (preferredSeg) {
                 segsToTry.push(preferredSeg.id);
@@ -3881,12 +4069,12 @@
               }
               let found = false;
               for (let connectedSegId of segsToTry) {
-                const connectedSeg = wmeSDK.DataModel.Segments.getById({ segmentId: connectedSegId });
+                const connectedSeg = await wmeSDK.DataModel.Segments.getById({ segmentId: connectedSegId });
                 if (!connectedSeg) continue;
-                const street = wmeSDK.DataModel.Streets.getById({ streetId: connectedSeg.primaryStreetId });
+                const street = await wmeSDK.DataModel.Streets.getById({ streetId: connectedSeg.primaryStreetId });
                 if (street && street.name) {
                   try {
-                    wmeSDK.DataModel.Segments.updateSegment({
+                    await wmeSDK.DataModel.Segments.updateSegment({
                       segmentId: id,
                       fwdSpeedLimit: connectedSeg.fwdSpeedLimit,
                       revSpeedLimit: connectedSeg.revSpeedLimit,
@@ -3912,7 +4100,7 @@
                         if (prop.value !== undefined && prop.value !== null) {
                           const updateObj = { segmentId: id };
                           updateObj[prop.name] = prop.value;
-                          wmeSDK.DataModel.Segments.updateSegment(updateObj);
+                          await wmeSDK.DataModel.Segments.updateSegment(updateObj);
                         }
                       } catch (e) {
                         log(`[${scriptName}] Failed to update ${prop.name}: ` + e);
@@ -3920,7 +4108,7 @@
                     }
                   }
                   try {
-                    wmeSDK.DataModel.Segments.updateAddress({
+                    await wmeSDK.DataModel.Segments.updateAddress({
                       segmentId: id,
                       addressData: {
                         primaryStreetId: connectedSeg.primaryStreetId,
@@ -3938,10 +4126,10 @@
               // If no connected segment with valid street name was found, fallback to any connected segment (like the other logic)
               if (!found) {
                 let fallbackSegId = null;
-                const segObj = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+                const segObj = await wmeSDK.DataModel.Segments.getById({ segmentId: id });
                 const fromNode = segObj.fromNodeId;
                 const toNode = segObj.toNodeId;
-                const allSegs = wmeSDK.DataModel.Segments.getAll();
+                const allSegs = await wmeSDK.DataModel.Segments.getAll();
                 for (let s of allSegs) {
                   if (s.id !== id && (s.fromNodeId === fromNode || s.toNodeId === fromNode || s.fromNodeId === toNode || s.toNodeId === toNode)) {
                     fallbackSegId = s.id;
@@ -3949,9 +4137,9 @@
                   }
                 }
                 if (fallbackSegId) {
-                  const connectedSeg = wmeSDK.DataModel.Segments.getById({ segmentId: fallbackSegId });
+                  const connectedSeg = await wmeSDK.DataModel.Segments.getById({ segmentId: fallbackSegId });
                   try {
-                    wmeSDK.DataModel.Segments.updateSegment({
+                    await wmeSDK.DataModel.Segments.updateSegment({
                       segmentId: id,
                       fwdSpeedLimit: connectedSeg.fwdSpeedLimit,
                       revSpeedLimit: connectedSeg.revSpeedLimit,
@@ -3977,7 +4165,7 @@
                         if (prop.value !== undefined && prop.value !== null) {
                           const updateObj = { segmentId: id };
                           updateObj[prop.name] = prop.value;
-                          wmeSDK.DataModel.Segments.updateSegment(updateObj);
+                          await wmeSDK.DataModel.Segments.updateSegment(updateObj);
                         }
                       } catch (e) {
                         log(`[${scriptName}] Failed to update ${prop.name}: ` + e);
@@ -3985,7 +4173,7 @@
                     }
                   }
                   try {
-                    wmeSDK.DataModel.Segments.updateAddress({
+                    await wmeSDK.DataModel.Segments.updateAddress({
                       segmentId: id,
                       addressData: {
                         primaryStreetId: connectedSeg.primaryStreetId,
@@ -4007,7 +4195,7 @@
           }, 100)
         );
       });
-      Promise.all(updatePromises).then(() => {
+      Promise.all(updatePromises).then(async () => {
         if (alertMessageParts.length) {
           if (WazeToastr?.Alerts) {
             WazeToastr.Alerts.info(`${scriptName}`, alertMessageParts.join('<br>'), false, false, 5000);
@@ -4017,11 +4205,10 @@
         }
         // --- AUTOSAVE LOGIC HERE ---
         if (options.autosave) {
-          setTimeout(() => {
+          setTimeout(async () => {
             log(`[${scriptName}] Delayed Autosave starting...`);
-            wmeSDK.Editing.save().then(() => {
-              log(`[${scriptName}] Delayed Autosave completed.`);
-            });
+            await wmeSDK.Editing.save();
+            log(`[${scriptName}] Delayed Autosave completed.`);
           }, 600);
         }
       });
@@ -4029,11 +4216,9 @@
     }
 
     // Apply motorbike restriction ONCE for all selected segments (before individual updates)
-    let motorcycleRestrictionApplied = false;
     if (options.restrictExceptMotorbike) {
       log(`[${scriptName}] Applying motorbike restriction to all selected segments via WME SDK...`);
-      applyMotorbikeOnlyRestriction(selection.ids[0]).then((result) => {
-        if (result === true) {
+      applyMotorbikeOnlyRestriction(selection.ids[0]).then((result) => {        if (result === true) {
           if (WazeToastr?.Alerts) {
             WazeToastr.Alerts.success(
               `${scriptName}`,
@@ -4060,19 +4245,18 @@
       }).catch((error) => {
         console.error(`[${scriptName}] Error applying motorbike restriction:`, error);
       });
-      motorcycleRestrictionApplied = true;
     }
 
     // Flag to track if we need to wait for async confirmation dialog
     let waitingForConfirmation = false;
     
-    selection.ids.forEach((origId, idx) => {
+    for (const origId of selection.ids) {
       let id = origId;
       let copyConnectedNameData = null;
       // --- Pedestrian type switching logic ---
       if (options.roadType) {
         // If copySegmentName is enabled and switching Street → Pedestrian, prefetch connected segment name
-        const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+        const seg = await wmeSDK.DataModel.Segments.getById({ segmentId: id });
         const currentIsPed = isNonDrivableType(seg.roadType);
         const targetIsPed = isNonDrivableType(options.roadType);
         if (!currentIsPed && targetIsPed && options.copySegmentName) {
@@ -4080,7 +4264,7 @@
           const fromNode = seg.fromNodeId;
           const toNode = seg.toNodeId;
           let connectedSegId = null;
-          const allSegs = wmeSDK.DataModel.Segments.getAll();
+          const allSegs = await wmeSDK.DataModel.Segments.getAll();
           for (let s of allSegs) {
             if (s.id !== id && (s.fromNodeId === fromNode || s.toNodeId === fromNode || s.fromNodeId === toNode || s.toNodeId === toNode)) {
               connectedSegId = s.id;
@@ -4088,20 +4272,20 @@
             }
           }
           if (connectedSegId) {
-            const connectedSeg = wmeSDK.DataModel.Segments.getById({ segmentId: connectedSegId });
+            const connectedSeg = await wmeSDK.DataModel.Segments.getById({ segmentId: connectedSegId });
             copyConnectedNameData = {
               primaryStreetId: connectedSeg.primaryStreetId,
               alternateStreetIds: connectedSeg.alternateStreetIds || [],
             };
           }
         }
-        const newId = recreateSegmentIfNeeded(id, options.roadType, copyConnectedNameData);
+        const newId = await recreateSegmentIfNeeded(id, options.roadType, copyConnectedNameData);
         if (newId === undefined) {
-          // Async confirmation dialog is pending - set flag and exit forEach
+          // Async confirmation dialog is pending - set flag and stop processing
           waitingForConfirmation = true;
-          return;
+          break;
         }
-        if (!newId) return; // If failed or cancelled, skip further updates for this segment
+        if (!newId) continue; // If failed or cancelled, skip further updates for this segment
         if (newId !== id) {
           id = newId; // Use the new segment ID for further updates
         }
@@ -4109,8 +4293,8 @@
 
       // Consolidated: Road Type + Lock + Speed + Unpaved (single atomic SDK call)
       updatePromises.push(
-        delayedUpdate(() => {
-          const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+        delayedUpdate(async () => {
+          const seg = await wmeSDK.DataModel.Segments.getById({ segmentId: id });
           const updateObj = { segmentId: id };
           let hasUpdates = false;
 
@@ -4132,14 +4316,14 @@
 
           // --- Lock Level ---
           if (options.setLock) {
-            const rank = wmeSDK.State.getUserInfo().rank;
+            const rank = (await wmeSDK.State.getUserInfo()).rank;
             const selectedRoad = roadTypes.find((rt) => rt.value === options.roadType);
             if (selectedRoad) {
               let lockSetting = options.locks.find((l) => l.id === selectedRoad.id);
               if (lockSetting) {
                 let toLock = lockSetting.lock;
                 if (toLock === 'HRCS') {
-                  toLock = getHighestSegLock(id);
+                  toLock = await getHighestSegLock(id);
                 } else {
                   toLock = parseInt(toLock, 10);
                   toLock = Math.max(toLock - 1, 0); // Adjust to 0-based rank, ensuring it does not go below 0
@@ -4235,7 +4419,7 @@
           // --- Execute single atomic update ---
           if (hasUpdates) {
             try {
-              wmeSDK.DataModel.Segments.updateSegment(updateObj);
+              await wmeSDK.DataModel.Segments.updateSegment(updateObj);
             } catch (error) {
               console.error(`[${scriptName}] Error updating segment:`, error);
             }
@@ -4247,17 +4431,17 @@
       if (options.setStreet || options.setStreetCity || (!options.setStreet && !options.setStreetCity)) {
         let city = null;
         let street = null;
-        const segment = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+        const segment = await wmeSDK.DataModel.Segments.getById({ segmentId: id });
         // --- City assignment logic ---
         if (options.setStreetCity) {
           // Checked: set city as none (empty city)
-          city = wmeSDK.DataModel.Cities.getAll().find((city) => city.isEmpty) || wmeSDK.DataModel.Cities.addCity({ cityName: '' });
+          city = (await wmeSDK.DataModel.Cities.getAll()).find((city) => city.isEmpty) || await wmeSDK.DataModel.Cities.addCity({ cityName: '' });
         } else {
           // Unchecked: try top city, then connected segment's city, then fallback to none
           city = null;
           // 1. Try top city
           try {
-            city = getTopCity();
+            city = await getTopCity();
             // Validate city is fully loaded
             if (city && city.name === undefined) {
               log('Top city not fully loaded, will check connected segments');
@@ -4273,9 +4457,9 @@
           if (!city || city.isEmpty) {
             log('Top city not found or empty, checking connected segments...');
             try {
-              const connectedAddress = getFirstConnectedSegmentAddress(id);
+              const connectedAddress = await getFirstConnectedSegmentAddress(id);
               if (connectedAddress && connectedAddress.city && connectedAddress.city.id) {
-                const connectedCity = wmeSDK.DataModel.Cities.getById({ cityId: connectedAddress.city.id });
+                const connectedCity = await wmeSDK.DataModel.Cities.getById({ cityId: connectedAddress.city.id });
                 log(`Connected segment city: ${connectedCity ? `name="${connectedCity.name}", isEmpty=${connectedCity.isEmpty}, id=${connectedCity.id}` : 'null'}`);
                 // Only use connected city if it's not empty and fully loaded
                 if (connectedCity && !connectedCity.isEmpty && connectedCity.name !== undefined) {
@@ -4292,24 +4476,24 @@
           // 3. If still not found or empty, fallback to none
           if (!city || city.isEmpty) {
             log('No valid city found, using empty city');
-            city = wmeSDK.DataModel.Cities.getAll().find((city) => city.isEmpty) || wmeSDK.DataModel.Cities.addCity({ cityName: '' });
+            city = (await wmeSDK.DataModel.Cities.getAll()).find((city) => city.isEmpty) || await wmeSDK.DataModel.Cities.addCity({ cityName: '' });
           }
         }
         // --- Street assignment logic ---
         if (options.setStreet) {
           // Set street name to none and remove all alt street names
-          street = wmeSDK.DataModel.Streets.getStreet({
+          street = await wmeSDK.DataModel.Streets.getStreet({
             cityId: city.id,
             streetName: '',
           });
           if (!street) {
-            street = wmeSDK.DataModel.Streets.addStreet({
+            street = await wmeSDK.DataModel.Streets.addStreet({
               streetName: '',
               cityId: city.id,
             });
           }
           // Remove all alternate street names
-          wmeSDK.DataModel.Segments.updateAddress({
+          await wmeSDK.DataModel.Segments.updateAddress({
             segmentId: id,
             addressData: {
               primaryStreetId: street.id,
@@ -4320,17 +4504,17 @@
           // Use the same street name as current, but in the empty city for both primary and all alts
           const currentStreet =
             segment && segment.primaryStreetId
-              ? wmeSDK.DataModel.Streets.getById({
+              ? await wmeSDK.DataModel.Streets.getById({
                   streetId: segment.primaryStreetId,
                 })
               : null;
           const streetName = currentStreet ? currentStreet.name || '' : '';
-          street = wmeSDK.DataModel.Streets.getStreet({
+          street = await wmeSDK.DataModel.Streets.getStreet({
             cityId: city.id,
             streetName: streetName,
           });
           if (!street) {
-            street = wmeSDK.DataModel.Streets.addStreet({
+            street = await wmeSDK.DataModel.Streets.addStreet({
               streetName: streetName,
               cityId: city.id,
             });
@@ -4338,67 +4522,67 @@
           // For all alternate street names, set them to the empty city as well
           let newAltStreetIds = [];
           if (segment && segment.alternateStreetIds) {
-            segment.alternateStreetIds.forEach((altStreetId) => {
-              const altStreet = wmeSDK.DataModel.Streets.getById({ streetId: altStreetId });
+            for (const altStreetId of segment.alternateStreetIds) {
+              const altStreet = await wmeSDK.DataModel.Streets.getById({ streetId: altStreetId });
               if (altStreet && altStreet.name !== undefined) {
-                let altInCity = wmeSDK.DataModel.Streets.getStreet({
+                let altInCity = await wmeSDK.DataModel.Streets.getStreet({
                   cityId: city.id,
                   streetName: altStreet.name || '',
                 });
                 if (!altInCity) {
-                  altInCity = wmeSDK.DataModel.Streets.addStreet({
+                  altInCity = await wmeSDK.DataModel.Streets.addStreet({
                     streetName: altStreet.name || '',
                     cityId: city.id,
                   });
                 }
                 newAltStreetIds.push(altInCity.id);
               }
-            });
+            }
           }
-          wmeSDK.DataModel.Segments.updateAddress({
+          await wmeSDK.DataModel.Segments.updateAddress({
             segmentId: id,
             addressData: {
               primaryStreetId: street.id,
               alternateStreetIds: newAltStreetIds,
             },
           });
-          pushCityNameAlert(city.id, alertMessageParts);
+          await pushCityNameAlert(city.id, alertMessageParts);
           updatedCityName = true;
         } else {
           // If both setStreet and setStreetCity are unchecked, always update city for primary and alt names
           if (segment && (segment.primaryStreetId || (segment.alternateStreetIds && segment.alternateStreetIds.length))) {
             // Update primary street to new city
-            let currentStreet = segment.primaryStreetId ? wmeSDK.DataModel.Streets.getById({ streetId: segment.primaryStreetId }) : null;
+            let currentStreet = segment.primaryStreetId ? await wmeSDK.DataModel.Streets.getById({ streetId: segment.primaryStreetId }) : null;
             let streetName = currentStreet ? currentStreet.name || '' : '';
             log(`Before getStreet/addStreet: cityId=${city.id}, streetName="${streetName}"`);
-            street = wmeSDK.DataModel.Streets.getStreet({ cityId: city.id, streetName });
+            street = await wmeSDK.DataModel.Streets.getStreet({ cityId: city.id, streetName });
             if (!street) {
               log(`Street not found, creating new street with cityId=${city.id}, streetName="${streetName}"`);
-              street = wmeSDK.DataModel.Streets.addStreet({ streetName, cityId: city.id });
+              street = await wmeSDK.DataModel.Streets.addStreet({ streetName, cityId: city.id });
             }
             log(`After getStreet/addStreet: street.id=${street?.id}, street.cityId=${street?.cityId}`);
             // Update alt streets to new city
             let newAltStreetIds = [];
             if (segment && segment.alternateStreetIds && city) {
-              segment.alternateStreetIds.forEach((altStreetId) => {
-                const altStreet = wmeSDK.DataModel.Streets.getById({ streetId: altStreetId });
+              for (const altStreetId of segment.alternateStreetIds) {
+                const altStreet = await wmeSDK.DataModel.Streets.getById({ streetId: altStreetId });
                 if (altStreet && altStreet.name !== undefined) {
-                  let altInCity = wmeSDK.DataModel.Streets.getStreet({
+                  let altInCity = await wmeSDK.DataModel.Streets.getStreet({
                     cityId: city.id,
                     streetName: altStreet.name || '',
                   });
                   if (!altInCity) {
-                    altInCity = wmeSDK.DataModel.Streets.addStreet({
+                    altInCity = await wmeSDK.DataModel.Streets.addStreet({
                       streetName: altStreet.name || '',
                       cityId: city.id,
                     });
                   }
                   newAltStreetIds.push(altInCity.id);
                 }
-              });
+              }
             }
             log(`About to updateAddress: cityId=${city.id}, street.id=${street.id}, altStreetIds=${newAltStreetIds.join(',')}`);
-            wmeSDK.DataModel.Segments.updateAddress({
+            await wmeSDK.DataModel.Segments.updateAddress({
               segmentId: id,
               addressData: {
                 primaryStreetId: street.id,
@@ -4408,11 +4592,11 @@
           } else {
             // New/empty street fallback - use the city we already determined above (from top city or connected segments)
             log(`Segment has no primary street, using determined city: ${city ? `id=${city.id}, name="${city.name}"` : 'null'}`);
-            street = wmeSDK.DataModel.Streets.getStreet({ cityId: city.id, streetName: '' });
+            street = await wmeSDK.DataModel.Streets.getStreet({ cityId: city.id, streetName: '' });
             if (!street) {
-              street = wmeSDK.DataModel.Streets.addStreet({ streetName: '', cityId: city.id });
+              street = await wmeSDK.DataModel.Streets.addStreet({ streetName: '', cityId: city.id });
             }
-            wmeSDK.DataModel.Segments.updateAddress({
+            await wmeSDK.DataModel.Segments.updateAddress({
               segmentId: id,
               addressData: {
                 primaryStreetId: street.id,
@@ -4453,14 +4637,14 @@
       //   - No changes made to selected segment
       // =========================================================================
       updatePromises.push(
-        delayedUpdate(() => {
+        delayedUpdate(async () => {
           if (options.copySegmentName) {
             try {
-              const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+              const seg = await wmeSDK.DataModel.Segments.getById({ segmentId: id });
               // Per WME SDK docs: reverseDirection=false gets segments at fromNode (A side), reverseDirection=true gets segments at toNode (B side)
               // This correctly handles both physical nodes and virtual nodes used by pedestrian segments
-              const aSideSegs = wmeSDK.DataModel.Segments.getConnectedSegments({ segmentId: id, reverseDirection: true });
-              const bSideSegs = wmeSDK.DataModel.Segments.getConnectedSegments({ segmentId: id, reverseDirection: false });
+              const aSideSegs = await wmeSDK.DataModel.Segments.getConnectedSegments({ segmentId: id, reverseDirection: true });
+              const bSideSegs = await wmeSDK.DataModel.Segments.getConnectedSegments({ segmentId: id, reverseDirection: false });
               
               // Build segsToTry: A side first, then B side
               // Both sides are considered for TIER 1 matching, and the logic prioritizes by altCount
@@ -4481,7 +4665,7 @@
               
               if (selectedSegStreetId) {
                 try {
-                  const selectedStreet = wmeSDK.DataModel.Streets.getById({ streetId: selectedSegStreetId });
+                  const selectedStreet = await wmeSDK.DataModel.Streets.getById({ streetId: selectedSegStreetId });
                   if (selectedStreet && selectedStreet.name) {
                     selectedSegStreetName = selectedStreet.name;
                   }
@@ -4490,16 +4674,16 @@
                 }
               }
               
-              selectedSegAltStreetIds.forEach((altId) => {
+              for (const altId of selectedSegAltStreetIds) {
                 try {
-                  const altStreet = wmeSDK.DataModel.Streets.getById({ streetId: altId });
+                  const altStreet = await wmeSDK.DataModel.Streets.getById({ streetId: altId });
                   if (altStreet && altStreet.name) {
                     selectedSegAltNames.push(altStreet.name);
                   }
                 } catch (e) {
                   log(`Error getting selected segment's alternate street: ${e}`);
                 }
-              });
+              }
               
               let found = false;
               log(`[copySegmentName] Starting with ${segsToTry.length} connected segments. Selected primary="${selectedSegStreetName}"`);
@@ -4508,14 +4692,14 @@
               // Collect all TIER 1 matches, then prioritize those with alt names
               let tier1Matches = [];
               for (let connectedSegId of segsToTry) {
-                const connectedSeg = wmeSDK.DataModel.Segments.getById({ segmentId: connectedSegId });
+                const connectedSeg = await wmeSDK.DataModel.Segments.getById({ segmentId: connectedSegId });
                 if (!connectedSeg) continue;
                 
                 const connectedStreetId = connectedSeg.primaryStreetId;
                 let connectedStreetName = '';
                 
                 try {
-                  const connectedStreet = wmeSDK.DataModel.Streets.getById({ streetId: connectedStreetId });
+                  const connectedStreet = await wmeSDK.DataModel.Streets.getById({ streetId: connectedStreetId });
                   if (connectedStreet && connectedStreet.name === undefined && connectedStreet.cityId === undefined) {
                     log(`[copySegmentName] Segment ${connectedSegId}: Street not fully loaded, skipping`);
                     continue;
@@ -4554,7 +4738,7 @@
                 let connectedAltNames = [];
                 
                 try {
-                  const connectedStreet = wmeSDK.DataModel.Streets.getById({ streetId: connectedStreetId });
+                  const connectedStreet = await wmeSDK.DataModel.Streets.getById({ streetId: connectedStreetId });
                   if (connectedStreet && connectedStreet.name) {
                     connectedStreetName = connectedStreet.name;
                   }
@@ -4564,9 +4748,9 @@
                 
                 // Get all alternate names
                 log(`[copySegmentName] Connected segment has ${connectedAltStreetIds.length} alt IDs: ${connectedAltStreetIds.join(', ')}`);
-                connectedAltStreetIds.forEach((altId) => {
+                for (const altId of connectedAltStreetIds) {
                   try {
-                    const altStreet = wmeSDK.DataModel.Streets.getById({ streetId: altId });
+                    const altStreet = await wmeSDK.DataModel.Streets.getById({ streetId: altId });
                     if (altStreet && altStreet.name) {
                       connectedAltNames.push({ name: altStreet.name, id: altId });
                       log(`[copySegmentName] Alt ID ${altId}: "${altStreet.name}"`);
@@ -4576,7 +4760,7 @@
                   } catch (e) {
                     log(`[copySegmentName] Error loading alt ID ${altId}: ${e}`);
                   }
-                });
+                }
                 log(`[copySegmentName] Total alt names found: ${connectedAltNames.length}`);
                 log(`[copySegmentName] Selected segment currently has ${selectedSegAltStreetIds.length} alt IDs: ${selectedSegAltStreetIds.join(', ')}`);
                 log(`[copySegmentName] Selected segment alt names: ${selectedSegAltNames.join(', ')}`);
@@ -4616,13 +4800,13 @@
                 
                 // Apply the update
                 if (options.setStreetCity) {
-                  const emptyCity = wmeSDK.DataModel.Cities.getAll().find((city) => city.isEmpty) || wmeSDK.DataModel.Cities.addCity({ cityName: '' });
-                  let primaryStreetInEmptyCity = wmeSDK.DataModel.Streets.getStreet({
+                  const emptyCity = (await wmeSDK.DataModel.Cities.getAll()).find((city) => city.isEmpty) || await wmeSDK.DataModel.Cities.addCity({ cityName: '' });
+                  let primaryStreetInEmptyCity = await wmeSDK.DataModel.Streets.getStreet({
                     cityId: emptyCity.id,
                     streetName: selectedSegStreetName || '',
                   });
                   if (!primaryStreetInEmptyCity) {
-                    primaryStreetInEmptyCity = wmeSDK.DataModel.Streets.addStreet({
+                    primaryStreetInEmptyCity = await wmeSDK.DataModel.Streets.addStreet({
                       streetName: selectedSegStreetName || '',
                       cityId: emptyCity.id,
                     });
@@ -4630,36 +4814,36 @@
                   newPrimaryStreetId = primaryStreetInEmptyCity.id;
                   
                   let newAltStreetIdsInEmptyCity = [];
-                  newAltStreetIds.forEach((altId) => {
-                    const altStreet = wmeSDK.DataModel.Streets.getById({ streetId: altId });
+                  for (const altId of newAltStreetIds) {
+                    const altStreet = await wmeSDK.DataModel.Streets.getById({ streetId: altId });
                     if (altStreet && altStreet.name) {
-                      let altInEmptyCity = wmeSDK.DataModel.Streets.getStreet({
+                      let altInEmptyCity = await wmeSDK.DataModel.Streets.getStreet({
                         cityId: emptyCity.id,
                         streetName: altStreet.name,
                       });
                       if (!altInEmptyCity) {
-                        altInEmptyCity = wmeSDK.DataModel.Streets.addStreet({
+                        altInEmptyCity = await wmeSDK.DataModel.Streets.addStreet({
                           streetName: altStreet.name,
                           cityId: emptyCity.id,
                         });
                       }
                       newAltStreetIdsInEmptyCity.push(altInEmptyCity.id);
                     }
-                  });
+                  }
                   
                   log(`[copySegmentName] Calling updateAddress (setStreetCity=true) with primaryStreetId=${newPrimaryStreetId}, alternateStreetIds=[${newAltStreetIdsInEmptyCity.join(', ')}]`);
-                  wmeSDK.DataModel.Segments.updateAddress({
+                  await wmeSDK.DataModel.Segments.updateAddress({
                     segmentId: id,
                     addressData: {
                       primaryStreetId: newPrimaryStreetId,
                       alternateStreetIds: newAltStreetIdsInEmptyCity,
                     },
                   });
-                  pushCityNameAlert(emptyCity.id, alertMessageParts);
+                  await pushCityNameAlert(emptyCity.id, alertMessageParts);
                   updatedCityName = true;
                 } else {
                   log(`[copySegmentName] Calling updateAddress with primaryStreetId=${newPrimaryStreetId}, alternateStreetIds=[${newAltStreetIds.join(', ')}]`);
-                  wmeSDK.DataModel.Segments.updateAddress({
+                  await wmeSDK.DataModel.Segments.updateAddress({
                     segmentId: id,
                     addressData: {
                       primaryStreetId: newPrimaryStreetId,
@@ -4667,9 +4851,9 @@
                     },
                   });
                   if (connectedSeg.primaryStreetId) {
-                    const connectedPrimaryStreet = wmeSDK.DataModel.Streets.getById({ streetId: connectedSeg.primaryStreetId });
+                    const connectedPrimaryStreet = await wmeSDK.DataModel.Streets.getById({ streetId: connectedSeg.primaryStreetId });
                     if (connectedPrimaryStreet) {
-                      pushCityNameAlert(connectedPrimaryStreet.cityId, alertMessageParts);
+                      await pushCityNameAlert(connectedPrimaryStreet.cityId, alertMessageParts);
                       updatedCityName = true;
                     }
                   }
@@ -4685,7 +4869,7 @@
                 let tier2Candidates = [];
                 
                 for (let connectedSegId of segsToTry) {
-                  const connectedSeg = wmeSDK.DataModel.Segments.getById({ segmentId: connectedSegId });
+                  const connectedSeg = await wmeSDK.DataModel.Segments.getById({ segmentId: connectedSegId });
                   if (!connectedSeg) continue;
                   
                   const connectedStreetId = connectedSeg.primaryStreetId;
@@ -4695,7 +4879,7 @@
                   // Get connected segment's primary street name
                   let connectedStreet = null;
                   try {
-                    connectedStreet = wmeSDK.DataModel.Streets.getById({ streetId: connectedStreetId });
+                    connectedStreet = await wmeSDK.DataModel.Streets.getById({ streetId: connectedStreetId });
                     if (connectedStreet && connectedStreet.name === undefined && connectedStreet.cityId === undefined) {
                       log(`[copySegmentName] Segment ${connectedSegId}: Street not fully loaded, skipping`);
                       continue;
@@ -4752,9 +4936,9 @@
                   
                   // Get connected segment's alternate street names
                   log(`[copySegmentName] Connected segment ${connectedSegId} has ${connectedAltStreetIds.length} alt street IDs: ${connectedAltStreetIds.join(', ')}`);
-                  connectedAltStreetIds.forEach((altId) => {
+                  for (const altId of connectedAltStreetIds) {
                     try {
-                      const altStreet = wmeSDK.DataModel.Streets.getById({ streetId: altId });
+                      const altStreet = await wmeSDK.DataModel.Streets.getById({ streetId: altId });
                       if (altStreet && altStreet.name) {
                         connectedAltNames.push({ name: altStreet.name, id: altId });
                         log(`[copySegmentName] Alt ID ${altId}: "${altStreet.name}"`);
@@ -4764,7 +4948,7 @@
                     } catch (e) {
                       log(`[copySegmentName] Alt ID ${altId}: Error loading - ${e}`);
                     }
-                  });
+                  }
                   log(`[copySegmentName] Successfully loaded names for ${connectedAltNames.length}/${connectedAltStreetIds.length} alt IDs`);
                   
                   let newPrimaryStreetId = selectedSegStreetId;
@@ -4797,15 +4981,15 @@
                   
                   // Apply the address update
                   if (options.setStreetCity) {
-                    const emptyCity = wmeSDK.DataModel.Cities.getAll().find((city) => city.isEmpty) || wmeSDK.DataModel.Cities.addCity({ cityName: '' });
+                    const emptyCity = (await wmeSDK.DataModel.Cities.getAll()).find((city) => city.isEmpty) || await wmeSDK.DataModel.Cities.addCity({ cityName: '' });
                     
                     // Create/find street for primary in empty city
-                    let primaryStreetInEmptyCity = wmeSDK.DataModel.Streets.getStreet({
+                    let primaryStreetInEmptyCity = await wmeSDK.DataModel.Streets.getStreet({
                       cityId: emptyCity.id,
                       streetName: selectedCandidate.streetName || '',
                     });
                     if (!primaryStreetInEmptyCity) {
-                      primaryStreetInEmptyCity = wmeSDK.DataModel.Streets.addStreet({
+                      primaryStreetInEmptyCity = await wmeSDK.DataModel.Streets.addStreet({
                         streetName: selectedCandidate.streetName || '',
                         cityId: emptyCity.id,
                       });
@@ -4814,34 +4998,34 @@
                     
                     // Create/find streets for alts in empty city
                     let newAltStreetIdsInEmptyCity = [];
-                    newAltStreetIds.forEach((altId) => {
-                      const altStreet = wmeSDK.DataModel.Streets.getById({ streetId: altId });
+                    for (const altId of newAltStreetIds) {
+                      const altStreet = await wmeSDK.DataModel.Streets.getById({ streetId: altId });
                       if (altStreet && altStreet.name) {
-                        let altInEmptyCity = wmeSDK.DataModel.Streets.getStreet({
+                        let altInEmptyCity = await wmeSDK.DataModel.Streets.getStreet({
                           cityId: emptyCity.id,
                           streetName: altStreet.name,
                         });
                         if (!altInEmptyCity) {
-                          altInEmptyCity = wmeSDK.DataModel.Streets.addStreet({
+                          altInEmptyCity = await wmeSDK.DataModel.Streets.addStreet({
                             streetName: altStreet.name,
                             cityId: emptyCity.id,
                           });
                         }
                         newAltStreetIdsInEmptyCity.push(altInEmptyCity.id);
                       }
-                    });
+                    }
                     
-                    wmeSDK.DataModel.Segments.updateAddress({
+                    await wmeSDK.DataModel.Segments.updateAddress({
                       segmentId: id,
                       addressData: {
                         primaryStreetId: newPrimaryStreetId,
                         alternateStreetIds: newAltStreetIdsInEmptyCity,
                       },
                     });
-                    pushCityNameAlert(emptyCity.id, alertMessageParts);
+                    await pushCityNameAlert(emptyCity.id, alertMessageParts);
                     updatedCityName = true;
                   } else {
-                    wmeSDK.DataModel.Segments.updateAddress({
+                    await wmeSDK.DataModel.Segments.updateAddress({
                       segmentId: id,
                       addressData: {
                         primaryStreetId: newPrimaryStreetId,
@@ -4849,9 +5033,9 @@
                       },
                     });
                     if (connectedSeg.primaryStreetId) {
-                      const connectedPrimaryStreet = wmeSDK.DataModel.Streets.getById({ streetId: connectedSeg.primaryStreetId });
+                      const connectedPrimaryStreet = await wmeSDK.DataModel.Streets.getById({ streetId: connectedSeg.primaryStreetId });
                       if (connectedPrimaryStreet) {
-                        pushCityNameAlert(connectedPrimaryStreet.cityId, alertMessageParts);
+                        await pushCityNameAlert(connectedPrimaryStreet.cityId, alertMessageParts);
                         updatedCityName = true;
                       }
                     }
@@ -4876,9 +5060,9 @@
    // Enable U-Turn logic: Only allow if not already allowed
    // Enable U-Turn if option is checked
     updatePromises.push(
-      delayedUpdate(() => {
+      delayedUpdate(async () => {
         // Skip U-turn updates for pedestrian type segments (non-routable)
-        const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+        const seg = await wmeSDK.DataModel.Segments.getById({ segmentId: id });
         if (seg && isNonDrivableType(seg.roadType)) {
           log(`[EZRoad] Skipping U-turn update for Non-Drivable segment (roadType: ${seg.roadType})`);
           return;
@@ -4888,7 +5072,7 @@
           let sideAResult = null;
           let sideBResult = null;
 
-          function switchSegmentUturnHybrid(direction = 'A') {
+          async function switchSegmentUturnHybrid(direction = 'A') {
             // Use W Model with SDK-obtained Node ID (bypasses broken segment.getFromNode/getToNode)
             // W model is the reliable method for turn updates.
             //
@@ -4912,7 +5096,7 @@
               }
               
               // Get node ID from SDK (this works reliably)
-              const sdkSeg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+              const sdkSeg = await wmeSDK.DataModel.Segments.getById({ segmentId: id });
               if (!sdkSeg) {
                 return 'failed';
               }
@@ -4950,8 +5134,8 @@
           }
 
           try {
-            sideAResult = switchSegmentUturnHybrid('A');
-            sideBResult = switchSegmentUturnHybrid('B');
+            sideAResult = await switchSegmentUturnHybrid('A');
+            sideBResult = await switchSegmentUturnHybrid('B');
 
             // Handle alert messaging based on results
             if (sideAResult === 'enabled' || sideBResult === 'enabled') {
@@ -4973,7 +5157,7 @@
         }
       }, 450)
     );
-    });
+    }
 
     // If waiting for async confirmation, exit early - don't process any updates
     if (waitingForConfirmation) {
@@ -4981,29 +5165,30 @@
       return;
     }
 
-    Promise.all(updatePromises).then(() => {
+    await Promise.all(updatePromises);
+    {
       // Update U-turn panel if a node is currently selected
       try {
-        updateUTurnPanel();
+        await updateUTurnPanel();
       } catch (e) {
         log(`[EZRoad] Error updating U-turn panel: ${e.message}`);
       }
       
       // Always push city name alert if not already set by other actions
-      selection.ids.forEach((id) => {
+      for (const id of selection.ids) {
         if (!alertMessageParts.some((part) => part.startsWith('City Name'))) {
-          const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
+          const seg = await wmeSDK.DataModel.Segments.getById({ segmentId: id });
           if (seg && seg.primaryStreetId) {
-            const street = wmeSDK.DataModel.Streets.getById({
+            const street = await wmeSDK.DataModel.Streets.getById({
               streetId: seg.primaryStreetId,
             });
             if (street) {
-              pushCityNameAlert(street.cityId, alertMessageParts);
+              await pushCityNameAlert(street.cityId, alertMessageParts);
               updatedCityName = true;
             }
           }
         }
-      });
+      }
 
       const showAlert = () => {
         const updatedFeatures = [];
@@ -5026,12 +5211,11 @@
 
       // Autosave - DELAYED AUTOSAVE
       if (options.autosave) {
-        setTimeout(() => {
+        setTimeout(async () => {
           log(`[${scriptName}] Delayed Autosave starting...`);
-          wmeSDK.Editing.save().then(() => {
-            log(`[${scriptName}] Delayed Autosave completed.`);
-            showAlert();
-          });
+          await wmeSDK.Editing.save();
+          log(`[${scriptName}] Delayed Autosave completed.`);
+          showAlert();
         }, 600); // 1000ms (1 second) delay before autosave
       } else {
         showAlert();
@@ -5039,9 +5223,9 @@
 
       // Refresh UI with updated status by reselecting the segments
       if (selection && selection.ids && selection.ids.length > 0) {
-        wmeSDK.Editing.setSelection({ selection: { ids: selection.ids, objectType: 'segment' } });
+        await wmeSDK.Editing.setSelection({ selection: { ids: selection.ids, objectType: 'segment' } });
       }
-    });
+    }
   };
 
   const constructSettings = () => {
@@ -5286,14 +5470,14 @@
 
         // Handle Segment Length / Geometry Check / Segment Connection toggle
         if (option.key === 'showSegmentLength' || option.key === 'checkGeometryIssues' || option.key === 'validateNodeConnection' || option.key === 'copySegmentAttributes') {
-          handleSegmentLengthToggle();
+          handleSegmentLengthToggle().catch(e => log(e));
         }
       });
       return div;
     };
 
     // -- Set up the tab for the script
-    wmeSDK.Sidebar.registerScriptTab().then(({ tabLabel, tabPane }) => {
+    wmeSDK.Sidebar.registerScriptTab().then(async ({ tabLabel, tabPane }) => {
       tabLabel.innerText = 'EZRoads Mod🅱️';
       tabLabel.title = 'Easily Update Roads';
 
@@ -5441,7 +5625,7 @@
       });
 
       // Handle geometry threshold input change
-      $(document).on('change', '#geometryIssueThreshold', function () {
+      $(document).on('change', '#geometryIssueThreshold', async function () {
         let thresholdValue = parseFloat($(this).val());
         if (isNaN(thresholdValue) || thresholdValue < 0.1) {
           thresholdValue = 2;
@@ -5453,12 +5637,12 @@
         update('geometryIssueThreshold', thresholdValue);
         // Refresh display if geometry check is enabled
         if (localOptions.checkGeometryIssues) {
-          rebuildSegmentLengthDisplay();
+          await rebuildSegmentLengthDisplay();
         }
       });
 
       // Handle connection check radius input change
-      $(document).on('change', '#connectionCheckRadius', function () {
+      $(document).on('change', '#connectionCheckRadius', async function () {
         let radiusValue = parseFloat($(this).val());
         if (isNaN(radiusValue) || radiusValue < 1) {
           radiusValue = 5;
@@ -5470,10 +5654,9 @@
         update('connectionCheckRadius', radiusValue);
         // Refresh display if segment connection validation is enabled
         if (localOptions.validateNodeConnection) {
-          rebuildSegmentLengthDisplay();
+          await rebuildSegmentLengthDisplay();
         }
       });
-
       // Update all lock dropdowns when setLock checkbox changes
       $(document).on('click', '#setLock', function () {
         const isChecked = $(this).prop('checked');
