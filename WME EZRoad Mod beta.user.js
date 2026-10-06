@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.7.6.2
+// @version      2.7.6.6
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -30,8 +30,8 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.7.6.2 - 2026-09-27:</strong><br>
-    - Bug fixes and performance improvements.<br>
+  const updateMessage = `<strong>Version 2.7.6.6 - 2026-10-06:</strong><br>
+    - - Fixed a save error that occurred when a segment was created two-way with a U-turn allowed, then changed to one-way. WME refuses to save an allowed U-turn on a one-way segment, so the leftover record made the save fail with an error.<br><br>
 `;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
@@ -2099,6 +2099,18 @@
       },
     });
 
+    // Reconcile U-turns after ANY edit (direction changes, road-type changes, the
+    // script's own writes). An edit event fires after the change is recorded, so
+    // isTwoWay is current by the time the debounced pass runs - the fixed-delay
+    // approach inside handleUpdate() read stale data and never cleaned up.
+    // See disallowOneWaySegmentUturns() for why this is needed at all.
+    wmeSDK.Events.on({
+      eventName: 'wme-after-edit',
+      eventHandler: () => {
+        scheduleUturnReconcile();
+      },
+    });
+
     wmeSDK.Events.on({
       eventName: 'wme-after-redo-clear',
       eventHandler: () => {
@@ -3459,6 +3471,150 @@
     }
   }
 
+  // Helper: A U-turn is only physically possible on a two-way segment.
+  // Guards every legacy U-turn mutation path so a one-way segment can never
+  // have its (nonsensical) U-turn record flipped to ALLOW.
+  // Uses the SDK Segment.isTwoWay flag; falls back to isDrivable + direction
+  // when the property is missing during early init. Returns false on error,
+  // so the safe default is "not editable" rather than "assume two-way".
+  // @param {number} segmentId - The segment ID
+  // @return {boolean} true only when the segment is confirmed two-way
+  function isTwoWaySegmentForUturn(segmentId) {
+    try {
+      const seg = wmeSDK.DataModel.Segments.getById({ segmentId });
+      if (!seg) return false;
+      if (typeof seg.isTwoWay === 'boolean') return seg.isTwoWay;
+      // Fallback: a drivable segment with undetermined direction is treated as
+      // non-two-way (conservative) unless the raw direction string says TWO_WAY.
+      const dir = typeof getDirectionFromSegment === 'function' ? getDirectionFromSegment(seg) : null;
+      return dir === 'TWO_WAY';
+    } catch (e) {
+      log(`[EZRoad] isTwoWaySegmentForUturn: could not resolve segment ${segmentId}: ${e.message}`);
+      return false;
+    }
+  }
+
+  // Helper: Reconcile U-turns with a segment's current direction (cleanup only).
+  //
+  // WHY THIS EXISTS: a U-turn may be ALLOWED while the segment is two-way, then the
+  // editor flips the segment to ONE-WAY. The allowed U-turn record survives the
+  // direction change, but WME cannot save a U-turn on a one-way segment, so the save
+  // fails. Skipping one-way segments (isTwoWaySegmentForUturn) is not enough on its
+  // own: it prevents NEW allowed U-turns but never removes an EXISTING invalid one.
+  // This helper is the counterpart that cleans up.
+  //
+  // It NEVER enables a U-turn - it only sets isAllowed=false on the U-turns of a
+  // segment that is NOT two-way. Callers must pass a segment they have just changed
+  // direction on (or any segment whose direction may no longer be two-way).
+  //
+  // NOTE: SDK DataModel.Turns.updateTurn cannot address U-turn ids (verified beta
+  // v2.373 - DataModelNotFoundError), so this uses the same legacy WazeActionSetTurn
+  // path as the other U-turn mutations.
+  //
+  // TIMING (learned the hard way, beta v2.373):
+  // Calling this from a fixed delay inside handleUpdate() does NOT work. The
+  // direction change is written by the road-type path, but the data model does not
+  // report isTwoWay=false until the change has actually landed, so a 450ms-delayed
+  // call read the segment as "still two-way" and early-outed. Verified in console:
+  // at 450ms -> isTwoWay=true; after the edit settles -> isTwoWay=false.
+  // The reliable trigger is an EDIT EVENT (wme-after-edit), which by definition fires
+  // after the change is recorded; see the debounced reconciler below.
+  // @return {number} count of U-turns disallowed
+  function disallowOneWaySegmentUturns(segmentId) {
+    if (!segmentId) return 0;
+    // Two-way segments keep whatever the user set - nothing to reconcile.
+    if (isTwoWaySegmentForUturn(segmentId)) return 0;
+
+    const sdkSeg = wmeSDK.DataModel.Segments.getById({ segmentId });
+    if (!sdkSeg) {
+      log(`[EZRoad] disallowOneWaySegmentUturns: segment ${segmentId} not found`);
+      return 0;
+    }
+
+    if (typeof W === 'undefined' || !W.model || !W.model.getTurnGraph || !W.model.actionManager) {
+      log('[EZRoad] disallowOneWaySegmentUturns: W model not available');
+      return 0;
+    }
+    if (!ensureWazeActionSetTurnLoaded()) {
+      log('[EZRoad] disallowOneWaySegmentUturns: WazeActionSetTurn not available');
+      return 0;
+    }
+
+    let fixed = 0;
+    [sdkSeg.fromNodeId, sdkSeg.toNodeId].filter((nodeId) => nodeId != null).forEach((nodeId) => {
+      try {
+        if (!wmeSDK.DataModel.Turns.canEditTurnsThroughNode({ nodeId })) return;
+
+        // Only the U-turns belonging to THIS segment that are still allowed need fixing.
+        const staleAllowed = wmeSDK.DataModel.Turns.getTurnsThroughNode({ nodeId })
+          .filter((t) => t.isUTurn && t.isAllowed)
+          .filter((t) => t.fromSegmentId === segmentId && t.toSegmentId === segmentId);
+        if (staleAllowed.length === 0) return;
+
+        const wNode = W.model.nodes.getObjectById(nodeId);
+        const wSeg = W.model.segments.getObjectById(segmentId);
+        if (!wNode || !wSeg) return;
+
+        const wTurn = W.model.getTurnGraph().getTurnThroughNode(wNode, wSeg, wSeg);
+        if (!wTurn) return;
+
+        W.model.actionManager.add(
+          new WazeActionSetTurn(
+            W.model.getTurnGraph(),
+            wTurn.withTurnData(wTurn.getTurnData().withState(0)) // 0 = DISALLOW
+          )
+        );
+        fixed += staleAllowed.length;
+        log(`[EZRoad] Cleaned up ${staleAllowed.length} invalid allowed U-turn(s) at node ${nodeId} on one-way segment ${segmentId}`);
+      } catch (e) {
+        log(`[EZRoad] disallowOneWaySegmentUturns: node ${nodeId} failed: ${e.message}`);
+      }
+    });
+
+    return fixed;
+  }
+
+  // Helper: Reconcile U-turns across the current selection, debounced.
+  //
+  // Driven by edit events (see the wme-after-edit listener in initSegmentLengthLayer).
+  // An edit event fires AFTER a change is recorded, so isTwoWay already reflects the
+  // new direction - unlike a fixed delay inside handleUpdate(), which read stale data
+  // and early-outed (verified beta v2.373).
+  //
+  // Only touches segments that are NOT two-way, and only ever disallows U-turns, so
+  // running it on every edit is safe: it cannot create a U-turn, and for a two-way
+  // segment it returns immediately.
+  let _uturnReconcileTimer = null;
+  function scheduleUturnReconcile() {
+    if (_uturnReconcileTimer) clearTimeout(_uturnReconcileTimer);
+    _uturnReconcileTimer = setTimeout(() => {
+      _uturnReconcileTimer = null;
+      try {
+        // Reconcile the current selection first (the common case: the editor just
+        // changed the selected segment's direction).
+        const selection = wmeSDK.Editing.getSelection();
+        const candidates = new Set();
+        if (selection && selection.objectType === 'segment' && selection.ids) {
+          selection.ids.forEach((id) => candidates.add(id));
+        }
+
+        let totalFixed = 0;
+        candidates.forEach((segmentId) => {
+          try {
+            totalFixed += disallowOneWaySegmentUturns(segmentId);
+          } catch (e) {
+            log(`[EZRoad] reconcile(${segmentId}) failed: ${e.message}`);
+          }
+        });
+        if (totalFixed > 0) {
+          log(`[EZRoad] Reconcile: disallowed ${totalFixed} invalid U-turn(s) after edit`);
+        }
+      } catch (e) {
+        log(`[EZRoad] scheduleUturnReconcile failed: ${e.message}`);
+      }
+    }, 250);
+  }
+
   // Helper: Count U-turns at a specific node
   // @param {number} nodeId - The node ID
   // @return {{allowed: number, disallowed: number}}
@@ -3686,13 +3842,29 @@
     let turns = wmeSDK.DataModel.Turns.getTurnsThroughNode({ nodeId });
     turns = turns.filter((turn) => turn.isUTurn);
     turns = turns.filter((turn) => turn.isAllowed !== status);
-    
+
+    // Guard: never enable a U-turn on a one-way segment. A U-turn requires the
+    // underlying segment to be two-way; one-way U-turn records are silently
+    // skipped (per design) so bulk "Allow All U-Turns" stays usable at mixed nodes.
+    const turnsBeforeTwoWayGuard = turns.length;
+    turns = turns.filter((turn) => isTwoWaySegmentForUturn(turn.fromSegmentId));
+    const skippedOneWayCount = turnsBeforeTwoWayGuard - turns.length;
+    if (skippedOneWayCount > 0) {
+      log(`[EZRoad] switchNodeUturn: skipped ${skippedOneWayCount} U-turn(s) on one-way segment(s) at node ${nodeId}`);
+    }
+
     if (turns.length === 0) {
+      if (skippedOneWayCount > 0) {
+        log(`[EZRoad] Node ${nodeId}: no two-way U-turns to change (skipped ${skippedOneWayCount} one-way)`);
+        return { success: false, message: `No two-way U-turns to change at this node (${skippedOneWayCount} one-way skipped)`, count: 0 };
+      }
       log(`[EZRoad] Node ${nodeId}: all U-turns are already ${status ? 'ALLOWED' : 'DISALLOWED'}`);
       return { success: true, message: `All U-turns already ${status ? 'allowed' : 'disallowed'}`, count: 0 };
     }
     
     // Use W model with SDK node ID
+    // (Legacy path required: SDK Turns.updateTurn/getById cannot resolve U-turn ids —
+    //  verified beta v2.373, see repo memory uturn-updateTurn-verification.)
     try {
       if (typeof W === 'undefined' || !W.model || !W.model.getTurnGraph || !W.model.actionManager) {
         log('[EZRoad] switchNodeUturn: W model not available');
@@ -3752,7 +3924,7 @@
       return { success: false, message: 'Segment not found' };
     }
     
-    if (!segment.isTwoWay) {
+    if (!isTwoWaySegmentForUturn(segmentId)) {
       log(`[EZRoad] switchSegmentUturn: Segment ${segmentId} is not two-way`);
       return { success: false, message: 'Segment is not two-way' };
     }
@@ -3782,6 +3954,8 @@
     }
     
     // Use W model with SDK node ID
+    // (Legacy path required: SDK Turns.updateTurn/getById cannot resolve U-turn ids —
+    //  verified beta v2.373, see repo memory uturn-updateTurn-verification.)
     try {
       if (typeof W === 'undefined' || !W.model || !W.model.getTurnGraph || !W.model.actionManager) {
         log('[EZRoad] switchSegmentUturn: W model not available');
@@ -4883,7 +5057,12 @@
           log(`[EZRoad] Skipping U-turn update for Non-Drivable segment (roadType: ${seg.roadType})`);
           return;
         }
-        
+
+        // NOTE: the one-way U-turn cleanup does NOT run here. A fixed delay in this
+        // chain reads stale data (the direction change has not landed yet), so it
+        // early-outed and cleaned nothing - verified on beta v2.373. The cleanup is
+        // driven by the wme-after-edit event instead; see scheduleUturnReconcile().
+
         if (options.enableUTurn) {
           let sideAResult = null;
           let sideBResult = null;
@@ -4892,9 +5071,16 @@
             // Use W Model with SDK-obtained Node ID (bypasses broken segment.getFromNode/getToNode)
             // W model is the reliable method for turn updates.
             //
-            // NOTE: Uses deprecated WazeActionSetTurn instead of SDK.DataModel.Turns.updateTurn
-            // because the SDK method rejects the encoded turnId format (SDK limitation/bug).
-            // Will switch to SDK once that issue is resolved.
+            // NOTE: MUST keep the legacy WazeActionSetTurn path for U-turns.
+            // Verified on beta v2.373 (2026-10-06): SDK.DataModel.Turns.updateTurn
+            // throws `DataModelNotFoundError: turn with id: <id> not found in
+            // data model` for every U-turn id returned by getTurnsThroughNode,
+            // and Turns.getById cannot resolve those ids either. U-turns are
+            // node-synthesised records, not stored turns, so the SDK turn model
+            // does not cover them. (Normal turns still use SDK updateTurn - see
+            // enableAllTurnsForSegment.) Re-test only if a future SDK changelog
+            // changes the turn model.
+            // Guard: one-way segments are skipped and never mutated below.
             
             if (typeof W === 'undefined' || !W.model || !W.model.getTurnGraph || !W.model.actionManager) {
               return 'failed';
@@ -4908,6 +5094,12 @@
 
               const seg = W.model.segments.getObjectById(id);
               if (!seg || seg.isOneWay()) {
+                return 'skipped';
+              }
+
+              // Guard: only two-way segments can carry a U-turn (SDK check kept
+              // in sync with switchNodeUturn / switchSegmentUturn).
+              if (!isTwoWaySegmentForUturn(id)) {
                 return 'skipped';
               }
               
@@ -5806,6 +5998,25 @@ if (typeof require !== 'undefined') {
 
   /*
 Changelog
+<strong>Version 2.7.6.6 - 2026-10-06:</strong><br>
+    - Verified the 2.7.6.5 fix end to end: create a segment two-way with a U-turn allowed, change it to one-way, Save - it now succeeds. The cleanup log shows the leftover allowed U-turn being disallowed at each node, and nothing left to clean on the next pass.<br>
+    - Removed the temporary [EZRoad][DIAG] logging that was used to pin down the timing, and dropped the now-redundant disallowOneWaySegmentUturns() call from inside the Quick Update chain. The event-driven reconciler (wme-after-edit, debounced 250ms) is the single path, so there is one place that decides when the cleanup runs instead of two that can disagree.<br>
+    - No behaviour change beyond that: the cleanup is still disallow-only and still returns immediately for a two-way segment.<br>
+<strong>Version 2.7.6.5 - 2026-10-06:</strong><br>
+    - The one-way U-turn cleanup now runs on edit events (wme-after-edit), debounced 250ms, instead of a fixed 450ms delay inside the Quick Update chain. Why: the direction change is written by the road-type path, and the data model does not report isTwoWay=false until that change has actually landed. The delayed call therefore read the segment as "still two-way" and early-outed without cleaning anything - confirmed in console on beta v2.373 (at 450ms: isTwoWay=true; after the edit settled: isTwoWay=false). Edit events fire after the change is recorded, so the state is current when the cleanup runs.<br>
+    - This is the real fix for the 2.7.6.4 change, which was correct in logic but wrong in timing. It also covers manual Save (not just Quick Update), because the cleanup no longer depends on the update chain running.<br>
+    - The cleanup remains disallow-only: it can never enable a U-turn, and returns immediately for a two-way segment, so running it on every edit is safe.<br>
+    - Temporary [EZRoad][DIAG] logging is still in place to confirm the fix, and will be removed once verified.<br>
+<strong>Version 2.7.6.4 - 2026-10-06:</strong><br>
+    - Fixed a save error that occurred when a segment was created two-way with a U-turn allowed, then changed to one-way. WME refuses to save an allowed U-turn on a one-way segment, so the leftover record made the save fail with an error.<br>
+    - Added disallowOneWaySegmentUturns(): a cleanup-only reconciliation that runs on every Quick Update for each selected segment regardless of the Enable U-Turn option. If the segment is no longer two-way, any allowed U-turn on it is set back to DISALLOW before the save, so the invalid state can no longer reach WME. It only ever disallows - it can never enable a U-turn - so it is safe to run unconditionally.<br>
+    - This closes a gap left by the 2.7.6.3 guard: that change stopped the script from *creating* a U-turn on a one-way segment, but a direction change performed outside the U-turn feature could still leave an *existing* allowed U-turn behind, which the guard alone did not clean up.<br>
+<strong>Version 2.7.6.3 - 2026-10-06:</strong><br>
+    - U-turn edits are now guarded against one-way segments. A U-turn only exists on a two-way segment (WME cannot allow a U-turn where there is no reverse direction), so a one-way U-turn record must never be flipped. All three mutation paths are covered: "Allow/Disallow All U-Turns at Node", the Toggle U-Turn A/B shortcuts, and the Enable U-Turn option in the bulk update. One-way U-turns are skipped rather than reported as errors, so a mixed node still processes its valid two-way U-turns; if nothing is actionable the action is a no-op with a count of what was skipped.<br>
+    - Added isTwoWaySegmentForUturn(): one shared definition of "two-way" (SDK Segment.isTwoWay, falling back to the raw direction and defaulting to false on error) replaces the previously separate checks, including the raw isTwoWay check in switchSegmentUturn and the isOneWay() check in the bulk path.<br>
+    - Kept the legacy WazeActionSetTurn path for U-turns, deliberately and with the reason recorded in the code. Verified on WME beta v2.373 that SDK DataModel.Turns.updateTurn throws "DataModelNotFoundError: turn with id: ... not found in data model" for every U-turn id returned by getTurnsThroughNode, and that Turns.getById cannot resolve those ids either - U-turns are node-synthesised, not stored turns, so the SDK turn model does not cover them. Normal turns still use the SDK (see enableAllTurnsForSegment); only U-turns need the legacy action. Re-test only if a future SDK changelog changes the turn model.<br>
+<strong>Version 2.7.6.2 - 2026-09-27:</strong><br>
+    - Bug fixes and performance improvements.<br>
 <strong>Version 2.7.6.1 - 2026-09-26:</strong><br>
     - Shortcut registration now asks the shared "WME Key Codes" library (v1.1.0) for the ordered list of key spellings to try, instead of rebuilding that rule locally. Two copies of one rule is how they drift apart, and the drift is exactly what broke Ctrl+Up: the script asked the library to render a combo and WME to bind it, with nothing checking that those two agreed.<br>
     - If the loaded library is older than 1.1.0 (e.g. served from the @require cache) the script falls back to the saved spellings and warns, so name-only keys are visibly affected rather than silently dead.<br>
