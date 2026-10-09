@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.7.7.0
+// @version      2.7.7.1
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -30,10 +30,9 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.7.7.0 - 2026-10-09:</strong><br>
-    - Added an "Auto-apply to new segments" option. When checked, any newly created segment is updated automatically with the currently active options (the same logic as the Quick Update Segment button). Detection uses the WME SDK data model "objects added" event, confirmed with DataModel.isNew() so only genuinely new segments are processed.<br>
-    - The option also has a keyboard shortcut (toggle it in WME Settings \u2192 Keyboard Shortcuts), like the other feature toggles.<br>
-    - Auto-applied updates never autosave: the "Autosave on Action" behaviour is suppressed for that pass, so auto-applied edits stay unsaved for you to review. All other triggers (Quick Update button, shortcuts) keep autosaving as before.<br><br>
+  const updateMessage = `<strong>Version 2.7.7.1 - 2026-10-09:</strong><br>
+    - Removed the legacy fixed delays from the Quick Update pipeline. The 100/200/450ms timers dated from a pre-SDK era when the data model needed time to settle between writes; the current WME SDK applies segment updates synchronously, so the phases are now awaited in order (attributes -> address/name -> U-turn) instead of racing on timers. Behaviour is the same, just deterministic and faster.<br>
+    - Autosave now awaits the actual save (a Promise) instead of a 600ms timer, so the success toast/last step no longer races the save.<br><br>
 `;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
@@ -2163,7 +2162,7 @@
 
           // Debounce: wait for WME to materialise the segment and select it.
           if (_autoApplyTimer) clearTimeout(_autoApplyTimer);
-          _autoApplyTimer = setTimeout(() => {
+          _autoApplyTimer = setTimeout(async () => {
             _autoApplyTimer = null;
             try {
               const selection = wmeSDK.Editing.getSelection();
@@ -2175,14 +2174,12 @@
               _autoApplyInProgress = true;
               window.suppressAutoApply = true;
               try {
-                handleUpdate();
+                // handleUpdate now awaits every phase (including any autosave), so
+                // the suppression flags only need to stay up until it resolves.
+                await handleUpdate();
               } finally {
-                // handleUpdate schedules its writes on timers; keep the flags up
-                // briefly so the delayed writes still count as auto-apply.
-                setTimeout(() => {
-                  _autoApplyInProgress = false;
-                  window.suppressAutoApply = false;
-                }, 1500);
+                _autoApplyInProgress = false;
+                window.suppressAutoApply = false;
               }
             } catch (err) {
               _autoApplyInProgress = false;
@@ -3220,14 +3217,34 @@
   }
   // ===== End Lane Count Update Buttons =====
 
-  const delayedUpdate = (updateFn, delay) => {
+  // Runs one update phase and resolves when it is done.
+  //
+  // HISTORY: this used to be `delayedUpdate(fn, delay)` with 100/200/450ms timers,
+  // kept from a pre-SDK era where the data model needed time to settle between
+  // writes. The current WME SDK (verified against beta v2.373, 2026-09-30) applies
+  // Segments.updateSegment synchronously, so those arbitrary delays are no longer
+  // required: the phases below are simply awaited in order, which is what the
+  // timers were really buying us - a deterministic sequence, not a specific delay.
+  //
+  // A 0ms timeout (not a direct call) is still used so each phase runs on its own
+  // macrotask and the ordering is explicit even if a phase throws.
+  const runPhase = (updateFn) => {
     return new Promise((resolve) => {
       setTimeout(() => {
-        updateFn();
+        try {
+          updateFn();
+        } catch (e) {
+          console.error(`[${scriptName}] Update phase failed:`, e);
+        }
         resolve();
-      }, delay);
+      }, 0);
     });
   };
+
+  // Waits `ms` for WME to materialise state that the SDK does not report yet
+  // (e.g. a brand-new segment created by addSegment). Only for genuine async gaps,
+  // NOT for sequencing - use runPhase()/await for that.
+  const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   // Set true while an Auto-apply-to-new-segments pass is running. When set, every
   // autosave path in the script is suppressed, so auto-applied edits stay unsaved
@@ -3486,11 +3503,12 @@
 
         // If converting from pedestrian to routable, enable all turns
         if (currentIsPed && !targetIsPed) {
-          // Use setTimeout to ensure segment is fully created before enabling turns
-          setTimeout(() => {
+          // Let WME materialise the newly created segment before enabling turns
+          // (a genuine async gap - the SDK does not report the new segment yet).
+          settle(300).then(() => {
             log(`[${scriptName}] Enabling turns after conversion from pedestrian to routable type`);
             enableAllTurnsForSegment(newSegmentId);
-          }, 300);
+          });
         }
 
         log(`[${scriptName}] Successfully recreated segment: ${segmentId} -> ${newSegmentId}`);
@@ -4083,7 +4101,7 @@
     }
   }
 
-  const handleUpdate = () => {
+  const handleUpdate = async () => {
     const selection = wmeSDK.Editing.getSelection();
 
     if (!selection || selection.objectType !== 'segment') return;
@@ -4115,14 +4133,12 @@
     let updatedCityName = false;
     let updatedSegmentName = false;
     let updatedUTurn = false;
-    const updatePromises = [];
 
     // If copySegmentAttributes is checked, copy all attributes from a connected segment
     if (options.copySegmentAttributes && !window.suppressCopySegmentAttributes) {
-      selection.ids.forEach((id) => {
-        updatePromises.push(
-          delayedUpdate(() => {
-            try {
+      for (const id of selection.ids) {
+        await runPhase(() => {
+          try {
               const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
               const fromNode = seg.fromNodeId;
               const toNode = seg.toNodeId;
@@ -4268,28 +4284,22 @@
             } catch (error) {
               console.error(`[${scriptName}] Error copying all attributes:`, error);
             }
-          }, 100)
-        );
-      });
-      Promise.all(updatePromises).then(() => {
-        if (alertMessageParts.length) {
-          if (WazeToastr?.Alerts) {
-            WazeToastr.Alerts.info(`${scriptName}`, alertMessageParts.join('<br>'), false, false, 5000);
-          } else {
-            alert(`${scriptName} ` + alertMessageParts.join('\n'));
-          }
+        });
+      }
+      if (alertMessageParts.length) {
+        if (WazeToastr?.Alerts) {
+          WazeToastr.Alerts.info(`${scriptName}`, alertMessageParts.join('<br>'), false, false, 5000);
+        } else {
+          alert(`${scriptName} ` + alertMessageParts.join('\n'));
         }
-        // --- AUTOSAVE LOGIC HERE ---
-        // Suppressed during an Auto-apply pass (see _autoApplyInProgress).
-        if (options.autosave && !_autoApplyInProgress) {
-          setTimeout(() => {
-            log(`[${scriptName}] Delayed Autosave starting...`);
-            wmeSDK.Editing.save().then(() => {
-              log(`[${scriptName}] Delayed Autosave completed.`);
-            });
-          }, 600);
-        }
-      });
+      }
+      // --- AUTOSAVE LOGIC HERE ---
+      // Suppressed during an Auto-apply pass (see _autoApplyInProgress).
+      if (options.autosave && !_autoApplyInProgress) {
+        await wmeSDK.Editing.save().then(() => {
+          log(`[${scriptName}] Autosave completed.`);
+        });
+      }
       return;
     }
 
@@ -4331,7 +4341,7 @@
     // Flag to track if we need to wait for async confirmation dialog
     let waitingForConfirmation = false;
     
-    selection.ids.forEach((origId, idx) => {
+    for (const origId of selection.ids) {
       let id = origId;
       let copyConnectedNameData = null;
       // --- Pedestrian type switching logic ---
@@ -4362,19 +4372,18 @@
         }
         const newId = recreateSegmentIfNeeded(id, options.roadType, copyConnectedNameData);
         if (newId === undefined) {
-          // Async confirmation dialog is pending - set flag and exit forEach
+          // Async confirmation dialog is pending - set flag and stop processing further segments
           waitingForConfirmation = true;
-          return;
+          break;
         }
-        if (!newId) return; // If failed or cancelled, skip further updates for this segment
+        if (!newId) continue; // If failed or cancelled, skip further updates for this segment
         if (newId !== id) {
           id = newId; // Use the new segment ID for further updates
         }
       }
 
       // Consolidated: Road Type + Lock + Speed + Unpaved (single atomic SDK call)
-      updatePromises.push(
-        delayedUpdate(() => {
+      await runPhase(() => {
           const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
           const updateObj = { segmentId: id };
           let hasUpdates = false;
@@ -4505,8 +4514,7 @@
               console.error(`[${scriptName}] Error updating segment:`, error);
             }
           }
-        }, 200)
-      );
+      });
 
       // Handling the street
       if (options.setStreet || options.setStreetCity || (!options.setStreet && !options.setStreetCity)) {
@@ -4717,8 +4725,7 @@
       //   - If no connected segment has any names, skip copying
       //   - No changes made to selected segment
       // =========================================================================
-      updatePromises.push(
-        delayedUpdate(() => {
+      await runPhase(() => {
           if (options.copySegmentName) {
             try {
               const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
@@ -5136,12 +5143,10 @@
               console.error('Error copying segment name:', error);
             }
           }
-        }, 100)
-      ); // Run early in the update chain
+      }); // Run in order: attributes -> address/name -> U-turn
    // Enable U-Turn logic: Only allow if not already allowed
    // Enable U-Turn if option is checked
-    updatePromises.push(
-      delayedUpdate(() => {
+    await runPhase(() => {
         // Skip U-turn updates for pedestrian type segments (non-routable)
         const seg = wmeSDK.DataModel.Segments.getById({ segmentId: id });
         if (seg && isNonDrivableType(seg.roadType)) {
@@ -5254,9 +5259,8 @@
             console.error('Error switching U-turn:', error);
           }
         }
-      }, 450)
-    );
-    });
+      });
+    } // end for (const origId of selection.ids)
 
     // If waiting for async confirmation, exit early - don't process any updates
     if (waitingForConfirmation) {
@@ -5264,7 +5268,8 @@
       return;
     }
 
-    Promise.all(updatePromises).then(() => {
+    // All phases above were awaited in order, so the updates are already applied.
+    {
       // Update U-turn panel if a node is currently selected
       try {
         updateUTurnPanel();
@@ -5307,16 +5312,13 @@
         }
       };
 
-      // Autosave - DELAYED AUTOSAVE
-      // Suppressed during an Auto-apply pass (see _autoApplyInProgress).
+      // Autosave — suppressed during an Auto-apply pass (see _autoApplyInProgress).
+      // Save is a Promise, so it is awaited rather than run on a fixed timer.
       if (options.autosave && !_autoApplyInProgress) {
-        setTimeout(() => {
-          log(`[${scriptName}] Delayed Autosave starting...`);
-          wmeSDK.Editing.save().then(() => {
-            log(`[${scriptName}] Delayed Autosave completed.`);
-            showAlert();
-          });
-        }, 600); // 1000ms (1 second) delay before autosave
+        await wmeSDK.Editing.save().then(() => {
+          log(`[${scriptName}] Autosave completed.`);
+          showAlert();
+        });
       } else {
         showAlert();
       }
@@ -5325,7 +5327,7 @@
       if (selection && selection.ids && selection.ids.length > 0) {
         wmeSDK.Editing.setSelection({ selection: { ids: selection.ids, objectType: 'segment' } });
       }
-    });
+    }
   };
 
   const constructSettings = () => {
@@ -6096,6 +6098,12 @@ if (typeof require !== 'undefined') {
 
   /*
 Changelog
+<strong>Version 2.7.7.1 - 2026-10-09:</strong><br>
+    - Removed the fixed 100/200/450ms delays from the Quick Update pipeline (handleUpdate) and replaced them with awaited, ordered phases. Those delays were introduced before the SDK supported grouped updateSegment writes, when the data model needed time to settle between edits. Verified against WME SDK beta v2.373 that Segments.updateSegment applies synchronously and accepts grouped parameters, so the timers were only ever buying a deterministic order - which awaiting the phases gives directly.<br>
+    - New order is explicit: attribute copy -> road type/lock/speed/unpaved -> address -> segment name -> U-turn, all awaited per selected segment.<br>
+    - Autosave now awaits Editing.save() (a Promise) instead of a 600ms timer, so the completion toast no longer races the save.<br>
+    - Kept the delays that cover a real async gap (WME materialising a brand-new segment): the 300ms wait before enabling turns after a pedestrian<->routable recreation, and the 350ms auto-apply debounce.<br>
+    - The auto-apply pass now awaits handleUpdate() and clears its suppression flags in a finally, instead of guessing with a 1500ms timeout.<br>
 <strong>Version 2.7.7.0 - 2026-10-09:</strong><br>
     - Added an "Auto-apply to new segments" option (default off). When enabled, every newly created segment (drawn, split, roundabout, ...) is updated automatically using the currently active options - the same code path as the Quick Update Segment button. Detection uses the WME SDK data model "objects added" event (wme-data-model-objects-added, after trackDataModelEvents), with DataModel.isNew() confirming the object is a brand-new unsaved segment.<br>
     - The option can be toggled from the settings panel or via its own keyboard shortcut (configurable in WME Settings \u2192 Keyboard Shortcuts), consistent with the other feature toggles.<br>
