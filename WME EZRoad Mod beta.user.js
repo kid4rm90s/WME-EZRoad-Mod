@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME EZRoad Mod Beta
 // @namespace    https://greasyfork.org/users/1087400
-// @version      2.7.6.6
+// @version      2.7.7.0
 // @description  Easily update roads
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -30,8 +30,10 @@
 
 (function main() {
   ('use strict');
-  const updateMessage = `<strong>Version 2.7.6.6 - 2026-10-06:</strong><br>
-    - - Fixed a save error that occurred when a segment was created two-way with a U-turn allowed, then changed to one-way. WME refuses to save an allowed U-turn on a one-way segment, so the leftover record made the save fail with an error.<br><br>
+  const updateMessage = `<strong>Version 2.7.7.0 - 2026-10-09:</strong><br>
+    - Added an "Auto-apply to new segments" option. When checked, any newly created segment is updated automatically with the currently active options (the same logic as the Quick Update Segment button). Detection uses the WME SDK data model "objects added" event, confirmed with DataModel.isNew() so only genuinely new segments are processed.<br>
+    - The option also has a keyboard shortcut (toggle it in WME Settings \u2192 Keyboard Shortcuts), like the other feature toggles.<br>
+    - Auto-applied updates never autosave: the "Autosave on Action" behaviour is suppressed for that pass, so auto-applied edits stay unsaved for you to review. All other triggers (Quick Update button, shortcuts) keep autosaving as before.<br><br>
 `;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
@@ -97,6 +99,7 @@
     enableUTurn: false,
     restrictExceptMotorbike: false,
     updateLanes: false,
+    autoApplyToNewSegments: false,
     sdkShortcuts: {},
   };
 
@@ -213,6 +216,7 @@
     'WME_EZRoad_Mod_SplitSegment': 'SplitSegment',
     'WME_EZRoad_Mod_UpdateLaneCount': 'updateLanes',
     'WME_EZRoad_Mod_validateNodeConnection': 'validateNodeConnection',
+    'WME_EZRoad_Mod_AutoApplyNewSegments': 'autoApplyToNewSegments',
   };
 
   // ===== SDK SHORTCUT DEFINITIONS (data-driven, no hardcoded keys) =====
@@ -478,6 +482,12 @@
       description: 'Validate Node Connection',
       settingsKey: 'validateNodeConnection',
       callback: function() { handleToggle('validateNodeConnection', 'Validate Node Connection'); },
+    });
+    defs.push({
+      id: 'EZRoad_Mod_AutoApplyNewSegments',
+      description: 'Auto-apply to new segments',
+      settingsKey: 'autoApplyToNewSegments',
+      callback: function() { handleToggle('autoApplyToNewSegments', 'Auto-apply to new segments'); },
     });
     return defs;
   }
@@ -777,8 +787,9 @@
         }
 
         // Optional autosave (consistent with the rest of the script).
+        // Suppressed during an Auto-apply pass (see _autoApplyInProgress).
         const options = getOptions();
-        if (options && options.autosave) {
+        if (options && options.autosave && !_autoApplyInProgress) {
           setTimeout(() => {
             wmeSDK.Editing.save().then(() => {
               log(`[${scriptName}] Autosave completed after motorbike restriction`);
@@ -895,8 +906,9 @@
     log(`[Elevation] ${summary}`);
 
     // Honour the script-wide "Autosave on Action" option, as the other action
-    // shortcuts (e.g. motorbike restriction) do.
-    if (getOptions()?.autosave) {
+    // shortcuts (e.g. motorbike restriction) do. Suppressed during an Auto-apply
+    // pass so auto-applied edits are never saved automatically.
+    if (getOptions()?.autosave && !_autoApplyInProgress) {
       wmeSDK.Editing.save().then(() => log('[Elevation] Autosave completed'));
     }
   }
@@ -1049,8 +1061,8 @@
           newOpts.copySegmentAttributes = true;
           saveOptions(newOpts);
         }
-      } else if (optionKey !== 'autosave' && optionKey !== 'showSegmentLength' && optionKey !== 'checkGeometryIssues' && optionKey !== 'validateNodeConnection' && optionKey !== 'restrictExceptMotorbike') {
-        // If any other checkbox (except autosave, showSegmentLength, checkGeometryIssues, validateNodeConnection, restrictExceptMotorbike) is checked, uncheck copySegmentAttributes
+      } else if (optionKey !== 'autosave' && optionKey !== 'showSegmentLength' && optionKey !== 'checkGeometryIssues' && optionKey !== 'validateNodeConnection' && optionKey !== 'restrictExceptMotorbike' && optionKey !== 'autoApplyToNewSegments') {
+        // If any other checkbox (except autosave, showSegmentLength, checkGeometryIssues, validateNodeConnection, restrictExceptMotorbike, autoApplyToNewSegments) is checked, uncheck copySegmentAttributes
         if (options[optionKey]) {
           $('#copySegmentAttributes').prop('checked', false);
           const newOpts = getOptions();
@@ -2111,6 +2123,79 @@
       },
     });
 
+    // ===== AUTO-APPLY TO NEW SEGMENTS =====
+    // When the option is on, apply the currently active options to any newly
+    // created segment (drawn, split, roundabout, ...). Detection uses the data
+    // model "objects added" event; DataModel.isNew() confirms the object is a
+    // brand-new unsaved segment so we never re-process an existing one.
+    //
+    // Note: data model events are lazily tracked, so trackDataModelEvents must
+    // be called once before the "objects-added" event will fire.
+    //
+    // Re-entrancy: our own updateSegment writes fire objects-changed (not
+    // objects-added) and the pass ends by re-selecting the segment, neither of
+    // which re-enters this handler. window.suppressAutoApply adds a belt-and-
+    // braces guard, and _autoApplyInProgress suppresses autosave for the pass.
+    wmeSDK.Events.trackDataModelEvents({ dataModelName: 'segments' });
+    let _autoApplyTimer = null;
+    const _autoAppliedIds = new Set();
+    wmeSDK.Events.on({
+      eventName: 'wme-data-model-objects-added',
+      eventHandler: (e) => {
+        try {
+          if (!e || e.dataModelName !== 'segments') return;
+          const options = getOptions();
+          if (!options || !options.autoApplyToNewSegments) return;
+          if (window.suppressAutoApply || _autoApplyInProgress) return;
+
+          const newIds = (e.objectIds || []).filter((id) => {
+            if (_autoAppliedIds.has(id)) return false;
+            try {
+              // Confirm it is genuinely a new (unsaved) segment.
+              return wmeSDK.DataModel.isNew({ dataModelName: 'segments', objectId: id });
+            } catch (err) {
+              return false;
+            }
+          });
+          if (newIds.length === 0) return;
+
+          log(`[EZRoad] Auto-apply: new segment(s) detected: ${newIds.join(', ')}`);
+
+          // Debounce: wait for WME to materialise the segment and select it.
+          if (_autoApplyTimer) clearTimeout(_autoApplyTimer);
+          _autoApplyTimer = setTimeout(() => {
+            _autoApplyTimer = null;
+            try {
+              const selection = wmeSDK.Editing.getSelection();
+              if (!selection || selection.objectType !== 'segment') {
+                log('[EZRoad] Auto-apply: no segment selection after new segment was created, skipping');
+                return;
+              }
+              newIds.forEach((id) => _autoAppliedIds.add(id));
+              _autoApplyInProgress = true;
+              window.suppressAutoApply = true;
+              try {
+                handleUpdate();
+              } finally {
+                // handleUpdate schedules its writes on timers; keep the flags up
+                // briefly so the delayed writes still count as auto-apply.
+                setTimeout(() => {
+                  _autoApplyInProgress = false;
+                  window.suppressAutoApply = false;
+                }, 1500);
+              }
+            } catch (err) {
+              _autoApplyInProgress = false;
+              window.suppressAutoApply = false;
+              log(`[EZRoad] Auto-apply error: ${err.message}`);
+            }
+          }, 350);
+        } catch (err) {
+          log(`[EZRoad] Error in auto-apply handler: ${err.message}`);
+        }
+      },
+    });
+
     wmeSDK.Events.on({
       eventName: 'wme-after-redo-clear',
       eventHandler: () => {
@@ -3143,6 +3228,11 @@
       }, delay);
     });
   };
+
+  // Set true while an Auto-apply-to-new-segments pass is running. When set, every
+  // autosave path in the script is suppressed, so auto-applied edits stay unsaved
+  // even if "Autosave on Action" is checked. Cleared once the pass finishes.
+  let _autoApplyInProgress = false;
 
   function getHighestSegLock(segID) {
     const segObj = wmeSDK.DataModel.Segments.getById({ segmentId: segID });
@@ -4190,7 +4280,8 @@
           }
         }
         // --- AUTOSAVE LOGIC HERE ---
-        if (options.autosave) {
+        // Suppressed during an Auto-apply pass (see _autoApplyInProgress).
+        if (options.autosave && !_autoApplyInProgress) {
           setTimeout(() => {
             log(`[${scriptName}] Delayed Autosave starting...`);
             wmeSDK.Editing.save().then(() => {
@@ -5217,7 +5308,8 @@
       };
 
       // Autosave - DELAYED AUTOSAVE
-      if (options.autosave) {
+      // Suppressed during an Auto-apply pass (see _autoApplyInProgress).
+      if (options.autosave && !_autoApplyInProgress) {
         setTimeout(() => {
           log(`[${scriptName}] Delayed Autosave starting...`);
           wmeSDK.Editing.save().then(() => {
@@ -5317,6 +5409,12 @@
         text: 'Autosave on Action',
         key: 'autosave',
         tooltip: 'Automatically saves after updating segments.',
+      },
+      {
+        id: 'autoApplyToNewSegments',
+        text: 'Auto-apply to new segments',
+        key: 'autoApplyToNewSegments',
+        tooltip: 'When enabled, any newly created segment is automatically updated using the currently active options (same logic as Quick Update Segment). Autosave is not performed for auto-applied updates.',
       },
       {
         id: 'unpaved',
@@ -5433,7 +5531,7 @@
     // Helper function to create checkboxes
     const createCheckbox = (option) => {
       const isChecked = localOptions[option.key];
-      const otherClass = option.key !== 'autosave' && option.key !== 'copySegmentAttributes' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' && option.key !== 'validateNodeConnection' && option.key !== 'restrictExceptMotorbike' && option.key !== 'updateLanes' ? 'ezroadsmod-other-checkbox' : '';
+      const otherClass = option.key !== 'autosave' && option.key !== 'copySegmentAttributes' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' && option.key !== 'validateNodeConnection' && option.key !== 'restrictExceptMotorbike' && option.key !== 'updateLanes' && option.key !== 'autoApplyToNewSegments' ? 'ezroadsmod-other-checkbox' : '';
       const attrClass = option.key === 'copySegmentAttributes' ? 'ezroadsmod-attr-checkbox' : '';
 
       const div = $(`<div class="ezroadsmod-option">
@@ -5464,8 +5562,8 @@
           } else {
             update('copySegmentAttributes', false);
           }
-        } else if (option.key !== 'autosave' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' && option.key !== 'validateNodeConnection' && option.key !== 'restrictExceptMotorbike' && option.key !== 'updateLanes') {
-          // If any other checkbox (except autosave, showSegmentLength, checkGeometryIssues, validateNodeConnection, restrictExceptMotorbike, updateLanes) is checked, uncheck copySegmentAttributes
+        } else if (option.key !== 'autosave' && option.key !== 'showSegmentLength' && option.key !== 'checkGeometryIssues' && option.key !== 'validateNodeConnection' && option.key !== 'restrictExceptMotorbike' && option.key !== 'updateLanes' && option.key !== 'autoApplyToNewSegments') {
+          // If any other checkbox (except autosave, showSegmentLength, checkGeometryIssues, validateNodeConnection, restrictExceptMotorbike, updateLanes, autoApplyToNewSegments) is checked, uncheck copySegmentAttributes
           if ($(`#${option.id}`).prop('checked')) {
             $('#copySegmentAttributes').prop('checked', false);
             update('copySegmentAttributes', false);
@@ -5998,6 +6096,11 @@ if (typeof require !== 'undefined') {
 
   /*
 Changelog
+<strong>Version 2.7.7.0 - 2026-10-09:</strong><br>
+    - Added an "Auto-apply to new segments" option (default off). When enabled, every newly created segment (drawn, split, roundabout, ...) is updated automatically using the currently active options - the same code path as the Quick Update Segment button. Detection uses the WME SDK data model "objects added" event (wme-data-model-objects-added, after trackDataModelEvents), with DataModel.isNew() confirming the object is a brand-new unsaved segment.<br>
+    - The option can be toggled from the settings panel or via its own keyboard shortcut (configurable in WME Settings \u2192 Keyboard Shortcuts), consistent with the other feature toggles.<br>
+    - Auto-applied updates never autosave. While an auto-apply pass runs, the script-wide "Autosave on Action" is suppressed, so the changes remain unsaved for you to review. Every other trigger (Quick Update button, keyboard shortcuts) still autosaves exactly as before.<br>
+    - Re-entrancy is guarded two ways: the handler ignores its own writes (they fire objects-changed, not objects-added) and a suppression flag plus an already-applied id set prevent reprocessing the same segment.<br>
 <strong>Version 2.7.6.6 - 2026-10-06:</strong><br>
     - Verified the 2.7.6.5 fix end to end: create a segment two-way with a U-turn allowed, change it to one-way, Save - it now succeeds. The cleanup log shows the leftover allowed U-turn being disallowed at each node, and nothing left to clean on the next pass.<br>
     - Removed the temporary [EZRoad][DIAG] logging that was used to pin down the timing, and dropped the now-redundant disallowOneWaySegmentUturns() call from inside the Quick Update chain. The event-driven reconciler (wme-after-edit, debounced 250ms) is the single path, so there is one place that decides when the cleanup runs instead of two that can disagree.<br>
